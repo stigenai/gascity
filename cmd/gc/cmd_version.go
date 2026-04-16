@@ -15,6 +15,7 @@ import (
 var (
 	version                  = "dev"
 	commit                   = "unknown"
+	branch                   = "unknown"
 	date                     = "unknown"
 	goPseudoVersionSuffixRes = []*regexp.Regexp{
 		regexp.MustCompile(`^(.*)\.0\.\d{14}-[0-9a-f]{12,}$`),
@@ -105,7 +106,7 @@ Use --long to include git commit and build date metadata.`,
 				})
 			}
 			if longOutput {
-				fmt.Fprintf(stdout, "%s (commit: %s, built: %s)\n", version, commit, date) //nolint:errcheck // best-effort stdout
+				fmt.Fprintf(stdout, "%s (commit: %s, branch: %s, built: %s)\n", version, commit, branch, date) //nolint:errcheck // best-effort stdout
 				return nil
 			}
 			fmt.Fprintf(stdout, "%s\n", version) //nolint:errcheck // best-effort stdout

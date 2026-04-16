@@ -15,10 +15,12 @@ INSTALL_DIR := $(BIN_DIR)
 # Version metadata injected via ldflags.
 VERSION    := $(shell tag=$$(git describe --tags --exact-match 2>/dev/null || true); if [ -n "$$tag" ]; then printf '%s' "$$tag" | sed 's/^v//'; else echo "dev"; fi)
 COMMIT     := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BRANCH     := $(shell git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
 BUILD_TIME := $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 LDFLAGS := -X main.version=$(VERSION) \
            -X main.commit=$(COMMIT) \
+           -X main.branch=$(BRANCH) \
            -X main.date=$(BUILD_TIME)
 
 unique_words = $(if $1,$(firstword $1) $(call unique_words,$(filter-out $(firstword $1),$1)))
