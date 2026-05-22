@@ -11020,3 +11020,124 @@ exit 0
 		t.Fatalf("cross-rig-deps summary missing or wrong (subshell counter regression?)\nwant substring: %q\ngot output:\n%s\nbd log:\n%s", want, out, logData)
 	}
 }
+
+// writeMsgWispHighCountDoltStub writes a dolt stub that returns 0 for queries
+// that exclude ephemeral message wisps via NOT (issue_type = 'message' ...) and
+// 5 for all other COUNT queries. Used to verify that the Step 5 alert does not
+// fire when only message wisps push the count over the threshold.
+func writeMsgWispHighCountDoltStub(t *testing.T, path string) {
+	t.Helper()
+	writeExecutable(t, path, `#!/bin/sh
+printf '%s\n' "$*" >> "$DOLT_ARGS_LOG"
+case "$*" in
+  *"SHOW DATABASES"*)
+    printf 'Database\nbeads\n'
+    ;;
+  *"NOT (issue_type"* | *"NOT(issue_type"*)
+    printf 'COUNT(*)\n0\n'
+    ;;
+  *"COUNT("*)
+    printf 'COUNT(*)\n5\n'
+    ;;
+  *"SELECT id"*)
+    printf 'id\n'
+    ;;
+esac
+exit 0
+`)
+}
+
+// TestReaperMsgWispsClosedAppearsInDoltCommit verifies that when Step 1a closes
+// message wisps the Dolt commit annotation includes msg_wisps_closed=N (ga-6qed8.4).
+// RED before builder adds msg_wisps_closed to the DOLT_COMMIT statement.
+func TestReaperMsgWispsClosedAppearsInDoltCommit(t *testing.T) {
+	cityDir := t.TempDir()
+	binDir := t.TempDir()
+	stateDir := t.TempDir()
+	doltLog := filepath.Join(t.TempDir(), "dolt-args.log")
+
+	writeMsgWispDoltStub(t, filepath.Join(binDir, "dolt"))
+	writeExecutable(t, filepath.Join(binDir, "gc"), "#!/bin/sh\nexit 0\n")
+
+	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"),
+		reaperBaseEnv(t, doltLog, cityDir, stateDir, binDir))
+
+	data, err := os.ReadFile(doltLog)
+	if err != nil {
+		t.Fatalf("ReadFile(dolt log): %v", err)
+	}
+	if !strings.Contains(string(data), "msg_wisps_closed=") {
+		t.Errorf("Dolt commit must include msg_wisps_closed= counter (ga-6qed8.4);\ndolt log:\n%s", data)
+	}
+}
+
+// TestReaperNoAlertWhenOnlyEphemeralMessageWispsExceedThreshold verifies that
+// ephemeral message wisps are excluded from the Step 5 alert threshold count so
+// a backlog of message wisps alone cannot trigger a mayor escalation mail
+// (ga-6qed8.4 — breaks the self-escalation loop).
+// RED before builder fixes Step 5 to exclude issue_type='message' AND ephemeral=1.
+func TestReaperNoAlertWhenOnlyEphemeralMessageWispsExceedThreshold(t *testing.T) {
+	cityDir := t.TempDir()
+	binDir := t.TempDir()
+	stateDir := t.TempDir()
+	doltLog := filepath.Join(t.TempDir(), "dolt-args.log")
+	gcLog := filepath.Join(t.TempDir(), "gc.log")
+
+	writeMsgWispHighCountDoltStub(t, filepath.Join(binDir, "dolt"))
+	writeExecutable(t, filepath.Join(binDir, "gc"), `#!/bin/sh
+printf '%s\n' "$*" >> "$GC_CALL_LOG"
+exit 0
+`)
+
+	env := reaperBaseEnv(t, doltLog, cityDir, stateDir, binDir)
+	env["GC_CALL_LOG"] = gcLog
+	env["GC_REAPER_ALERT_THRESHOLD"] = "3"
+
+	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+
+	gcData, err := os.ReadFile(gcLog)
+	if err != nil {
+		t.Fatalf("ReadFile(gc log): %v", err)
+	}
+	if strings.Contains(string(gcData), "mail send") {
+		t.Errorf("reaper must not alert mayor when only ephemeral message wisps exceed threshold (ga-6qed8.4);\ngc calls:\n%s", gcData)
+	}
+}
+
+// TestReaperNoDoltCommitWhenNoMutations verifies that when the reaper runs with
+// no eligible wisps to close, no Dolt commit is issued and no anomaly mail is
+// sent (ga-6qed8.4 — follow-up run after backlog is cleared).
+// RED before builder gates DOLT_COMMIT on DB_MUTATIONS > 0.
+func TestReaperNoDoltCommitWhenNoMutations(t *testing.T) {
+	cityDir := t.TempDir()
+	binDir := t.TempDir()
+	stateDir := t.TempDir()
+	doltLog := filepath.Join(t.TempDir(), "dolt-args.log")
+	gcLog := filepath.Join(t.TempDir(), "gc.log")
+
+	writeMaintenanceDoltStub(t, filepath.Join(binDir, "dolt"))
+	writeExecutable(t, filepath.Join(binDir, "gc"), `#!/bin/sh
+printf '%s\n' "$*" >> "$GC_CALL_LOG"
+exit 0
+`)
+
+	env := reaperBaseEnv(t, doltLog, cityDir, stateDir, binDir)
+	env["GC_CALL_LOG"] = gcLog
+
+	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "reaper.sh"), env)
+
+	doltData, err := os.ReadFile(doltLog)
+	if err != nil {
+		t.Fatalf("ReadFile(dolt log): %v", err)
+	}
+	gcData, err := os.ReadFile(gcLog)
+	if err != nil {
+		t.Fatalf("ReadFile(gc log): %v", err)
+	}
+	if strings.Contains(string(doltData), "DOLT_COMMIT") {
+		t.Errorf("reaper must not issue Dolt commit when no mutations occurred (ga-6qed8.4);\ndolt log:\n%s", doltData)
+	}
+	if strings.Contains(string(gcData), "mail send") {
+		t.Errorf("reaper must not send anomaly mail when there are no anomalies (ga-6qed8.4);\ngc calls:\n%s", gcData)
+	}
+}
