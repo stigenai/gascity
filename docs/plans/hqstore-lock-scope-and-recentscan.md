@@ -3,7 +3,9 @@
 Date: 2026-05-27
 
 PM intake source:
-- Designer handoff mail: `gm-wisp-7q5ogc`
+- Aggregate designer handoff mail: `gm-wisp-n49o82`
+- Aggregate designer root: `ga-0zt9w`
+- Earlier designer handoff mail: `gm-wisp-7q5ogc`
 - Designer roots: `ga-u2991`, `ga-lld7b`
 - Architecture source: `ga-vbuxn`
 - Tracker import: no installed tracker skill found
@@ -13,7 +15,8 @@ PM intake source:
 Turn the completed HQStore concurrency designs into serialized builder work.
 `ga-u2991` lands first because moving `cloneBead` outside the read lock is the
 larger p99 latency lever and is the prerequisite for the bounded RecentScan path
-in `ga-lld7b`.
+in `ga-lld7b`. The aggregate handoff `ga-0zt9w` adds the final benchmark and
+900s soak evidence gate before Phase 2 lock sharding can be considered.
 
 ## Work Packages
 
@@ -50,16 +53,27 @@ Root: `ga-lld7b`
    - Label: `ready-to-build`
    - Acceptance: adds regression coverage for newest-N results from a large mixed dataset, expected CreatedAt-descending IDs on a small dataset, and race-detector coverage for concurrent `List`, `Create`, and `SetMetadataBatch`; verifies with focused `go test ./internal/beads` and `go test -race ./internal/beads -run TestListRecentDescConcurrentWithWriters`.
 
+### Phase 1 benchmark and soak gate
+
+Root: `ga-0zt9w`
+
+6. `ga-0zt9w.1` - Validator: As a maintainer, I can validate HQStore Phase 1 with benchmark and soak evidence.
+   - Route: `gascity/validator`
+   - Label: `needs-tests`
+   - Acceptance: adds or confirms `BenchmarkHQStoreRecentScan` with a 28k-bead setup and the RecentScan query, captures benchmark allocation/output evidence after implementation, runs the focused race-detector commands for the builder-added concurrent tests, runs the PR #2642 chaos harness at 28k beads for a 900s soak or records the exact environmental blocker, and confirms Phase 2 is not requested unless Create p99 remains above 5ms.
+
 ## Dependency Graph
 
 - `ga-u2991.2` depends on `ga-u2991.1`.
 - `ga-u2991.3` depends on `ga-u2991.1` and `ga-u2991.2`.
 - `ga-lld7b.1` depends on `ga-u2991.3`.
 - `ga-lld7b.2` depends on `ga-lld7b.1`.
+- `ga-0zt9w.1` depends on `ga-lld7b.2`.
 
 This serializes work touching `internal/beads/hqstore_core.go` and keeps the
 RecentScan optimization behind the clone-outside-lock invariant proof and race
-coverage.
+coverage. The validator gate runs only after both implementation slices and
+their focused tests have landed.
 
 ## Handoff Targets
 
@@ -70,8 +84,12 @@ Builder:
 - `ga-lld7b.1`
 - `ga-lld7b.2`
 
-All child beads have `source:actual-pm`, `ready-to-build`, `coordstore`, and
-`gc.routed_to=gascity/builder`.
+Validator:
+- `ga-0zt9w.1`
+
+Builder beads have `source:actual-pm`, `ready-to-build`, `coordstore`, and
+`gc.routed_to=gascity/builder`. The validator bead has `source:actual-pm`,
+`needs-tests`, `coordstore`, and `gc.routed_to=gascity/validator`.
 
 ## Guardrails
 
@@ -82,3 +100,5 @@ All child beads have `source:actual-pm`, `ready-to-build`, `coordstore`, and
   mutated in place after insertion.
 - Treat race-detector commands as required verification for the concurrency
   slices before closing their beads.
+- Treat the 28k-bead benchmark and 900s chaos soak as the Phase 2 gate; do not
+  ask for tier-level lock sharding unless Phase 1 still misses Create p99 <= 5ms.
