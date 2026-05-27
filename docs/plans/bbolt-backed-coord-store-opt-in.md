@@ -29,7 +29,7 @@ in this session, so the import step was a no-op.
 | `ga-yjlby.2` | As a controller, I can persist beads in an embedded bbolt Store | `ready-to-build` | `gascity/builder` | - |
 | `ga-yjlby.3` | As an operator, I can opt into bbolt without starting dolt | `ready-to-build` | `gascity/builder` | `ga-yjlby.1`, `ga-yjlby.2` |
 | `ga-yjlby.4` | As an operator, I can see the active coord-store backend in gc doctor | `ready-to-build` | `gascity/builder` | `ga-yjlby.1`, `ga-yjlby.3` |
-| `ga-yjlby.5` | As an operator, I can enable and recover from bbolt using docs | `ready-to-build` | `gascity/builder` | `ga-yjlby.1`, `ga-yjlby.4` |
+| `ga-yjlby.5` | As an operator, I can enable and recover from bbolt using docs | `needs-docs` | `gascity/pm` | `ga-yjlby.1`, `ga-yjlby.4` |
 | `ga-yjlby.6` | As a maintainer, I can verify the bbolt backend end to end | `ready-to-build` | `gascity/builder` | `ga-yjlby.2`, `ga-yjlby.3`, `ga-yjlby.4`, `ga-yjlby.5` |
 
 ## Acceptance Rollup
@@ -91,6 +91,12 @@ The remaining work routes to `gascity/builder` with `ready-to-build`. The
 designer already completed the UX surface, so no child bead routes back to
 design. Test requirements are included in each build slice and in the final
 verification slice so the builder can follow the project's TDD workflow.
+
+`ga-yjlby.5` was later relabelled `needs-docs` and routed back to PM because
+the builder prompt excludes operator documentation and this rig has no writer
+agent configured. PM owns that documentation-only slice at
+`docs/coordination-store/bbolt-opt-in.md`; the final verification slice
+remains routed to `gascity/builder`.
 
 ## Risks
 

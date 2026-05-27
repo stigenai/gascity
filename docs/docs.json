@@ -219,6 +219,12 @@
         ]
       },
       {
+        "group": "Coordination Store",
+        "pages": [
+          "coordination-store/bbolt-opt-in"
+        ]
+      },
+      {
         "group": "Reference",
         "pages": [
           {
