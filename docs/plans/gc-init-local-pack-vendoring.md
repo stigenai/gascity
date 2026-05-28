@@ -62,6 +62,32 @@ builder work packages:
 The PM-created dependency graph enforces this order with `bd dep add` so only
 the first builder bead is ready immediately.
 
+## UX Follow-up From `ga-zyyp4l`
+
+Designer handoff `ga-zyyp4l` arrived after the initial builder sequence was
+already decomposed and completed. It adds visible CLI UX requirements for the
+vendoring step and asks whether the helper should return vendored pack names
+so `cmd_init.go` can print a useful summary.
+
+PM scope decisions:
+
+- Transitive annotations in success output are v2, not MVP.
+- Declaration hints in error output are v2, not MVP, unless architecture
+  decides they are required by the contract.
+- The helper signature and graph-depth behavior are architecture decisions,
+  not PM decisions.
+
+Follow-up work:
+
+| Bead | Route | Scope | Blocked by |
+|---|---|---|---|
+| `ga-zyyp4l.1` | architect | Decide the approved helper/output contract and runaway graph behavior | none |
+| `ga-zyyp4l.2` | validator | Define CLI UX regression coverage against the approved contract | `ga-zyyp4l.1` |
+| `ga-zyyp4l.3` | builder | Implement the approved CLI summary output delta | `ga-zyyp4l.1`, `ga-zyyp4l.2`, `ga-ki3dbz.1` |
+
+The follow-up should build on the latest completed stack from
+`ga-ki3dbz.1`, not recreate the original vendoring implementation beads.
+
 ## Out Of Scope
 
 - New user-facing CLI flags or commands.
