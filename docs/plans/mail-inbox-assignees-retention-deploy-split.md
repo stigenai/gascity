@@ -51,24 +51,25 @@ child bead.
 
 ## Dependency Graph
 
-- `ga-tftexi.1` blocks `ga-yinjm2.1` and `ga-ga91go.1`.
-- `ga-yinjm2.1` blocks `ga-ga91go.1`.
-- `ga-yinjm2.1.1` tracks merge authority for PR #2870 and blocks
-  `ga-ga91go.1` until the HQStore Assignees index-union slice is on
-  `origin/main`.
+- `ga-tftexi.1` blocks `ga-ga91go.1`.
+- `ga-yinjm2.1` is superseded for the beadmail routing deploy because
+  HQStore was removed from main. It no longer blocks `ga-ga91go.1`.
+- `ga-yinjm2.1.1` tracked PR #2870 merge authority and is now moot because
+  PR #2870 was closed unmerged after HQStore removal. It no longer blocks
+  `ga-ga91go.1`.
 - `ga-a5muun.1` blocks `ga-93j6pj.1`.
 - The Assignees chain and retention chain can proceed independently once each
   child deploy branch is isolated from unrelated stacked work.
 
-## Current Holds
+## Current Updates
 
+- `ga-ga91go.1` remains valid after architecture decision `ga-ga91go.1.1`.
+  PM removed the obsolete `ga-yinjm2.1` and `ga-yinjm2.1.1` blockers on
+  2026-06-01 and routed the bead back to `gascity/deployer`.
 - `ga-ga91go.1` remains current-main-only and must not proceed as a stacked
-  deploy. PM verified on 2026-06-01 that PR #2870 is open with `mergedAt=null`
-  and `origin/main` at `bf689b1fa60a548705b2dd37f6e0e704b2c4bc67` does not
-  contain the HQStore Assignees index-union merge.
-- `ga-yinjm2.1.1` is the PM-owned merge-request tracker for PR #2870. Mayor or
-  mpr must merge PR #2870, or record the non-merge decision, before
-  `ga-ga91go.1` is routed back to deployer.
+  deploy. The deployer must cherry-pick only `7bd1edc8f` from
+  `builder/ga-2znrco.3-beadmail-assignees`; do not include `8a6de11d9`,
+  `d2f2e8bb9`, or `64aa34ed0`.
 
 ## Handoff
 
