@@ -53,9 +53,22 @@ child bead.
 
 - `ga-tftexi.1` blocks `ga-yinjm2.1` and `ga-ga91go.1`.
 - `ga-yinjm2.1` blocks `ga-ga91go.1`.
+- `ga-yinjm2.1.1` tracks merge authority for PR #2870 and blocks
+  `ga-ga91go.1` until the HQStore Assignees index-union slice is on
+  `origin/main`.
 - `ga-a5muun.1` blocks `ga-93j6pj.1`.
 - The Assignees chain and retention chain can proceed independently once each
   child deploy branch is isolated from unrelated stacked work.
+
+## Current Holds
+
+- `ga-ga91go.1` remains current-main-only and must not proceed as a stacked
+  deploy. PM verified on 2026-06-01 that PR #2870 is open with `mergedAt=null`
+  and `origin/main` at `bf689b1fa60a548705b2dd37f6e0e704b2c4bc67` does not
+  contain the HQStore Assignees index-union merge.
+- `ga-yinjm2.1.1` is the PM-owned merge-request tracker for PR #2870. Mayor or
+  mpr must merge PR #2870, or record the non-merge decision, before
+  `ga-ga91go.1` is routed back to deployer.
 
 ## Handoff
 
