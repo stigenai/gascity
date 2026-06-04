@@ -39,6 +39,18 @@ PM should not decide the release topology. Architecture must first decide
 whether this fix can ship independently from `origin/main`, must become an
 explicit rollup, or must wait for the underlying coordstore/SQLite stack.
 
+## 2026-06-04 Update
+
+The first architecture decision, `ga-linjt0.1`, chose the safe path of waiting
+for PR #2738 to land before builder produced a clean single-commit branch. That
+path is no longer sufficient: PM verified PR #2738 is now closed, still draft,
+dirty, and unmerged (`mergedAt=null`, head
+`ed51accf47ac7b92dd87c164fc0b4f7bdc1e9c4b`).
+
+Validator recorded `ga-linjt0.3` as fail/blocked because no remediated builder
+branch exists and the previously approved base did not land. PM created
+`ga-linjt0.4` to re-open the release-path decision against current reality.
+
 ## Work Packages
 
 ### `ga-linjt0.1` - Decide Release Path
@@ -59,13 +71,34 @@ Acceptance:
 - If no safe release path exists now, leave a blocked recommendation and
   notify PM/mayor with the reason.
 
+Status: Closed. Decision was "must wait for PR #2738 to land."
+
+### `ga-linjt0.4` - Re-decide Release Path After PR #2738 Closed Unmerged
+
+Route: `gascity/architect`
+
+Label: `needs-architecture`
+
+Acceptance:
+
+- Decide whether retention-aware coordstore import/shadow can still ship via a
+  reopened #2738, a replacement coordstore substrate PR/base, an explicit
+  rollup, or should be closed/deferred as superseded.
+- Identify the exact approved base branch, commit, or PR stack downstream
+  builder work may use, including dependency changes needed for `ga-linjt0.2`
+  and `ga-linjt0.3`.
+- Define allowed paths/commits, excluded paths/commits, merge-tree base, scope
+  gates, and required test evidence for builder and validator.
+- If no safe path exists now, record that explicitly and state which beads
+  should be closed, deferred, or re-scoped, plus who must be notified.
+
 ### `ga-linjt0.2` - Produce Deployable Branch
 
 Route: `gascity/builder`
 
 Label: `ready-to-build`
 
-Blocked by: `ga-linjt0.1`
+Blocked by: `ga-linjt0.1`, `ga-linjt0.4`, and `ga-snab2n.3`
 
 Acceptance:
 
@@ -110,7 +143,9 @@ Acceptance:
 
 ## Dependency Graph
 
-`ga-linjt0.1` -> `ga-linjt0.2` -> `ga-linjt0.3`
+Original graph: `ga-linjt0.1` -> `ga-linjt0.2` -> `ga-linjt0.3`
+
+Current graph: `ga-linjt0.4` -> `ga-linjt0.2` -> `ga-linjt0.3`
 
 ## Handoff Notes
 
@@ -118,3 +153,7 @@ The original deploy bead should be closed as decomposed once all three child
 beads are slung to their target agents. The deployer should not retry
 `builder/ga-oxtlqn-retention-aware-import` directly; retry only after the
 architecture decision and a remediated branch exist.
+
+After the 2026-06-04 update, builder should not produce a replacement branch
+until `ga-linjt0.4` closes with a current approved base or a close/defer
+recommendation.
