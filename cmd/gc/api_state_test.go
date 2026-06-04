@@ -3484,6 +3484,81 @@ func TestControllerStateCitySuspensionRecordsEvents(t *testing.T) {
 	}
 }
 
+func TestControllerStateCitySuspensionRecordsEvents(t *testing.T) {
+	cases := []struct {
+		name          string
+		initial       func(*config.City)
+		mutate        func(*controllerState) error
+		wantSuspended bool
+		wantEventType string
+	}{
+		{
+			name: "suspend city",
+			mutate: func(cs *controllerState) error {
+				return cs.SuspendCity()
+			},
+			wantSuspended: true,
+			wantEventType: events.CitySuspended,
+		},
+		{
+			name: "resume city",
+			initial: func(cfg *config.City) {
+				cfg.Workspace.Suspended = true
+			},
+			mutate: func(cs *controllerState) error {
+				return cs.ResumeCity()
+			},
+			wantEventType: events.CityResumed,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cs, tomlPath := newControllerStateMutationHarness(t)
+			ep := events.NewFake()
+			cs.eventProv = ep
+
+			if tc.initial != nil {
+				cfg, err := config.Load(fsys.OSFS{}, tomlPath)
+				if err != nil {
+					t.Fatalf("load config: %v", err)
+				}
+				tc.initial(cfg)
+				content, err := cfg.Marshal()
+				if err != nil {
+					t.Fatalf("marshal initial config: %v", err)
+				}
+				if err := os.WriteFile(tomlPath, content, 0o644); err != nil {
+					t.Fatalf("write initial config: %v", err)
+				}
+			}
+
+			if err := tc.mutate(cs); err != nil {
+				t.Fatalf("mutation failed: %v", err)
+			}
+
+			gotCfg, err := config.Load(fsys.OSFS{}, tomlPath)
+			if err != nil {
+				t.Fatalf("reload config: %v", err)
+			}
+			if gotCfg.Workspace.Suspended != tc.wantSuspended {
+				t.Fatalf("workspace.suspended = %v, want %v", gotCfg.Workspace.Suspended, tc.wantSuspended)
+			}
+
+			gotEvents, err := ep.List(events.Filter{})
+			if err != nil {
+				t.Fatalf("list events: %v", err)
+			}
+			if len(gotEvents) != 1 {
+				t.Fatalf("recorded events = %+v, want exactly one %s event", gotEvents, tc.wantEventType)
+			}
+			if gotEvents[0].Type != tc.wantEventType {
+				t.Fatalf("recorded event type = %q, want %q", gotEvents[0].Type, tc.wantEventType)
+			}
+		})
+	}
+}
+
 func TestControllerStateMutationErrorDoesNotPokeController(t *testing.T) {
 	cs, _ := newControllerStateMutationHarness(t)
 
