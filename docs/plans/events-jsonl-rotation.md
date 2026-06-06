@@ -1,8 +1,8 @@
 # Plan: events.jsonl in-process rotation
 
-**Source bead:** [`ga-b6y1`](../../issues/ga-b6y1) — designer's
+**Source bead:** `ga-b6y1` — designer's
 decomposition + operator UX.
-**Architecture parent:** [`ga-9hf7`](../../issues/ga-9hf7) — closed,
+**Architecture parent:** `ga-9hf7` — closed,
 recommendation: in-process size-triggered rotation in `FileRecorder`
 with archive-aware reads, gzip-archive sibling files, default
 unbounded retention with opt-in age cap.

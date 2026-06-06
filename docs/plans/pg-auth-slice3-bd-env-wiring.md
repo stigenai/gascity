@@ -13,7 +13,7 @@
 Slices 1 + 2 deliver the foundation: `MetadataState.Backend == "postgres"`
 parses cleanly with PG host/port/user/database fields (`ga-pnqg`), and a
 new `internal/pgauth` package resolves PG passwords through a
-seven-tier chain identical to `internal/doltauth` (`ga-vt6q`). Neither
+seven-tier chain identical to the doltauth resolver (`ga-vt6q`). Neither
 slice projects credentials into the `bd` subprocess env, so a PG-backed
 rig still fails at the wrapper boundary — the mayor's repro `gc bd
 --rig <pg-rig> list` still exits 1 with "no password" because nothing

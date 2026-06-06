@@ -14,7 +14,7 @@ Slice 1 (`ga-pnqg`) shipped the schema half: `MetadataState` can now declare
 mixed or malformed configs. That alone does nothing — gc still has no way
 to *resolve a password* for a PG endpoint when it's about to spawn a `bd`
 subprocess. Slice 2 closes that hole by adding a new package
-`internal/pgauth` that mirrors `internal/doltauth` one-for-one: same
+`internal/pgauth` that mirrors the doltauth resolver one-for-one: same
 seven-tier resolution chain shape, same chmod posture, same typed errors.
 
 After this slice lands, slice 3 (`ga-4qvs`) can wire the resolver into
@@ -153,7 +153,7 @@ visibility:
 - Per-section `user=` override in credentials files (design §9.4).
 - `Resolved.CredentialsFileOverride` field (`doltauth` has it; pgauth
   doesn't need it because no consumer reads it).
-- Any change to `internal/doltauth` — this slice is additive.
+- Any change to the doltauth package — this slice is additive.
 - Changes to `MetadataState` (slice 1 territory, closed).
 - The bd binary's PG implementation — out of repo entirely.
 
