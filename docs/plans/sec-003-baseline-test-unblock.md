@@ -36,12 +36,14 @@ fixed or otherwise cleared, then deploy as a clean single-feature release.
 | --- | --- | --- | --- |
 | `ga-7psli2.1` | `gascity/builder` | `ready-to-build` | Resolve or objectively clear the baseline `cmd/bd` `CLI_Stealth` failure without bundling SEC-003. |
 | `ga-7psli2.2` | `gascity/validator` | `needs-tests` | Independently validate the blocker resolution and confirm no SEC-003 contamination. |
+| `ga-7psli2.4` | `gascity/builder` | `ready-to-build` | Resolve or objectively clear the remaining baseline `cmd/bd make test` failures surfaced after `CLI_Stealth` validation. |
+| `ga-7psli2.5` | `gascity/validator` | `needs-tests` | Independently validate the remaining baseline gate blocker resolution before deploy retry. |
 | `ga-7psli2.3` | `gascity/deployer` | `needs-deploy` | Retry the SEC-003 release gate only after the baseline blocker is cleared. |
 
 ## Dependency Graph
 
 ```text
-ga-7psli2.1 -> ga-7psli2.2 -> ga-7psli2.3 -> ga-x2i1lv.2
+ga-7psli2.1 -> ga-7psli2.2 -> ga-7psli2.4 -> ga-7psli2.5 -> ga-7psli2.3 -> ga-x2i1lv.2
 ```
 
 The original clean-branch deploy bead remains blocked by the retry bead so the
@@ -55,11 +57,31 @@ SEC-003 PR cannot be opened while the unrelated baseline failure is unresolved.
 2. Validator confirms the focused stealth coverage no longer leaks
    `git status` text and that the blocker fix does not include the SEC-003
    home-directory change.
-3. Deployer reruns the SEC-003 gate from a current clean `origin/main` base
+3. Builder resolves or objectively clears the remaining baseline `cmd/bd`
+   `make test` failures reported by `ga-7psli2.2`, keeping that work separate
+   from SEC-003.
+4. Validator confirms the remaining baseline gate failures are cleared and the
+   fix contains no SEC-003 behavior changes.
+5. Deployer reruns the SEC-003 gate from a current clean `origin/main` base
    after the baseline blocker is cleared.
-4. Deployer opens and routes a PR only if the standard gate passes; on failure,
+6. Deployer opens and routes a PR only if the standard gate passes; on failure,
    deployer records exact failed criteria and artifact path and routes back to
    PM.
+
+## 2026-06-09 Follow-up Split
+
+Validator completed `ga-7psli2.2` with the focused `CLI_Stealth` blocker
+cleared, but the standard gate still failed on unrelated baseline `cmd/bd`
+tests:
+
+- `TestAutoExportGitAddFailureExitsNonZero`
+- `TestAutoExportSkipsEmptyExportOverPopulatedJSONL`
+- `TestAutoExportSkipsWhenExistingJSONLHasIDsMissingFromStore`
+- `TestInitNonInteractiveAutoExportDefaultOffAndOptIn`
+- `TestCommitBeadsConfigSkipsGitHooks`
+
+PM created `ga-7psli2.4` and `ga-7psli2.5` so the SEC-003 deploy retry remains
+blocked until the remaining baseline gate failures are resolved and validated.
 
 ## Tracker Import
 
