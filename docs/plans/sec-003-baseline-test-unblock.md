@@ -38,12 +38,14 @@ fixed or otherwise cleared, then deploy as a clean single-feature release.
 | `ga-7psli2.2` | `gascity/validator` | `needs-tests` | Independently validate the blocker resolution and confirm no SEC-003 contamination. |
 | `ga-7psli2.4` | `gascity/builder` | `ready-to-build` | Resolve or objectively clear the remaining baseline `cmd/bd make test` failures surfaced after `CLI_Stealth` validation. |
 | `ga-7psli2.5` | `gascity/validator` | `needs-tests` | Independently validate the remaining baseline gate blocker resolution before deploy retry. |
+| `ga-7psli2.3.1` | `gascity/deployer` | `needs-deploy` | Gate and open the separate baseline `cmd/bd` blocker-fix PR without bundling SEC-003. |
+| `ga-7psli2.3.2` | `gascity/validator` | `needs-tests` | Confirm the baseline fix is available on `origin/main` or an accepted current SEC-003 baseline before retry. |
 | `ga-7psli2.3` | `gascity/deployer` | `needs-deploy` | Retry the SEC-003 release gate only after the baseline blocker is cleared. |
 
 ## Dependency Graph
 
 ```text
-ga-7psli2.1 -> ga-7psli2.2 -> ga-7psli2.4 -> ga-7psli2.5 -> ga-7psli2.3 -> ga-x2i1lv.2
+ga-7psli2.1 -> ga-7psli2.2 -> ga-7psli2.4 -> ga-7psli2.5 -> ga-7psli2.3.1 -> ga-7psli2.3.2 -> ga-7psli2.3 -> ga-x2i1lv.2
 ```
 
 The original clean-branch deploy bead remains blocked by the retry bead so the
@@ -82,6 +84,33 @@ tests:
 
 PM created `ga-7psli2.4` and `ga-7psli2.5` so the SEC-003 deploy retry remains
 blocked until the remaining baseline gate failures are resolved and validated.
+
+## 2026-06-09 Release Sequencing Update
+
+Validator completed `ga-7psli2.5` with the remaining baseline `cmd/bd` blockers
+cleared on `fix/cmd-bd-baseline-test-blockers`:
+
+- Base at validation time: `9a1c88b63aee89b091c9db7e5330a48cb4911987`
+- Head: `9678f4535a053b82a7b0d55d22aa48f0495f12d5`
+- Diff scope: `cmd/bd/doctor_context_test.go`, `cmd/bd/prime_test.go`,
+  `cmd/bd/test_helpers_pure_test.go`
+- Validation artifacts:
+  `/home/jaword/projects/gc-management/.gc/artifacts/ga-7psli2.5-focused-cmd-bd.log`
+  and
+  `/home/jaword/projects/gc-management/.gc/artifacts/ga-7psli2.5-make-test.log`
+
+The fix is validated but not yet confirmed available on `origin/main`, so PM
+added two blockers before SEC-003 can be retried:
+
+- `ga-7psli2.3.1`: deployer gates and opens the separate baseline blocker-fix
+  PR/release unit.
+- `ga-7psli2.3.2`: validator confirms the baseline fix is actually available on
+  `origin/main` or an accepted current SEC-003 baseline and still excludes
+  `internal/beads/context.go`.
+
+`ga-7psli2.3` is retargeted to `gascity/deployer` with `needs-deploy` and
+depends on `ga-7psli2.3.2`. The original deploy bead `ga-x2i1lv.2` remains
+blocked by `ga-7psli2.3`.
 
 ## Tracker Import
 
