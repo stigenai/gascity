@@ -22,6 +22,8 @@ The work addresses four gaps from the Dolt data-plane resilience scope:
 | Bead | Title | Routes to | Gate |
 |------|-------|-----------|------|
 | `ga-ox5oz8.1` | Operator approves 2h Dolt compactor interval | `mayor` | `needs-info` |
+| `ga-2ommpw.1` | Design compact-duration alert for mol-dog-compactor | `gascity/designer` | `needs-design` |
+| `ga-2ommpw.2` | Build compact-duration alert for mol-dog-compactor | `gascity/builder` | `ready-to-build` |
 | `ga-ox5oz8.2` | Build approved 2h Dolt compactor interval | `gascity/builder` | `ready-to-build` |
 | `ga-v5cb1z.1` | Build dolt-journal-size doctor check | `gascity/builder` | `ready-to-build` |
 | `ga-cnc6sc.1` | Build BACKUP_STALE_S RPO script documentation | `gascity/builder` | `ready-to-build` |
@@ -31,6 +33,12 @@ The work addresses four gaps from the Dolt data-plane resilience scope:
 
 ```text
 ga-ox5oz8.1
+  -> closed after operator approval
+
+ga-2ommpw.1
+  -> blocks ga-2ommpw.2
+
+ga-2ommpw.2
   -> blocks ga-ox5oz8.2
 
 ga-v5cb1z.1
@@ -40,9 +48,10 @@ ga-cnc6sc.1
   -> no downstream blocker
 ```
 
-`ga-ox5oz8.2` must not be built until the operator approval bead closes
-and `ga-ox5oz8` contains the required approval note. `ga-lhukkq.1` waits
-for `ga-v5cb1z.1` so the recovery runbook does not reference
+`ga-ox5oz8.2` must not land until the operator approval bead closes,
+`ga-ox5oz8` contains the required approval note, and the compact-duration
+alert required by that approval is implemented. `ga-lhukkq.1` waits for
+`ga-v5cb1z.1` so the recovery runbook does not reference
 `dolt-journal-size` before the check exists.
 
 ## Acceptance summary
@@ -58,13 +67,39 @@ for `ga-v5cb1z.1` so the recovery runbook does not reference
 3. `ga-ox5oz8` has `operator-approved` and no longer has
    `pending-operator-approval`.
 
+Status update: operator approval was recorded on `ga-ox5oz8` on
+2026-06-17 and `ga-ox5oz8.1` is closed. The approval accepted the
+5-minute compact-duration alert as a requirement; that alert is tracked
+under `ga-2ommpw`.
+
+### `ga-2ommpw.1`
+
+1. Designer defines the operator-visible alert UX for `gc dolt compact`
+   runs exceeding 5 minutes.
+2. The design specifies the producer location in the existing
+   `examples/bd/dolt` order/doctor/health-check structure.
+3. The design specifies alert severity, mail/notify/event surface, and
+   required context fields.
+4. The design includes a builder contract and test expectations.
+
+### `ga-2ommpw.2`
+
+1. Builder implements the designer-specified compact-duration alert.
+2. Compact runs over 5 minutes produce an operator-visible alert.
+3. Compact runs under 5 minutes do not alert.
+4. Tests cover both sides of the threshold.
+5. `go test ./...` and `go vet ./...` pass.
+
 ### `ga-ox5oz8.2`
 
 1. Builder verifies `ga-ox5oz8.1` is closed and `ga-ox5oz8` contains the
    approval note before editing.
-2. Only `examples/bd/dolt/orders/mol-dog-compactor.toml` changes.
-3. The interval changes from `24h` to `2h`.
-4. The designer-specified audit comment is added above the interval.
+2. Builder verifies `ga-2ommpw.2` is closed before landing the interval
+   change, because the operator approval was conditioned on the
+   compact-duration alert.
+3. Only `examples/bd/dolt/orders/mol-dog-compactor.toml` changes.
+4. The interval changes from `24h` to `2h`.
+5. The designer-specified audit comment is added above the interval.
 
 ### `ga-v5cb1z.1`
 
@@ -97,18 +132,22 @@ for `ga-v5cb1z.1` so the recovery runbook does not reference
 - Tracker import was a no-op: no tracker-to-beads command or sibling
   tracker skill is installed in this worktree.
 - WP-2 and WP-3 are immediately ready for builder.
-- WP-1 is routed but blocked on operator approval. Mayor confirmed in
-  `gm-wisp-fr8okoq` that he will surface the decision to the operator but
-  will not self-approve or substitute for the required acknowledgment.
+- WP-1 operator approval is complete, but the interval edit now waits on
+  `ga-2ommpw.2` because the approval accepted a compact-over-5-minute
+  alert as a required companion change.
+- Mayor confirmed in `gm-wisp-fr8okoq` that he would not self-approve or
+  substitute for the operator acknowledgment; the approval was later
+  recorded by the operator on `ga-ox5oz8`.
 - WP-4 is routed but blocked on WP-2 so the runbook and doctor check land
   in a coherent order.
-- No new design, architecture, or validator bead is required from this
-  handoff.
+- The compact-duration alert requires design first (`ga-2ommpw.1`), then
+  builder implementation (`ga-2ommpw.2`). No additional architecture or
+  validator bead is required from this handoff.
 
 ## Risks
 
-- Merging WP-1 without explicit approval would bypass the operator gate and
-  accept additional compact write-lock frequency without audit trail.
+- Merging WP-1 without the compact-duration alert would violate the
+  operator's approval condition for the higher compact frequency.
 - Building WP-4 before WP-2 could publish recovery guidance that references
   a doctor check not yet available.
 - This rig's Beads/Dolt store is local-only; do not run `bd dolt push`,
