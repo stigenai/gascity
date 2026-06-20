@@ -4,6 +4,20 @@
 > Sources: designer beads `ga-rncghg`, `ga-o1exvf`;
 > architecture root `ga-v3i9mi`
 
+## Current Status
+
+This plan is historical as of 2026-06-20. Do not use it to route new
+`gc hook --wait` or timeout-revert work.
+
+Operator decision `ga-rncghg.2.1` superseded Track B: PR #3599 was closed,
+`ga-rncghg.2` is abandoned, and `gc hook --wait` is not part of the active
+review-formulas slowdown exit path. The timeout bumps from #3590 and #3593
+stay in place unless a Track-C-justified revert has explicit operator
+confirmation.
+
+Use `docs/plans/review-formulas-ci-slowdown-current-plan.md` for the active
+`ga-pmhi6g.1` handoff.
+
 ## Goal
 
 Turn the completed dispatch-speedup designs into builder-ready work that
