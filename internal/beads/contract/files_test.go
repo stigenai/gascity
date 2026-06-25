@@ -438,6 +438,91 @@ func TestEnsureCanonicalConfigPreservesDoltDisableEventFlushOptOut(t *testing.T)
 	}
 }
 
+func TestEnsureCanonicalConfigWritesDoltModeWhenSupplied(t *testing.T) {
+	fs := fsys.OSFS{}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	input := strings.Join([]string{
+		"issue_prefix: gc",
+		"issue-prefix: gc",
+		"dolt.auto-start: false",
+		"export.auto: false",
+		"dolt:",
+		"  disable-event-flush: true",
+		"gc.endpoint_origin: managed_city",
+		"gc.endpoint_status: verified",
+		"",
+	}, "\n")
+	if err := fs.WriteFile(path, []byte(input), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	state := ConfigState{
+		IssuePrefix:    "gc",
+		EndpointOrigin: EndpointOriginManagedCity,
+		EndpointStatus: EndpointStatusVerified,
+		DoltMode:       "server",
+	}
+	changed, err := EnsureCanonicalConfig(fs, path, state)
+	if err != nil {
+		t.Fatalf("EnsureCanonicalConfig() error = %v", err)
+	}
+	if !changed {
+		t.Fatal("EnsureCanonicalConfig() should report changes when adding dolt.mode")
+	}
+	if got := nestedConfigString(t, fs, path, "dolt", "mode"); got != "server" {
+		t.Fatalf("dolt.mode = %q, want %q", got, "server")
+	}
+
+	changed, err = EnsureCanonicalConfig(fs, path, state)
+	if err != nil {
+		t.Fatalf("second EnsureCanonicalConfig() error = %v", err)
+	}
+	if changed {
+		t.Fatal("second EnsureCanonicalConfig() should be idempotent with existing dolt.mode")
+	}
+	if got := nestedConfigString(t, fs, path, "dolt", "mode"); got != "server" {
+		t.Fatalf("dolt.mode after idempotent run = %q, want %q", got, "server")
+	}
+}
+
+func TestEnsureCanonicalConfigPreservesExistingDoltModeWhenStateOmitsIt(t *testing.T) {
+	fs := fsys.OSFS{}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	input := strings.Join([]string{
+		"issue_prefix: gc",
+		"issue-prefix: gc",
+		"dolt.auto-start: false",
+		"export.auto: false",
+		"dolt:",
+		"  disable-event-flush: true",
+		"  mode: server",
+		"gc.endpoint_origin: managed_city",
+		"gc.endpoint_status: verified",
+		"",
+	}, "\n")
+	if err := fs.WriteFile(path, []byte(input), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	changed, err := EnsureCanonicalConfig(fs, path, ConfigState{
+		IssuePrefix:    "gc",
+		EndpointOrigin: EndpointOriginManagedCity,
+		EndpointStatus: EndpointStatusVerified,
+		DoltMode:       "",
+	})
+	if err != nil {
+		t.Fatalf("EnsureCanonicalConfig() error = %v", err)
+	}
+	if changed {
+		t.Fatal("EnsureCanonicalConfig() should preserve existing dolt.mode when state omits it")
+	}
+	if got := nestedConfigString(t, fs, path, "dolt", "mode"); got != "server" {
+		t.Fatalf("dolt.mode = %q, want preserved %q", got, "server")
+	}
+}
+
 func TestEnsureCanonicalConfigCanonicalizesFlatDoltDisableEventFlush(t *testing.T) {
 	fs := fsys.OSFS{}
 	dir := t.TempDir()
@@ -1991,4 +2076,42 @@ func TestEnsureCanonicalMetadataPreservesAllKeysOnEmptyBackend(t *testing.T) {
 			t.Fatalf("metadata should preserve %q when backend is empty: %s", key, data)
 		}
 	}
+}
+
+func TestCrossBackendKeysToScrubUsesMetadataDoltModeKey(t *testing.T) {
+	if containsString(crossBackendKeysToScrub("dolt"), "dolt.mode") {
+		t.Fatal(`crossBackendKeysToScrub("dolt") should not include config key "dolt.mode"`)
+	}
+	if !containsString(crossBackendKeysToScrub("postgres"), "dolt_mode") {
+		t.Fatal(`crossBackendKeysToScrub("postgres") should still include metadata key "dolt_mode"`)
+	}
+	if containsString(crossBackendKeysToScrub("postgres"), "dolt.mode") {
+		t.Fatal(`crossBackendKeysToScrub("postgres") should not replace metadata key "dolt_mode" with config key "dolt.mode"`)
+	}
+}
+
+func nestedConfigString(t *testing.T, fs fsys.FS, path, section, key string) string {
+	t.Helper()
+	doc, err := readConfigDoc(fs, path)
+	if err != nil {
+		t.Fatalf("read config doc: %v", err)
+	}
+	value, ok := configStringValue(findValue(mappingRoot(doc), section), key)
+	if !ok {
+		data, readErr := fs.ReadFile(path)
+		if readErr != nil {
+			t.Fatalf("read config after missing %s.%s: %v", section, key, readErr)
+		}
+		t.Fatalf("config missing %s.%s:\n%s", section, key, data)
+	}
+	return value
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
