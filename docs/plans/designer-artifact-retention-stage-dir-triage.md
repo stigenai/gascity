@@ -35,6 +35,30 @@ that no real design work or ambiguous staging artifact was silently discarded.
 | `ga-9fvvqd.4` | As an operator, I can apply approved retention decisions to current designer and stage-dir residue | P3 | builder | ready-to-build |
 | `ga-9fvvqd.5` | As a maintainer, I can verify designer artifact preservation and stage-dir cleanup safety | P3 | validator | needs-tests |
 
+## Inventory Result
+
+Designer inventory `ga-9fvvqd.1` completed on 2026-07-01. The current
+designer worktree contains 28 top-level `ga-*` artifact directories totaling
+9.5 MB. The inventory found that prose design writeups are reliably duplicated
+into bd, but rendered diagrams are not embedded in bd and are instead
+path-referenced back into the designer worktree.
+
+Current classification:
+
+- 11 directories are eligible for cleanup because their prose is duplicated in
+  bd and no diagram asset is at risk.
+- 16 directories must be relocated or attached before cleanup because their
+  rendered diagrams are currently sole-copy artifacts referenced only by
+  filesystem path.
+- `ga-extmsg-connectedclient/` is ambiguous and must not be deleted until an
+  architect or maintainer verifies whether its orphaned critical design review
+  was applied or attaches that review to the related external-messaging beads.
+
+The retention decision in `ga-9fvvqd.2` should treat this as a systemic artifact
+durability policy question, not a per-directory cleanup judgment. The same
+policy should cover the related loose top-level designer files noted in the
+inventory.
+
 ## Dependency Graph
 
 ```text
@@ -79,6 +103,13 @@ cleanup execution bead records before/after evidence.
 
 - The designer directories are explicitly not scaffold-only residue until proven
   otherwise. Treating them as cleanup targets before inventory is data loss risk.
+- The inventory found that diagram artifacts are path-referenced rather than
+  embedded in bd. Deleting the worktree copies before relocation or attachment
+  would make those references dangling.
+- `ga-extmsg-connectedclient/` contains an apparently orphaned critical design
+  review for external-messaging work packages. It is the highest-priority
+  ambiguous artifact and should remain protected until architecture verifies the
+  C1/C2 findings or preserves the review somewhere durable.
 - The `.gascity-worktree-stage.*` directories may be harmless failed staging
   residue or evidence of another provider-specific worktree leak. Architecture
   owns that distinction.
