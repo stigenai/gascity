@@ -5,6 +5,7 @@ Created: 2026-07-01
 Implementation root: `ga-ifavnc`
 Failed deploy beads: `ga-oeu196`, `ga-oz3ow5`, `ga-82huzt`, `ga-v93648`, `ga-wpxh4d`
 Replacement deploy bead: `ga-ifavnc.5`
+Clean candidate: `deploy/ga-oz3ow5.1-graphonlyready-clean` at `5affa0e82ed1075beab7074d674e4ff98ffe4114`
 
 ## Goal
 
@@ -45,6 +46,11 @@ package. The builder package is not a new feature scope; it is release
 packaging work to produce an `origin/main`-based candidate that preserves
 `ga-ifavnc.1` through `ga-ifavnc.4` and excludes unrelated commits.
 
+As of 2026-07-01, `ga-oz3ow5.1` is closed with a clean candidate branch:
+`deploy/ga-oz3ow5.1-graphonlyready-clean` at
+`5affa0e82ed1075beab7074d674e4ff98ffe4114`. The deploy lane is unblocked and
+should run against that candidate only.
+
 ## Work Packages
 
 | Bead | Route | Label | Acceptance focus |
@@ -66,9 +72,8 @@ ga-l4ya3q
   -> ga-oz3ow5.1
 ```
 
-`ga-ifavnc.5` remains blocked until the clean-candidate bead closes with
-branch/SHA/scope evidence. Once unblocked, PM should route the deploy lane back
-to deployer for the standard gate.
+`ga-ifavnc.5` is unblocked by the clean-candidate bead and should route to
+deployer for the standard gate.
 
 ## Builder Acceptance For Clean Candidate
 
