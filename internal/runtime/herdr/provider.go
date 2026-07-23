@@ -103,7 +103,11 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 	if err != nil {
 		return fmt.Errorf("herdr: place %q: %w", name, err)
 	}
-	info, err := p.c.startAgent(ctx, name, tabID, effectiveWorkDir(cfg, p.c.cityRoot), cfg.Env, shellArgv(cfg.Command))
+	// On herdr's agent_name_taken (it can report a live agent's pane as
+	// status=Unknown, so gc's liveness deems it dead and re-issues start), adopt
+	// the live holder or reap a stale one and retry once — instead of spawning a
+	// fresh tab and looping, which is the pane/PTY/process storm.
+	info, adopted, err := p.startAgentAdopting(ctx, name, tabID, effectiveWorkDir(cfg, p.c.cityRoot), cfg.Env, shellArgv(cfg.Command), cfg.ProcessNames)
 	if err != nil {
 		return fmt.Errorf("herdr: start %q: %w", name, err)
 	}
@@ -143,7 +147,10 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 	// returns prime-then-nudge when both are set; a pool slot's claim nudge is
 	// returned unchanged. Route it through the one hardened post-idle
 	// paste+submit path. See startupDeliveryText.
-	if startupText := startupDeliveryText(cfg); startupText != "" && info.PaneID != "" {
+	// Skip delivery when we adopted an already-running holder: it is a live,
+	// already-primed agent, and re-delivering would inject the startup prime into
+	// a working session.
+	if startupText := startupDeliveryText(cfg); !adopted && startupText != "" && info.PaneID != "" {
 		// A freshly-spawned agent boots through a shell→TUI handoff before its
 		// input prompt is listening. The paste buffers and survives that window,
 		// but the submit CR does not: delivered too early it is swallowed, leaving
@@ -394,7 +401,19 @@ func (p *Provider) ProcessAlive(name string, processNames []string) bool {
 	if err != nil || pid == "" {
 		return false
 	}
-	shellPID, fg, err := p.c.processInfo(ctx, pid)
+	return p.processAliveByPane(ctx, name, pid, processNames)
+}
+
+// processAliveByPane reports whether the process tree rooted at paneID runs one
+// of processNames. It is the shared core of ProcessAlive and the adopt decision
+// in Start: ProcessAlive resolves the pane from the session name, while the
+// adopt path already holds the contested holder's pane id. The session-scoped
+// tree-walk widening (#4225) is still keyed by session name via GetMeta.
+func (p *Provider) processAliveByPane(ctx context.Context, name, paneID string, processNames []string) bool {
+	if paneID == "" {
+		return false
+	}
+	shellPID, fg, err := p.c.processInfo(ctx, paneID)
 	if err != nil || shellPID == 0 {
 		return false
 	}
@@ -410,6 +429,22 @@ func (p *Provider) ProcessAlive(name string, processNames []string) bool {
 	}
 	sessionID, _ := p.GetMeta(name, "GC_SESSION_ID")
 	return processTreeAlive(shellPID, fg, processNames, strings.TrimSpace(sessionID))
+}
+
+// startAgentAdopting issues startAgent and, on herdr's agent_name_taken
+// rejection, adopts the live holder or reaps a stale one and retries once —
+// breaking the recreate storm (see resolveAgentNameTaken). processNames drives
+// the liveness check against the contested holder's pane. adopted is true only
+// when an already-running holder was adopted, so the caller can skip re-priming
+// a live agent.
+func (p *Provider) startAgentAdopting(ctx context.Context, name, tabID, cwd string, env map[string]string, argv, processNames []string) (info agentInfo, adopted bool, err error) {
+	started, startErr := p.c.startAgent(ctx, name, tabID, cwd, env, argv)
+	return resolveAgentNameTaken(started, startErr, agentStartOps{
+		getAgent:   func() (agentInfo, bool, error) { return p.c.getAgent(ctx, name) },
+		paneAlive:  func(paneID string) bool { return p.processAliveByPane(ctx, name, paneID, processNames) },
+		closePane:  func(paneID string) error { return p.c.closePane(ctx, paneID) },
+		retryStart: func() (agentInfo, error) { return p.c.startAgent(ctx, name, tabID, cwd, env, argv) },
+	})
 }
 
 // processTreeAlive is the descendant-walk fallback for ProcessAlive: it takes

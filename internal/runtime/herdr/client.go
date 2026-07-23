@@ -47,6 +47,22 @@ type herdrError struct {
 	Message string `json:"message"`
 }
 
+// Error renders the herdr-reported failure as "<code>: <message>", matching the
+// text run() previously formatted inline; wrapping it with %w additionally lets
+// callers recover the typed error (and its Code) via errors.As.
+func (e *herdrError) Error() string { return fmt.Sprintf("%s: %s", e.Code, e.Message) }
+
+// herdrErrorCode returns the herdr-reported error code wrapped anywhere in err
+// (via *herdrError), or "" if err carries no herdr error. Callers branch on
+// specific herdr failures (e.g. "agent_name_taken") without matching message text.
+func herdrErrorCode(err error) string {
+	var he *herdrError
+	if errors.As(err, &he) {
+		return he.Code
+	}
+	return ""
+}
+
 type envelope struct {
 	Result json.RawMessage `json:"result"`
 	Error  *herdrError     `json:"error"`
@@ -72,7 +88,7 @@ func (c *client) run(ctx context.Context, args ...string) (json.RawMessage, erro
 		return nil, fmt.Errorf("herdr %v: decode response: %w", args, err)
 	}
 	if env.Error != nil {
-		return nil, fmt.Errorf("herdr %v: %s: %s", args, env.Error.Code, env.Error.Message)
+		return nil, fmt.Errorf("herdr %v: %w", args, env.Error)
 	}
 	return env.Result, nil
 }
