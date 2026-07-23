@@ -22,7 +22,7 @@ const routedDemandStrandedEventType = events.RoutedDemandStranded
 // poolDemandWispMetadataKey marks a molecule/wisp bead as carrying
 // order-dispatch pool demand (FR-5), the one narrow additive exception to
 // readyExcludeTypes for stranded-demand detection purposes.
-const poolDemandWispMetadataKey = "gc.pool_demand_wisp"
+const poolDemandWispMetadataKey = beadmeta.PoolDemandWispMetadataKey
 
 func poolDemandMetadataPair() map[string]string {
 	return map[string]string{poolDemandWispMetadataKey: boolMetadata(true)}
