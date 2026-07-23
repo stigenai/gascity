@@ -2409,6 +2409,9 @@
             "$ref": "#/components/schemas/RotatedPayload"
           },
           {
+            "$ref": "#/components/schemas/RoutedDemandStrandedPayload"
+          },
+          {
             "$ref": "#/components/schemas/SessionCreateSucceededPayload"
           },
           {
@@ -6645,6 +6648,33 @@
           "prior_archive",
           "prior_first_seq",
           "prior_last_seq"
+        ],
+        "type": "object"
+      },
+      "RoutedDemandStrandedPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "bead_ids": {
+            "description": "IDs of the stranded demand beads routed to Template. Never truncated.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "severity": {
+            "description": "Resolved policy severity for this detection: \"warning\" (Auto) or \"failure\" (Require).",
+            "type": "string"
+          },
+          "template": {
+            "description": "The gc.routed_to target that no session can currently wake for.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "severity"
         ],
         "type": "object"
       },
@@ -11912,6 +11942,7 @@
             "request.result.session.message": "#/components/schemas/TypedEventStreamEnvelopeRequestResultSessionMessage",
             "request.result.session.submit": "#/components/schemas/TypedEventStreamEnvelopeRequestResultSessionSubmit",
             "rig.provision.progress": "#/components/schemas/TypedEventStreamEnvelopeRigProvisionProgress",
+            "routed_demand.stranded": "#/components/schemas/TypedEventStreamEnvelopeRoutedDemandStranded",
             "session.cold_start_timeout": "#/components/schemas/TypedEventStreamEnvelopeSessionColdStartTimeout",
             "session.crashed": "#/components/schemas/TypedEventStreamEnvelopeSessionCrashed",
             "session.drain_acked_with_assigned_work": "#/components/schemas/TypedEventStreamEnvelopeSessionDrainAckedWithAssignedWork",
@@ -12100,6 +12131,9 @@
           },
           {
             "$ref": "#/components/schemas/TypedEventStreamEnvelopeRigProvisionProgress"
+          },
+          {
+            "$ref": "#/components/schemas/TypedEventStreamEnvelopeRoutedDemandStranded"
           },
           {
             "$ref": "#/components/schemas/TypedEventStreamEnvelopeSessionColdStartTimeout"
@@ -13153,7 +13187,8 @@
                 "pg.credential_resolved",
                 "emergency.signaled",
                 "emergency.acked",
-                "beads.conditional_writes.degraded"
+                "beads.conditional_writes.degraded",
+                "routed_demand.stranded"
               ]
             },
             "type": "string"
@@ -15059,6 +15094,57 @@
         "title": "TypedEventStreamEnvelope rig.provision.progress",
         "type": "object"
       },
+      "TypedEventStreamEnvelopeRoutedDemandStranded": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/RoutedDemandStrandedPayload"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "seq": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "step_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "const": "routed_demand.stranded",
+            "type": "string"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/WorkflowEventProjection"
+          }
+        },
+        "required": [
+          "seq",
+          "type",
+          "ts",
+          "actor",
+          "payload"
+        ],
+        "title": "TypedEventStreamEnvelope routed_demand.stranded",
+        "type": "object"
+      },
       "TypedEventStreamEnvelopeSessionColdStartTimeout": {
         "additionalProperties": false,
         "properties": {
@@ -16290,6 +16376,7 @@
             "request.result.session.message": "#/components/schemas/TypedTaggedEventStreamEnvelopeRequestResultSessionMessage",
             "request.result.session.submit": "#/components/schemas/TypedTaggedEventStreamEnvelopeRequestResultSessionSubmit",
             "rig.provision.progress": "#/components/schemas/TypedTaggedEventStreamEnvelopeRigProvisionProgress",
+            "routed_demand.stranded": "#/components/schemas/TypedTaggedEventStreamEnvelopeRoutedDemandStranded",
             "session.cold_start_timeout": "#/components/schemas/TypedTaggedEventStreamEnvelopeSessionColdStartTimeout",
             "session.crashed": "#/components/schemas/TypedTaggedEventStreamEnvelopeSessionCrashed",
             "session.drain_acked_with_assigned_work": "#/components/schemas/TypedTaggedEventStreamEnvelopeSessionDrainAckedWithAssignedWork",
@@ -16478,6 +16565,9 @@
           },
           {
             "$ref": "#/components/schemas/TypedTaggedEventStreamEnvelopeRigProvisionProgress"
+          },
+          {
+            "$ref": "#/components/schemas/TypedTaggedEventStreamEnvelopeRoutedDemandStranded"
           },
           {
             "$ref": "#/components/schemas/TypedTaggedEventStreamEnvelopeSessionColdStartTimeout"
@@ -17602,7 +17692,8 @@
                 "pg.credential_resolved",
                 "emergency.signaled",
                 "emergency.acked",
-                "beads.conditional_writes.degraded"
+                "beads.conditional_writes.degraded",
+                "routed_demand.stranded"
               ]
             },
             "type": "string"
@@ -19655,6 +19746,61 @@
           "city"
         ],
         "title": "TypedTaggedEventStreamEnvelope rig.provision.progress",
+        "type": "object"
+      },
+      "TypedTaggedEventStreamEnvelopeRoutedDemandStranded": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/RoutedDemandStrandedPayload"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "seq": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "step_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "const": "routed_demand.stranded",
+            "type": "string"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/WorkflowEventProjection"
+          }
+        },
+        "required": [
+          "seq",
+          "type",
+          "ts",
+          "actor",
+          "payload",
+          "city"
+        ],
+        "title": "TypedTaggedEventStreamEnvelope routed_demand.stranded",
         "type": "object"
       },
       "TypedTaggedEventStreamEnvelopeSessionColdStartTimeout": {

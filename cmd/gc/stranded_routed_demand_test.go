@@ -38,12 +38,9 @@ func TestCityRuntimeBeadReconcileTickStrandedRoutedDemandAutoDefaultWarnsForAllW
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			store := beads.NewMemStore()
 			bead := tc.bead
 			bead.CreatedAt = time.Now().UTC().Add(-2 * time.Minute)
-			if _, err := store.Create(bead); err != nil {
-				t.Fatalf("create stranded work: %v", err)
-			}
+			store := beads.NewMemStoreFrom(0, []beads.Bead{bead}, nil)
 			rec := events.NewFake()
 			cr := strandedDemandRuntime(t, store, rec, deadAssigneeDemandConfig(1, 0))
 
@@ -75,12 +72,9 @@ func TestCityRuntimeBeadReconcileTickStrandedRoutedDemandPolicyModes(t *testing.
 		{name: "require fails and mirrors order failure", mode: "require", wantStranded: true, wantSeverity: "failure", wantOrderFailed: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			store := beads.NewMemStore()
 			bead := strandedOrderPoolDemandWisp("mol-worker-order", "worker", "graph-drain")
 			bead.CreatedAt = time.Now().UTC().Add(-2 * time.Minute)
-			if _, err := store.Create(bead); err != nil {
-				t.Fatalf("create stranded order work: %v", err)
-			}
+			store := beads.NewMemStoreFrom(0, []beads.Bead{bead}, nil)
 			cfg := deadAssigneeDemandConfig(1, 0)
 			setDemandConfigString(t, cfg, "StrandedRoutePolicy", tc.mode)
 			rec := events.NewFake()
@@ -160,11 +154,8 @@ func TestCityRuntimeBeadReconcileTickStrandedRoutedDemandDebounceAndExclusions(t
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			now := time.Now().UTC()
-			store := beads.NewMemStore()
 			bead := tc.bead(now)
-			if _, err := store.Create(bead); err != nil {
-				t.Fatalf("create routed work: %v", err)
-			}
+			store := beads.NewMemStoreFrom(0, []beads.Bead{bead}, nil)
 			if bead.ID == "ga-blocked" {
 				blocker, err := store.Create(beads.Bead{ID: "ga-blocker", Title: "blocker", Type: "task", Status: "open"})
 				if err != nil {
