@@ -2776,6 +2776,14 @@ export type RoutedDemandStrandedPayload = {
      */
     bead_ids?: Array<string> | null;
     /**
+     * False on the first-sight emission; true when re-emitted after a bead has sat stranded past the escalation threshold.
+     */
+    escalated: boolean;
+    /**
+     * RFC3339 timestamp the earliest bead driving this emission was first observed stranded; the escalation clock counts from here.
+     */
+    first_seen?: string;
+    /**
      * Resolved policy severity for this detection: "warning" (Auto) or "failure" (Require).
      */
     severity: string;
