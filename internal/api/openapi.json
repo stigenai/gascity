@@ -6664,6 +6664,14 @@
               "null"
             ]
           },
+          "escalated": {
+            "description": "False on the first-sight emission; true when re-emitted after a bead has sat stranded past the escalation threshold.",
+            "type": "boolean"
+          },
+          "first_seen": {
+            "description": "RFC3339 timestamp the earliest bead driving this emission was first observed stranded; the escalation clock counts from here.",
+            "type": "string"
+          },
           "severity": {
             "description": "Resolved policy severity for this detection: \"warning\" (Auto) or \"failure\" (Require).",
             "type": "string"
@@ -6674,7 +6682,8 @@
           }
         },
         "required": [
-          "severity"
+          "severity",
+          "escalated"
         ],
         "type": "object"
       },

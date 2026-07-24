@@ -28,6 +28,25 @@ func poolDemandMetadataPair() map[string]string {
 	return map[string]string{poolDemandWispMetadataKey: boolMetadata(true)}
 }
 
+// routedDemandStrandedEscalationAge is how long a routed-demand bead may sit
+// stranded before the reconciler re-emits routed_demand.stranded (and, under
+// Require, re-fails its owning order run) with escalated=true. Mirrors
+// session_reconciler.go's unknownStateEscalationAge: escalation is a signal
+// for operators and pack-level subscribers, never an auto-mutation.
+const routedDemandStrandedEscalationAge = 30 * time.Minute
+
+// routedDemandStrandedSignal is the outcome of throttling one template's
+// stranded-demand candidate group against its persisted first-seen/escalated
+// markers: beads is the subset actually driving this tick's emission (fresh
+// first-sight detections plus, at most, one escalation), firstSeen is the
+// earliest first-seen timestamp among them, and escalated is true iff at
+// least one of them just crossed the escalation threshold.
+type routedDemandStrandedSignal struct {
+	beads     []beads.Bead
+	firstSeen time.Time
+	escalated bool
+}
+
 // detectStrandedRoutedDemand scans for gc.routed_to demand beads whose
 // resolved template no session can ever wake for (FR-4/FR-5/FR-6): a
 // dead/misspelled route, or an agent whose effective min_active_sessions is 0
@@ -45,6 +64,17 @@ func poolDemandMetadataPair() map[string]string {
 // owning order run failed (when it carries one) and mirrors
 // events.OrderFailed. No mode ever mutates a candidate bead's status,
 // assignee, or hold labels.
+//
+// A stranded route is, by this feature's own premise, expected to persist for
+// hours or days — so emission (and, under Require, the MarkFailed/OrderFailed
+// mirror) is throttled per bead via persisted
+// gc.routed_demand_stranded_first_seen / gc.routed_demand_stranded_escalated_at
+// metadata markers (throttleRoutedDemandStrandedGroup): once at first
+// detection, once more after routedDemandStrandedEscalationAge, then silent
+// until the route becomes wakeable again, which clears both markers
+// (clearRoutedDemandStrandedMarkers) so a later recurrence is treated as a
+// fresh first-sight. This mirrors session_reconciler.go's
+// emitSessionUnknownStateDiagnostic throttle shape.
 func detectStrandedRoutedDemand(store beads.Store, cfg *config.City, sessionBeads *sessionBeadSnapshot, rec events.Recorder, stderr io.Writer, now time.Time) error {
 	if store == nil || cfg == nil || rec == nil {
 		return nil
@@ -83,10 +113,15 @@ func detectStrandedRoutedDemand(store beads.Store, cfg *config.City, sessionBead
 	}
 
 	for _, template := range templateOrder {
+		group := byTemplate[template]
 		if !routedTemplateIsUnwakeable(cfg, sessionBeads, template) {
+			clearRoutedDemandStrandedMarkers(store, stderr, group)
 			continue
 		}
-		group := byTemplate[template]
+		signal := throttleRoutedDemandStrandedGroup(store, stderr, group, now)
+		if len(signal.beads) == 0 {
+			continue // every bead in this group already emitted+escalated; stay silent
+		}
 		beadIDs := make([]string, 0, len(group))
 		for _, b := range group {
 			beadIDs = append(beadIDs, b.ID)
@@ -97,13 +132,90 @@ func detectStrandedRoutedDemand(store beads.Store, cfg *config.City, sessionBead
 			Actor:   "controller",
 			Subject: template,
 			Message: formatRoutedDemandStrandedMessage(severity, template, beadIDs),
-			Payload: api.RoutedDemandStrandedPayloadJSON(severity, template, beadIDs),
+			Payload: api.RoutedDemandStrandedPayloadJSON(severity, template, beadIDs, signal.firstSeen, signal.escalated),
 		})
 		if mode == rollout.Require {
-			failStrandedOrderRuns(store, rec, stderr, template, group)
+			failStrandedOrderRuns(store, rec, stderr, template, signal.beads)
 		}
 	}
 	return nil
+}
+
+// throttleRoutedDemandStrandedGroup applies the first-seen/escalated marker
+// throttle to one template's stranded-demand candidate group and reports
+// which beads should drive this tick's emission. Each bead is classified
+// independently:
+//
+//   - no first-seen marker: first tick this bead is observed stranded — stamp
+//     first-seen=now and include it (a fresh detection).
+//   - first-seen set, already escalated: silent — this bead has already
+//     produced both of its allotted emissions for this stranded generation.
+//   - first-seen set, not escalated, aged past routedDemandStrandedEscalationAge:
+//     stamp escalated-at=now and include it (the one escalation emission).
+//   - first-seen set, not escalated, not yet aged past the threshold: silent.
+//
+// The returned signal's firstSeen is the earliest first-seen timestamp among
+// the included beads, and escalated is true iff at least one included bead
+// crossed the escalation threshold this tick.
+func throttleRoutedDemandStrandedGroup(store beads.Store, stderr io.Writer, group []beads.Bead, now time.Time) routedDemandStrandedSignal {
+	var signal routedDemandStrandedSignal
+	takeEarliest := func(t time.Time) {
+		if signal.firstSeen.IsZero() || t.Before(signal.firstSeen) {
+			signal.firstSeen = t
+		}
+	}
+
+	for _, b := range group {
+		firstSeenRaw := strings.TrimSpace(b.Metadata[beadmeta.RoutedDemandStrandedFirstSeenMetadataKey])
+		if firstSeenRaw == "" {
+			setRoutedDemandStrandedMarker(store, stderr, b.ID, beadmeta.RoutedDemandStrandedFirstSeenMetadataKey, now.Format(time.RFC3339))
+			takeEarliest(now)
+			signal.beads = append(signal.beads, b)
+			continue
+		}
+		if strings.TrimSpace(b.Metadata[beadmeta.RoutedDemandStrandedEscalatedAtMetadataKey]) != "" {
+			continue
+		}
+		firstSeen, err := time.Parse(time.RFC3339, firstSeenRaw)
+		if err != nil || now.Sub(firstSeen) < routedDemandStrandedEscalationAge {
+			continue
+		}
+		setRoutedDemandStrandedMarker(store, stderr, b.ID, beadmeta.RoutedDemandStrandedEscalatedAtMetadataKey, now.Format(time.RFC3339))
+		takeEarliest(firstSeen)
+		signal.escalated = true
+		signal.beads = append(signal.beads, b)
+	}
+	return signal
+}
+
+// clearRoutedDemandStrandedMarkers removes the stranded-demand throttle
+// markers from every bead in group once its template's route is observed
+// wakeable again. The markers are durable, so without clearing them on
+// recovery a later recurrence of the same stranded condition would look like
+// "already escalated" to throttleRoutedDemandStrandedGroup and be silently
+// suppressed forever; clearing here means a recurrence is treated as a fresh
+// first-sight, mirroring clearSessionUnknownStateMarkers. Per-bead, per-marker
+// no-op when the bead carries neither marker.
+func clearRoutedDemandStrandedMarkers(store beads.Store, stderr io.Writer, group []beads.Bead) {
+	for _, b := range group {
+		if strings.TrimSpace(b.Metadata[beadmeta.RoutedDemandStrandedFirstSeenMetadataKey]) != "" {
+			setRoutedDemandStrandedMarker(store, stderr, b.ID, beadmeta.RoutedDemandStrandedFirstSeenMetadataKey, "")
+		}
+		if strings.TrimSpace(b.Metadata[beadmeta.RoutedDemandStrandedEscalatedAtMetadataKey]) != "" {
+			setRoutedDemandStrandedMarker(store, stderr, b.ID, beadmeta.RoutedDemandStrandedEscalatedAtMetadataKey, "")
+		}
+	}
+}
+
+// setRoutedDemandStrandedMarker stamps (or, given an empty value, clears) a
+// stranded-demand throttle marker on beadID, logging a best-effort error on
+// write failure — the same event-first, store-write-best-effort pairing
+// failStrandedOrderRuns uses. A failed stamp only costs an extra emission on
+// the next tick, never a stuck or silently-dropped one.
+func setRoutedDemandStrandedMarker(store beads.Store, stderr io.Writer, beadID, key, value string) {
+	if err := store.SetMetadata(beadID, key, value); err != nil {
+		logDispatchError(stderr, "gc: stranded routed demand: failed to set marker %s on %s: %v", key, beadID, err)
+	}
 }
 
 // strandedRoutedDemandCandidates returns every open, unblocked bead carrying
@@ -172,11 +284,16 @@ func formatRoutedDemandStrandedMessage(severity, template string, beadIDs []stri
 }
 
 // failStrandedOrderRuns mirrors a Require-mode stranded detection onto the
-// order-dispatch run ledger. Each candidate that carries an order-run label
-// gets a matching events.OrderFailed mirror and has its run marked
-// orders.RunOutcomeWispFailed — labels only, never the bead's status or
-// assignee — following the same event-first, store-write-best-effort pairing
-// order_dispatch.go's markTrackingFailure call sites use.
+// order-dispatch run ledger. group is the caller's throttled emission subset
+// (routedDemandStrandedSignal.beads), not necessarily the full candidate
+// group for template — this keeps MarkFailed/OrderFailed on the same
+// once-at-first-detection-plus-one-escalation cadence as the event itself
+// rather than re-firing every tick a route stays stranded. Each bead that
+// carries an order-run label gets a matching events.OrderFailed mirror and
+// has its run marked orders.RunOutcomeWispFailed — labels only, never the
+// bead's status or assignee — following the same event-first,
+// store-write-best-effort pairing order_dispatch.go's markTrackingFailure
+// call sites use.
 func failStrandedOrderRuns(store beads.Store, rec events.Recorder, stderr io.Writer, template string, group []beads.Bead) {
 	front := orders.NewStore(beads.OrdersStore{Store: store})
 	for _, b := range group {

@@ -3276,6 +3276,12 @@ type RoutedDemandStrandedPayload struct {
 	// BeadIds IDs of the stranded demand beads routed to Template. Never truncated.
 	BeadIds *[]string `json:"bead_ids,omitempty"`
 
+	// Escalated False on the first-sight emission; true when re-emitted after a bead has sat stranded past the escalation threshold.
+	Escalated bool `json:"escalated"`
+
+	// FirstSeen RFC3339 timestamp the earliest bead driving this emission was first observed stranded; the escalation clock counts from here.
+	FirstSeen *string `json:"first_seen,omitempty"`
+
 	// Severity Resolved policy severity for this detection: "warning" (Auto) or "failure" (Require).
 	Severity string `json:"severity"`
 

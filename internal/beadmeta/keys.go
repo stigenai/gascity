@@ -157,15 +157,26 @@ const (
 	RigRootMetadataKey              = "gc.rig_root"
 	RootBeadIDMetadataKey           = "gc.root_bead_id"
 	RootStoreRefMetadataKey         = "gc.root_store_ref"
-	RoutedToMetadataKey             = "gc.routed_to"
-	RunTargetMetadataKey            = "gc.run_target"
-	RuntimeVarsMetadataKey          = "gc.graphv2_vars.v1"
-	ScopeKindMetadataKey            = "gc.scope_kind"
-	ScopeNameMetadataKey            = "gc.scope_name"
-	ScopeRefMetadataKey             = "gc.scope_ref"
-	ScopeRoleMetadataKey            = "gc.scope_role"
-	SessionAffinityMetadataKey      = "gc.session_affinity"
-	SessionIDMetadataKey            = "gc.session_id"
+	// RoutedDemandStrandedEscalatedAtMetadataKey stamps the RFC3339 timestamp
+	// a stranded routed-demand template's escalation emission fired, so later
+	// ticks know the escalation has already happened once. See
+	// cmd/gc's stranded_routed_demand.go.
+	RoutedDemandStrandedEscalatedAtMetadataKey = "gc.routed_demand_stranded_escalated_at"
+	// RoutedDemandStrandedFirstSeenMetadataKey stamps the RFC3339 timestamp a
+	// bead was first observed as stranded routed demand, so the reconciler
+	// emits routed_demand.stranded once at first detection and once more at
+	// the escalation threshold instead of every reconcile tick. See
+	// cmd/gc's stranded_routed_demand.go.
+	RoutedDemandStrandedFirstSeenMetadataKey = "gc.routed_demand_stranded_first_seen"
+	RoutedToMetadataKey                      = "gc.routed_to"
+	RunTargetMetadataKey                     = "gc.run_target"
+	RuntimeVarsMetadataKey                   = "gc.graphv2_vars.v1"
+	ScopeKindMetadataKey                     = "gc.scope_kind"
+	ScopeNameMetadataKey                     = "gc.scope_name"
+	ScopeRefMetadataKey                      = "gc.scope_ref"
+	ScopeRoleMetadataKey                     = "gc.scope_role"
+	SessionAffinityMetadataKey               = "gc.session_affinity"
+	SessionIDMetadataKey                     = "gc.session_id"
 	// SessionIDCamelMetadataKey is the camelCase variant some bead writers stamp
 	// alongside the snake_case SessionIDMetadataKey; both are read when resolving a
 	// bead's session link.
@@ -399,6 +410,8 @@ var KnownMetadataKeys = []string{
 	RigRootMetadataKey,
 	RootBeadIDMetadataKey,
 	RootStoreRefMetadataKey,
+	RoutedDemandStrandedEscalatedAtMetadataKey,
+	RoutedDemandStrandedFirstSeenMetadataKey,
 	RoutedToMetadataKey,
 	RunTargetMetadataKey,
 	RuntimeVarsMetadataKey,
