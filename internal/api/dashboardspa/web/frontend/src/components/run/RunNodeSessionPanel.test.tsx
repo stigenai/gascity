@@ -4,8 +4,27 @@ import type {
   RunExecutionInstance,
   RunNodeStatus,
 } from 'gas-city-dashboard-shared';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type * as SessionReads from '../../supervisor/sessionReads';
 import { RunNodeSessionPanel } from './RunNodeSessionPanel';
+
+const mockFetchSupervisorSessionTranscript = vi.hoisted(() => vi.fn());
+
+vi.mock('../../supervisor/sessionReads', async (importOriginal) => {
+  const actual = await importOriginal<typeof SessionReads>();
+  return {
+    ...actual,
+    fetchSupervisorSessionTranscript: mockFetchSupervisorSessionTranscript,
+  };
+});
+
+beforeEach(() => {
+  // A never-settling snapshot keeps an attached-with-link instance in its
+  // "Fetching transcript." state for the whole test — no post-render setState,
+  // so the transcript path is observable without flushing an async resolution.
+  mockFetchSupervisorSessionTranscript.mockReset();
+  mockFetchSupervisorSessionTranscript.mockReturnValue(new Promise(() => {}));
+});
 
 afterEach(() => cleanup());
 
@@ -49,6 +68,32 @@ describe('RunNodeSessionPanel', () => {
     expect(screen.getByText('review-bead-a2')).toBeTruthy();
     expect(screen.queryByText('review-bead-a1')).toBeNull();
   });
+
+  it('does not crash and shows graceful copy for an attached session with no link (public-shield shape)', () => {
+    // The public floor emits `session: { kind: 'attached' }` with no link — the
+    // shape that previously threw `undefined.sessionId` in the ErrorBoundary.
+    const node = attachedNode({ kind: 'attached' } as unknown as RunExecutionInstance['session']);
+
+    expect(() => render(<RunNodeSessionPanel node={node} visible />)).not.toThrow();
+
+    expect(screen.getByText('Session transcript is unavailable for this node.')).toBeTruthy();
+    // A null id must never reach the transcript fetch.
+    expect(mockFetchSupervisorSessionTranscript).not.toHaveBeenCalled();
+  });
+
+  it('renders the transcript path for an attached session that carries a link', () => {
+    const node = attachedNode({
+      kind: 'attached',
+      streamable: false,
+      link: { sessionId: 'gc-session-review', sessionName: 'review-pipeline', assignee: 'codex' },
+    });
+
+    render(<RunNodeSessionPanel node={node} visible />);
+
+    expect(mockFetchSupervisorSessionTranscript).toHaveBeenCalledWith('gc-session-review');
+    expect(screen.getByText('Fetching transcript.')).toBeTruthy();
+    expect(screen.queryByText('Session transcript is unavailable for this node.')).toBeNull();
+  });
 });
 
 function attempt(value: number, status: RunNodeStatus): RunExecutionInstance {
@@ -87,6 +132,39 @@ function multiAttemptNode(visibleExecutionInstanceId: string): RunDisplayNode {
     },
     visibleExecutionInstanceId,
     executionInstances: [attempt(1, 'failed'), attempt(2, 'active')],
+    controlBadges: [],
+  };
+}
+
+function attachedNode(session: RunExecutionInstance['session']): RunDisplayNode {
+  return {
+    id: 'review',
+    semanticNodeId: 'review',
+    title: 'Review',
+    kind: 'step',
+    constructKind: 'step',
+    status: 'active',
+    currentBeadId: 'review',
+    scope: { kind: 'run' },
+    visibleInGraph: true,
+    historicalOnly: false,
+    iterationSummary: { kind: 'single' },
+    attemptSummary: { kind: 'none' },
+    visibleExecutionInstanceId: 'review-exec',
+    executionInstances: [
+      {
+        id: 'review-exec',
+        semanticNodeId: 'review',
+        beadId: 'review-bead',
+        iteration: { kind: 'base' },
+        attempt: { kind: 'untracked' },
+        label: 'base',
+        status: 'active',
+        session,
+        currentIteration: true,
+        historical: false,
+      },
+    ],
     controlBadges: [],
   };
 }

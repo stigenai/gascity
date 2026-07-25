@@ -132,10 +132,14 @@ function SessionTranscript({
   visible: boolean;
 }) {
   const attached = instance.session.kind === 'attached' ? instance.session : null;
-  const sessionId = attached?.link.sessionId ?? null;
-  const stream = visible && Boolean(attached?.streamable);
+  // The public floor projects `attached` sessions without a link — the session
+  // id is redacted out of the run-detail projection — so an attached session can
+  // legitimately arrive with no link/sessionId. Treat that as "not viewable" and
+  // fall through to the graceful unavailable copy instead of fetching a null id.
+  const sessionId = attached?.link?.sessionId ?? null;
+  const stream = visible && sessionId !== null && Boolean(attached?.streamable);
   const sessionState = useSessionStream(sessionId, stream);
-  if (attached === null) {
+  if (attached === null || sessionId === null) {
     return (
       <p className="mt-5 text-body text-fg-muted italic">
         {instanceSessionUnavailableCopy(instance)}
@@ -214,7 +218,12 @@ function sessionUnavailableCopy(node: RunDisplayNode): string {
 }
 
 function instanceSessionUnavailableCopy(instance: RunExecutionInstance): string {
-  if (instance.session.kind === 'attached') return '';
+  if (instance.session.kind === 'attached') {
+    // Reached only when the session is attached but its link/sessionId is
+    // missing (the public floor redacts the id), so the transcript has no id to
+    // fetch with. Everything below assumes a `none` session.
+    return 'Session transcript is unavailable for this node.';
+  }
   if (
     instance.currentIteration &&
     instance.session.reason === 'session_unresolved' &&
