@@ -2,7 +2,7 @@
 
 > Status: decomposed - 2026-06-17
 > Source bead: `ga-xxp9cd` (P1, bug)
-> Prior art: `docs/plans/dolt-test-process-leak-cleanup.md`
+> Prior art: `engdocs/plans/dolt-test-process-leak-cleanup.md`
 
 ## Context
 

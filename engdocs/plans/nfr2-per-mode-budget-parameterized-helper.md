@@ -68,7 +68,7 @@ new helper strings.
 
 ## Risks
 
-- The older plan `docs/plans/nfr2-per-mode-budget-test-patch.md` describes a
+- The older plan `engdocs/plans/nfr2-per-mode-budget-test-patch.md` describes a
   direct 5s assertion and is superseded for this slice.
 - Loaded CI may still vary, but architecture chose 10s as the current direct
   integration budget. Any further widening should go back through architecture,

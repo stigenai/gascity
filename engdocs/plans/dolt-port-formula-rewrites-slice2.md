@@ -112,4 +112,4 @@ mirror the designer's §7 verification list plus the NFR-07 closure):
 - Parent architecture: `ga-lsois` (closed)
 - Sibling slice 1: design `ga-u0lx9p` (closed); builder `ga-rq2e5a` (open)
 - Sibling slice 3: design `ga-kylssb` (open; designer working)
-- Sibling plan: `docs/plans/dolt-port-resolve-helper.md`
+- Sibling plan: `engdocs/plans/dolt-port-resolve-helper.md`

@@ -223,4 +223,4 @@ explicit architect deferrals; must not creep into this slice:
 - Parent architecture: `ga-lsois` (closed)
 - Sibling slice 1 design: `ga-u0lx9p` (closed); builder: `ga-rq2e5a`
 - Sibling slice 2 design: `ga-nptxjv` (closed); builder: `ga-15x7eb`
-- Plan doc: `docs/plans/dolt-doctor-severity-split-slice3.md` (this file)
+- Plan doc: `engdocs/plans/dolt-doctor-severity-split-slice3.md` (this file)

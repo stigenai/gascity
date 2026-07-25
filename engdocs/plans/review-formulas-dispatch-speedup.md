@@ -15,7 +15,7 @@ review-formulas slowdown exit path. The timeout bumps from #3590 and #3593
 stay in place unless a Track-C-justified revert has explicit operator
 confirmation.
 
-Use `docs/plans/review-formulas-ci-slowdown-current-plan.md` for the active
+Use `engdocs/plans/review-formulas-ci-slowdown-current-plan.md` for the active
 `ga-pmhi6g.1` handoff.
 
 ## Goal

@@ -2,7 +2,7 @@
 
 > Owner: `gascity/pm` - Created: 2026-06-23
 > Sources: designer handoff `ga-0xljyj`; architecture root `ga-01yukx`;
-> prior PM plan `docs/plans/fail-closed-pool-create-partial-demand.md`
+> prior PM plan `engdocs/plans/fail-closed-pool-create-partial-demand.md`
 
 ## Goal
 
