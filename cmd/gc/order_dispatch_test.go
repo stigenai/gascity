@@ -1879,6 +1879,43 @@ func TestOrderDispatchCachesAutoTrackingBeadCreatedAt(t *testing.T) {
 	}
 }
 
+// TestOrderDispatchDoesNotReparseConfigPerTick is the ga-237xpr regression
+// test: dispatch()'s per-tick store-open must reuse the dispatcher's own
+// cached *config.City instead of re-parsing city.toml (and all pack
+// includes) on every tick for every scope target. Unlike the other dispatch
+// tests in this file, this one must drive the REAL storeFn built by
+// newMemoryOrderDispatcher (openStoreAtForCity's actual chain) rather than
+// buildOrderDispatcherFromListExec's fixed-store stub, or it would never
+// exercise the code path this bug lives in.
+func TestOrderDispatchDoesNotReparseConfigPerTick(t *testing.T) {
+	cityDir := t.TempDir()
+	toml := "[workspace]\nname = \"t\"\n\n[beads]\nprovider = \"file\"\n"
+	if err := os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte(toml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadCityConfig(cityDir, io.Discard)
+	if err != nil {
+		t.Fatalf("loadCityConfig: %v", err)
+	}
+
+	aa := []orders.Order{{
+		Name:     "perf-test-order",
+		Trigger:  "cooldown",
+		Interval: "1h",
+		Exec:     "true",
+	}}
+	ad := newMemoryOrderDispatcher(aa, cityDir, cfg, events.Discard, io.Discard)
+
+	before := loadCityConfigCalls.Load()
+	now := time.Now()
+	for i := 0; i < 10; i++ {
+		ad.dispatch(context.Background(), cityDir, now.Add(time.Duration(i)*time.Millisecond))
+	}
+	if grew := loadCityConfigCalls.Load() - before; grew != 0 {
+		t.Fatalf("dispatch() re-parsed city config %d times across 10 ticks; want 0 — every tick's store open must reuse the dispatcher's cached config instead of reloading city.toml from disk", grew)
+	}
+}
+
 // --- exec order dispatch tests ---
 
 func TestOrderDispatchExecDue(t *testing.T) {

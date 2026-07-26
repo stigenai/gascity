@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -64,6 +65,74 @@ func TestOpenStoreResultAtForCityThreadsConditionalWrites(t *testing.T) {
 	}
 	if writer == nil {
 		t.Fatal("require in city.toml was not observed on the opened store: mode threading is broken")
+	}
+}
+
+// TestOpenStoreResultWithConfigSkipsLoad pins the ga-237xpr fix at its most
+// direct layer: openStoreResultAtForCityWithConfig must reuse an
+// already-resolved *config.City instead of reloading city.toml + all pack
+// includes, but must still fall back to a load when the caller has no config
+// in hand (the nil branch every other pre-existing call site relies on).
+func TestOpenStoreResultWithConfigSkipsLoad(t *testing.T) {
+	cityDir := t.TempDir()
+	toml := "[workspace]\nname = \"t\"\n\n[beads]\nprovider = \"file\"\n"
+	if err := os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte(toml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadCityConfig(cityDir, io.Discard)
+	if err != nil {
+		t.Fatalf("loadCityConfig: %v", err)
+	}
+
+	before := loadCityConfigCalls.Load()
+	if _, err := openStoreResultAtForCityWithConfig(cityDir, cityDir, gate.ModeUnset, false, false, cfg); err != nil {
+		t.Fatalf("openStoreResultAtForCityWithConfig(cfg): %v", err)
+	}
+	if grew := loadCityConfigCalls.Load() - before; grew != 0 {
+		t.Fatalf("openStoreResultAtForCityWithConfig re-parsed city config %d times despite a non-nil cfg", grew)
+	}
+
+	before = loadCityConfigCalls.Load()
+	if _, err := openStoreResultAtForCityWithConfig(cityDir, cityDir, gate.ModeUnset, false, false, nil); err != nil {
+		t.Fatalf("openStoreResultAtForCityWithConfig(nil): %v", err)
+	}
+	if grew := loadCityConfigCalls.Load() - before; grew != 1 {
+		t.Fatalf("openStoreResultAtForCityWithConfig(nil cfg) parsed city config %d times, want exactly 1 (fallback load)", grew)
+	}
+}
+
+// TestOpenStoreResultNilConfigMatchesLegacy is a regression guard for the
+// ga-237xpr refactor: openStoreResultAtForCityWithAuthority (the pre-existing
+// entry point every non-dispatcher caller still uses) now delegates to
+// openStoreResultAtForCityWithConfig with a nil config, and must keep both of
+// its legacy characteristics — conditional-writes threading still works, and
+// every call still reloads city.toml from disk (correct for callers like CLI
+// commands, where the config may have changed since the last invocation).
+func TestOpenStoreResultNilConfigMatchesLegacy(t *testing.T) {
+	cityDir := t.TempDir()
+	toml := "[workspace]\nname = \"t\"\n\n[beads]\nprovider = \"file\"\nconditional_writes = \"require\"\n"
+	if err := os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte(toml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := openStoreResultAtForCityWithAuthority(cityDir, cityDir, gate.ModeUnset, false, false)
+	if err != nil {
+		t.Fatalf("openStoreResultAtForCityWithAuthority: %v", err)
+	}
+	writer, diag, resolveErr := beads.ResolveConditionalWriter(result.Store)
+	if resolveErr != nil || diag != nil {
+		t.Fatalf("resolve = diag %v err %v, want the file store's writer under require", diag, resolveErr)
+	}
+	if writer == nil {
+		t.Fatal("require in city.toml was not observed via the WithAuthority entry point after the WithConfig refactor")
+	}
+
+	before := loadCityConfigCalls.Load()
+	if _, err := openStoreResultAtForCityWithAuthority(cityDir, cityDir, gate.ModeUnset, false, false); err != nil {
+		t.Fatalf("openStoreResultAtForCityWithAuthority (second call): %v", err)
+	}
+	if grew := loadCityConfigCalls.Load() - before; grew != 1 {
+		t.Fatalf("openStoreResultAtForCityWithAuthority parsed city config %d times, want exactly 1 (legacy per-call reload preserved for non-dispatcher callers)", grew)
 	}
 }
 

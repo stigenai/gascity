@@ -1332,6 +1332,19 @@ func openStoreAtForCity(storePath, cityPath string) (beads.Store, error) {
 	return openStoreAtForCityWithAuthority(storePath, cityPath, false)
 }
 
+// openStoreAtForCityWithConfig is openStoreAtForCity for callers that already
+// hold a resolved *config.City (e.g. a hot per-tick path that rebuilds only
+// on config change) and must not pay for a redundant city.toml + pack-includes
+// reparse on every call. cfg may be nil, in which case behavior matches
+// openStoreAtForCity exactly (see openStoreResultAtForCityWithConfig).
+func openStoreAtForCityWithConfig(storePath, cityPath string, cfg *config.City) (beads.Store, error) {
+	result, err := openStoreResultAtForCityWithConfig(storePath, cityPath, gate.ModeUnset, false, false, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return result.Store, nil
+}
+
 func openAuthoritativeStoreAtForCity(storePath, cityPath string) (beads.Store, error) {
 	return openStoreAtForCityWithAuthority(storePath, cityPath, true)
 }
@@ -1359,11 +1372,27 @@ func openStoreResultAtForCityWithMode(storePath, cityPath string, modeOverride g
 }
 
 func openStoreResultAtForCityWithAuthority(storePath, cityPath string, modeOverride gate.Mode, haveMode, authoritative bool) (beads.StoreOpenResult, error) {
+	return openStoreResultAtForCityWithConfig(storePath, cityPath, modeOverride, haveMode, authoritative, nil)
+}
+
+// openStoreResultAtForCityWithConfig is openStoreResultAtForCityWithAuthority
+// with the resolved city config supplied by the caller instead of always
+// reloaded from disk. A hot per-tick caller that already tracks its own
+// *config.City (e.g. the order dispatcher, rebuilt only on config reload/
+// rescan — see CityRuntime.replaceOrderDispatcher) passes it through here so
+// opening N scope stores on M ticks costs one config load, not N*M
+// (ga-237xpr). cfg == nil reproduces the legacy always-reload behavior
+// exactly, which every other (non-hot-path) caller still relies on: their
+// config may have changed since the last invocation, so reloading per call is
+// correct for them.
+func openStoreResultAtForCityWithConfig(storePath, cityPath string, modeOverride gate.Mode, haveMode, authoritative bool, cfg *config.City) (beads.StoreOpenResult, error) {
 	runtimeCityPath := cityPath
 	if runtimeCityPath == "" {
 		runtimeCityPath = cityForStoreDir(storePath)
 	}
-	cfg, _ := loadCityConfig(runtimeCityPath, io.Discard)
+	if cfg == nil {
+		cfg, _ = loadCityConfig(runtimeCityPath, io.Discard)
+	}
 	scopeRoot := resolveStoreScopeRoot(runtimeCityPath, storePath)
 	provider := rawBeadsProviderForScope(scopeRoot, runtimeCityPath)
 	if authoritative {
@@ -1402,10 +1431,14 @@ func openStoreResultAtForCityWithAuthority(storePath, cityPath string, modeOverr
 			return openBdStoreAt(scopeRoot, runtimeCityPath)
 		},
 		OpenExecStore: func() (beads.Store, error) {
-			return openExecStoreAtForCity(provider, scopeRoot, runtimeCityPath)
+			return openExecStoreAtForCity(provider, scopeRoot, runtimeCityPath, cfg)
 		},
 		OpenNativeStore: func() (beads.Store, error) {
-			env, err := nativeDoltOpenEnvForScope(runtimeCityPath, nil, scopeRoot)
+			// Reuse cfg here too (mirrors the OpenExecStore fix above): this is
+			// the synchronous open-time call, invoked once per store open, not
+			// the reopen closure below (a separate, rare reconnect path this
+			// bead intentionally leaves alone — see ga-237xpr notes).
+			env, err := nativeDoltOpenEnvForScope(runtimeCityPath, cfg, scopeRoot)
 			if err != nil {
 				return nil, fmt.Errorf("project native store env %s: %w", scopeRoot, err)
 			}
@@ -1435,7 +1468,11 @@ func openStoreResultAtForCityWithAuthority(storePath, cityPath string, modeOverr
 	return result, nil
 }
 
-func openExecStoreAtForCity(provider, scopeRoot, runtimeCityPath string) (beads.Store, error) {
+// openExecStoreAtForCity opens an exec-provider store. cfg is the caller's
+// already-resolved city config, reused here for the rig-scoped Dolt env
+// projection instead of a second loadCityConfig call; if cfg is nil it is
+// loaded on demand, matching the pre-ga-237xpr behavior.
+func openExecStoreAtForCity(provider, scopeRoot, runtimeCityPath string, cfg *config.City) (beads.Store, error) {
 	target, err := resolveConfiguredExecStoreTarget(runtimeCityPath, scopeRoot)
 	if err != nil {
 		return nil, err
@@ -1443,9 +1480,11 @@ func openExecStoreAtForCity(provider, scopeRoot, runtimeCityPath string) (beads.
 	env := gcExecStoreEnv(runtimeCityPath, target, provider)
 	if execProviderNeedsScopedDoltStoreEnv(provider) {
 		if target.ScopeKind == "rig" {
-			cfg, err := loadCityConfig(runtimeCityPath, io.Discard)
-			if err != nil {
-				return nil, err
+			if cfg == nil {
+				cfg, err = loadCityConfig(runtimeCityPath, io.Discard)
+				if err != nil {
+					return nil, err
+				}
 			}
 			projected, err := bdRuntimeEnvForRigWithError(runtimeCityPath, cfg, target.ScopeRoot)
 			if err != nil {
