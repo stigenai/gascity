@@ -5,7 +5,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // ── pane binding: the stable agent handle under herdr ≥0.7.4 ─────────────────
@@ -32,7 +34,18 @@ const (
 	// sanitized form, which is lossy), so ListRunning can enumerate bound
 	// sessions that herdr's registry does not know about.
 	metaBoundName = "GC_HERDR_SESSION_NAME"
+	// metaBoundAt holds the unix-seconds timestamp of the binding, so the
+	// exited-agent reap can distinguish a pane whose agent is still being
+	// launched (fresh binding) from one whose agent exited (old binding).
+	metaBoundAt = "GC_HERDR_BOUND_AT"
 )
+
+// bindingLaunchGrace is how long after binding a pane may sit at a bare
+// shell prompt in bindModeAgent before it reads as "agent exited" and is
+// reaped. Sized past the whole launch window (shell readiness wait +
+// herdr's agent-start timeout + busy retries), so an in-flight Start's
+// provisionally bound pane is never closed from under it.
+const bindingLaunchGrace = 3 * time.Minute
 
 // Launch modes persisted at metaBoundMode. They pick the liveness rule for
 // the binding fallback: a registered agent (bindModeAgent) whose pane is back
@@ -63,6 +76,11 @@ type paneLookupOps struct {
 	boundPane func() string
 	// boundMode reads the persisted launch mode ("" on pre-upgrade bindings).
 	boundMode func() string
+	// boundAge reports how long ago the binding was persisted (a very large
+	// value when unknown, so pre-upgrade bindings are still reapable).
+	boundAge func() time.Duration
+	// reapPane closes an exited agent's leftover pane (best-effort).
+	reapPane func(paneID string)
 	// probePane inspects the bound pane. A zero probe with nil error means
 	// herdr confirmed the pane gone; a non-nil error means the probe itself
 	// failed (transport), which proves nothing either way.
@@ -74,12 +92,17 @@ type paneLookupOps struct {
 
 // resolveBinding resolves a session name to its herdr pane id and a running
 // verdict: registry name lookup first (a live name is a running agent), then
-// the sidecar pane binding, trusted only after a live probe. The pane resolves
-// whenever it exists (Stop/keys/read need the handle even for an exited
-// agent); running is mode-aware — busy always runs, a bare shell prompt runs
-// only for bindModeShell. A binding whose pane is confirmed gone is cleared
-// and resolves absent; a transport failure on either tier surfaces as an
-// error and clears nothing.
+// the sidecar pane binding, trusted only after a live probe. Running is
+// mode-aware: a busy pane always runs; a bare shell prompt runs only for
+// bindModeShell. A bindModeAgent pane at a bare prompt past the launch grace
+// means the agent EXITED — under tmux the pane would have died with the
+// process, so it is reaped here (pane closed, binding cleared): nothing else
+// ever reaps it for an ephemeral wisp, whose unique tab label sees no future
+// Start and whose not-running verdict means no Stop — one leaked shell pane
+// per completed wisp otherwise. Within the grace the pane resolves untouched
+// (an in-flight Start provisionally bound it). A binding whose pane is
+// confirmed gone is cleared and resolves absent; a transport failure on
+// either tier surfaces as an error and clears nothing.
 func resolveBinding(ops paneLookupOps) (paneID string, running bool, err error) {
 	a, ok, err := ops.getAgent()
 	if err != nil {
@@ -100,7 +123,15 @@ func resolveBinding(ops paneLookupOps) (paneID string, running bool, err error) 
 		ops.clearBinding()
 		return "", false, nil
 	}
-	return pane, probe.Busy || ops.boundMode() == bindModeShell, nil
+	if probe.Busy || ops.boundMode() == bindModeShell {
+		return pane, true, nil
+	}
+	if ops.boundAge() > bindingLaunchGrace {
+		ops.reapPane(pane)
+		ops.clearBinding()
+		return "", false, nil
+	}
+	return pane, false, nil
 }
 
 // bindPlacement persists the placement herdr assigned this agent plus its
@@ -114,6 +145,7 @@ func (p *Provider) bindPlacement(name string, info agentInfo, mode string) error
 		metaBoundWorkspace: info.WorkspaceID,
 		metaBoundMode:      mode,
 		metaBoundName:      name,
+		metaBoundAt:        strconv.FormatInt(time.Now().Unix(), 10),
 	} {
 		if val == "" {
 			continue
@@ -133,6 +165,7 @@ func (p *Provider) clearPaneBinding(name string) {
 	_ = p.RemoveMeta(name, metaBoundWorkspace)
 	_ = p.RemoveMeta(name, metaBoundMode)
 	_ = p.RemoveMeta(name, metaBoundName)
+	_ = p.RemoveMeta(name, metaBoundAt)
 }
 
 // boundSessionNames enumerates the session names with a live-looking sidecar
@@ -252,10 +285,18 @@ func (p *Provider) lookupOps(ctx context.Context, name string) paneLookupOps {
 		return v
 	}
 	return paneLookupOps{
-		getAgent:     func() (agentInfo, bool, error) { return p.c.getAgent(ctx, herdrAgentName(name)) },
-		boundPane:    func() string { return meta(metaBoundPane) },
-		boundMode:    func() string { return strings.TrimSpace(meta(metaBoundMode)) },
+		getAgent:  func() (agentInfo, bool, error) { return p.c.getAgent(ctx, herdrAgentName(name)) },
+		boundPane: func() string { return meta(metaBoundPane) },
+		boundMode: func() string { return strings.TrimSpace(meta(metaBoundMode)) },
+		boundAge: func() time.Duration {
+			ts, err := strconv.ParseInt(strings.TrimSpace(meta(metaBoundAt)), 10, 64)
+			if err != nil || ts <= 0 {
+				return time.Duration(1<<62) * time.Nanosecond // unknown: treat as ancient (pre-upgrade binding)
+			}
+			return time.Since(time.Unix(ts, 0))
+		},
 		probePane:    func(paneID string) (paneProbe, error) { return p.probePane(ctx, paneID) },
+		reapPane:     func(paneID string) { _ = p.c.closePane(ctx, paneID) },
 		clearBinding: func() { p.clearPaneBinding(name) },
 	}
 }

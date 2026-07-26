@@ -3,6 +3,7 @@ package herdr
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 // ── resolveBinding: two-tier name→pane resolution + running verdict ──────────
@@ -12,12 +13,19 @@ import (
 // name lookup as the fast path and falls back to the pane binding Start
 // persisted in the sidecar, probed live before it is trusted (pane ids
 // recycle). The running verdict is mode-aware: a registered agent
-// (bindModeAgent) whose pane sits at a bare shell prompt has *exited* — the
-// pane still resolves (Stop must close it) but the session is not running; a
-// raw shell session (bindModeShell) is running as long as its pane exists,
-// because `exec /bin/sh -c …` panes die with the command.
+// (bindModeAgent) whose pane sits at a bare shell prompt past the launch
+// grace has *exited* and is REAPED (pane closed, binding cleared) — under
+// tmux the pane would have died with the process; a raw shell session
+// (bindModeShell) is running as long as its pane exists, because
+// `exec /bin/sh -c …` panes die with the command.
 
-func opsFor(t *testing.T, agentHit bool, agentErr error, bound, mode string, probe paneProbe, probeErr error, cleared *bool) paneLookupOps {
+// resolveOpsRec records the side effects resolveBinding performed.
+type resolveOpsRec struct {
+	cleared bool
+	reaped  string
+}
+
+func opsForRec(t *testing.T, agentHit bool, agentErr error, bound, mode string, probe paneProbe, probeErr error, rec *resolveOpsRec) paneLookupOps {
 	t.Helper()
 	return paneLookupOps{
 		getAgent: func() (agentInfo, bool, error) {
@@ -29,15 +37,23 @@ func opsFor(t *testing.T, agentHit bool, agentErr error, bound, mode string, pro
 			}
 			return agentInfo{}, false, nil
 		},
-		boundPane: func() string { return bound },
-		boundMode: func() string { return mode },
-		probePane: func(string) (paneProbe, error) { return probe, probeErr },
-		clearBinding: func() {
-			if cleared != nil {
-				*cleared = true
-			}
-		},
+		boundPane:    func() string { return bound },
+		boundMode:    func() string { return mode },
+		boundAge:     func() time.Duration { return time.Hour }, // long past any launch window
+		probePane:    func(string) (paneProbe, error) { return probe, probeErr },
+		reapPane:     func(paneID string) { rec.reaped = paneID },
+		clearBinding: func() { rec.cleared = true },
 	}
+}
+
+func opsFor(t *testing.T, agentHit bool, agentErr error, bound, mode string, probe paneProbe, probeErr error, cleared *bool) paneLookupOps {
+	t.Helper()
+	rec := &resolveOpsRec{}
+	ops := opsForRec(t, agentHit, agentErr, bound, mode, probe, probeErr, rec)
+	if cleared != nil {
+		ops.clearBinding = func() { *cleared = true }
+	}
+	return ops
 }
 
 func TestResolveBindingNameHitWinsAndRuns(t *testing.T) {
@@ -64,17 +80,40 @@ func TestResolveBindingBusyPaneRunsRegardlessOfMode(t *testing.T) {
 	}
 }
 
-// A registered agent's pane back at its bare shell prompt means the agent
-// exited: the pane resolves (Stop must close it — the sleep leak) but the
-// session is NOT running, so the reconciler may restart it.
-func TestResolveBindingAgentModeIdleShellIsNotRunning(t *testing.T) {
-	cleared := false
-	pane, running, err := resolveBinding(opsFor(t, false, nil, "%5", bindModeAgent, paneProbe{Exists: true, Busy: false}, nil, &cleared))
-	if err != nil || pane != "%5" || running {
-		t.Fatalf("resolveBinding = %q, %v, %v; want %%5, false, nil (exited agent)", pane, running, err)
+// A registered agent's pane back at its bare shell prompt past the launch
+// grace means the agent EXITED: under tmux the pane would have died with the
+// process, so reap it — close the pane, clear the binding, resolve absent.
+// Without this, every completed ephemeral wisp (unique tab label, no future
+// Start to recycle it, no Stop because the session reads not-running) leaks
+// one shell pane forever — the herdr echo of the witness sleep leak.
+func TestResolveBindingReapsExitedAgentPane(t *testing.T) {
+	rec := &resolveOpsRec{}
+	pane, running, err := resolveBinding(opsForRec(t, false, nil, "%5", bindModeAgent, paneProbe{Exists: true, Busy: false}, nil, rec))
+	if err != nil || pane != "" || running {
+		t.Fatalf("resolveBinding = %q, %v, %v; want absent (exited agent reaped)", pane, running, err)
 	}
-	if cleared {
-		t.Error("binding cleared while its pane still exists")
+	if rec.reaped != "%5" {
+		t.Errorf("exited agent pane not reaped (reaped=%q)", rec.reaped)
+	}
+	if !rec.cleared {
+		t.Error("exited agent binding not cleared")
+	}
+}
+
+// Inside the launch grace window the same pane state means "shell ready,
+// agent still being launched": the pane must resolve untouched — a reap here
+// would close the pane out from under the in-flight Start that provisionally
+// bound it.
+func TestResolveBindingSparesFreshBindingAtPrompt(t *testing.T) {
+	rec := &resolveOpsRec{}
+	ops := opsForRec(t, false, nil, "%5", bindModeAgent, paneProbe{Exists: true, Busy: false}, nil, rec)
+	ops.boundAge = func() time.Duration { return 5 * time.Second }
+	pane, running, err := resolveBinding(ops)
+	if err != nil || pane != "%5" || running {
+		t.Fatalf("resolveBinding = %q, %v, %v; want %%5, false, nil (mid-launch pane spared)", pane, running, err)
+	}
+	if rec.reaped != "" || rec.cleared {
+		t.Error("mid-launch pane was reaped/cleared")
 	}
 }
 
