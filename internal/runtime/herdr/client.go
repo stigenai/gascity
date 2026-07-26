@@ -369,24 +369,19 @@ func (c *client) workspaceCreate(ctx context.Context, label, cwd string, env map
 	return wrap.Workspace.WorkspaceID, wrap.Tab.TabID, wrap.RootPane.PaneID, nil
 }
 
-// findTab returns the id of the tab in wsID whose label matches, or "".
-func (c *client) findTab(ctx context.Context, wsID, label string) (string, error) {
+// listTabs returns the tabs in wsID.
+func (c *client) listTabs(ctx context.Context, wsID string) ([]tabInfo, error) {
 	res, err := c.run(ctx, "tab", "list", "--workspace", wsID)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	var wrap struct {
 		Tabs []tabInfo `json:"tabs"`
 	}
 	if err := json.Unmarshal(res, &wrap); err != nil {
-		return "", fmt.Errorf("herdr tab list: decode: %w", err)
+		return nil, fmt.Errorf("herdr tab list: decode: %w", err)
 	}
-	for _, t := range wrap.Tabs {
-		if t.Label == label {
-			return t.TabID, nil
-		}
-	}
-	return "", nil
+	return wrap.Tabs, nil
 }
 
 // tabCreate makes a tab labeled label in wsID whose root shell pane is created
@@ -453,10 +448,14 @@ func (c *client) ensurePlacement(ctx context.Context, wsLabel, tabLabel, cwd str
 		_ = c.tabRename(ctx, tabID, tabLabel) // cosmetic; ignore failure
 		return tabID, paneID, nil
 	}
-	if staleTab, err := c.findTab(ctx, wsID, tabLabel); err != nil {
+	tabs, err := c.listTabs(ctx, wsID)
+	if err != nil {
 		return "", "", err
-	} else if staleTab != "" {
-		_ = c.tabClose(ctx, staleTab) // best-effort: replaced below either way
+	}
+	for _, tb := range tabs {
+		if tb.Label == tabLabel {
+			_ = c.tabClose(ctx, tb.TabID) // best-effort: replaced below either way
+		}
 	}
 	return c.tabCreate(ctx, wsID, tabLabel, cwd, env)
 }

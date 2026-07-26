@@ -33,9 +33,11 @@ func newFakeHerdrProvider(t *testing.T) (*Provider, string, string) {
 	t.Helper()
 	session := fmt.Sprintf("gctest-pb-%d-%d", os.Getpid(), atomic.AddInt64(&paneBindSession, 1))
 	state := t.TempDir()
+	metaDir := t.TempDir()
 	script := filepath.Join(t.TempDir(), "herdr")
 	fake := `#!/bin/sh
 STATE='` + state + `'
+METADIR='` + metaDir + `'
 shift 2
 printf '%s\n' "$*" >> "$STATE/calls.log"
 case "$1_$2" in
@@ -50,6 +52,8 @@ agent_list)
 agent_start)
   : > "$STATE/agent_started"
   : > "$STATE/registered"
+  if [ -e "$METADIR/$3/GC_SESSION_ID" ]; then : > "$STATE/meta_seeded_before_launch"; fi
+  if [ -e "$METADIR/$3/GC_HERDR_PANE_ID" ]; then : > "$STATE/bound_before_launch"; fi
   printf '%s' '{"result":{"agent":{"name":"'"$3"'","pane_id":"%5","tab_id":"t1","workspace_id":"w1","agent_status":"idle"}}}' ;;
 agent_wait)
   printf '%s' '{"result":{"agent":{"name":"'"$3"'","agent_status":"idle"}}}' ;;
@@ -80,7 +84,11 @@ workspace_list)
 workspace_create)
   printf '%s' '{"result":{"workspace":{"workspace_id":"w1"},"tab":{"tab_id":"t1"},"root_pane":{"pane_id":"%5"}}}' ;;
 tab_list)
-  printf '%s' '{"result":{"tabs":[]}}' ;;
+  if [ -e "$STATE/stale_tabs" ]; then
+    printf '%s' '{"result":{"tabs":[{"tab_id":"t-old1","label":"witness"},{"tab_id":"t-old2","label":"witness"},{"tab_id":"t-other","label":"deacon"}]}}'
+  else
+    printf '%s' '{"result":{"tabs":[]}}'
+  fi ;;
 tab_create)
   printf '%s' '{"result":{"tab":{"tab_id":"t1"},"root_pane":{"pane_id":"%5"}}}' ;;
 *)
@@ -90,7 +98,7 @@ esac
 	if err := os.WriteFile(script, []byte(fake), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	p := New(session, t.TempDir(), t.TempDir(), time.Second)
+	p := New(session, metaDir, t.TempDir(), time.Second)
 	p.c.bin = script
 	return p, session, state
 }
@@ -206,13 +214,27 @@ func TestStartKindPathRegistersAndPersistsBinding(t *testing.T) {
 	p, session, state := newFakeHerdrProvider(t)
 	listenHerdrSocket(t, session)
 
-	cfg := runtime.Config{Command: "claude --dangerously-skip-permissions"}
+	cfg := runtime.Config{
+		Command: "claude --dangerously-skip-permissions",
+		Env:     map[string]string{"GC_SESSION_ID": "sess-1", "GC_INSTANCE_TOKEN": "tok-1"},
+	}
 	if err := p.Start(context.Background(), "gastown__witness", cfg); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	calls := fakeCalls(t, state)
 	if !strings.Contains(calls, "agent start gastown__witness --kind claude --pane %5") {
 		t.Fatalf("Start did not kind-launch into the placed pane:\n%s", calls)
+	}
+	// The kind launch blocks for seconds (readiness wait + TUI detection), so
+	// the identity sidecar AND a provisional pane binding must exist BEFORE
+	// the launch: reconcile ticks that fire mid-boot read them, and an
+	// unseeded sidecar makes the ownership check roll the fresh runtime back
+	// ("live runtime belongs to another session").
+	if _, err := os.Stat(filepath.Join(state, "meta_seeded_before_launch")); err != nil {
+		t.Error("GC_SESSION_ID was not in the sidecar before the agent launch")
+	}
+	if _, err := os.Stat(filepath.Join(state, "bound_before_launch")); err != nil {
+		t.Error("pane binding was not persisted before the agent launch")
 	}
 	if got, _ := p.GetMeta("gastown__witness", metaBoundPane); got != "%5" {
 		t.Fatalf("bound pane after Start = %q; want %%5", got)
@@ -241,6 +263,48 @@ func TestStartRawPathExecsThroughPaneShell(t *testing.T) {
 	}
 	if got, _ := p.GetMeta("gastown__worker", metaBoundMode); got != bindModeShell {
 		t.Fatalf("bound mode after raw Start = %q; want %q", got, bindModeShell)
+	}
+}
+
+// Placement must recycle EVERY stale tab carrying the session's label, not
+// just the first: reconciler churn can leave several behind, and a survivor
+// lingers forever (its shell pane with it).
+func TestStartRecyclesAllStaleTabs(t *testing.T) {
+	p, session, state := newFakeHerdrProvider(t)
+	listenHerdrSocket(t, session)
+	setState(t, state, "stale_tabs")
+	// An existing workspace forces the findTab path (workspace list must hit).
+	oldWorkspaceList := "workspace_list)\n  : > \"$STATE/placement_attempted\"\n  printf '%s' '{\"result\":{\"workspaces\":[]}}' ;;"
+	newWorkspaceList := "workspace_list)\n  printf '%s' '{\"result\":{\"workspaces\":[{\"workspace_id\":\"w1\",\"label\":\"gastown\"}]}}' ;;"
+	rewriteFake(t, p, oldWorkspaceList, newWorkspaceList)
+
+	if err := p.Start(context.Background(), "gastown__witness", runtime.Config{Command: "claude"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	calls := fakeCalls(t, state)
+	for _, tab := range []string{"tab close t-old1", "tab close t-old2"} {
+		if !strings.Contains(calls, tab) {
+			t.Errorf("stale duplicate not recycled (%s missing):\n%s", tab, calls)
+		}
+	}
+	if strings.Contains(calls, "tab close t-other") {
+		t.Errorf("closed another session's tab:\n%s", calls)
+	}
+}
+
+// rewriteFake patches the fake herdr script in place.
+func rewriteFake(t *testing.T, p *Provider, old, replacement string) {
+	t.Helper()
+	b, err := os.ReadFile(p.c.bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	patched := strings.Replace(string(b), old, replacement, 1)
+	if patched == string(b) {
+		t.Fatalf("fake script pattern not found:\n%s", old)
+	}
+	if err := os.WriteFile(p.c.bin, []byte(patched), 0o755); err != nil {
+		t.Fatal(err)
 	}
 }
 

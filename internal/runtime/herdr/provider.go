@@ -105,6 +105,33 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 	if err != nil {
 		return fmt.Errorf("herdr: place %q: %w", name, err)
 	}
+	spec := launchSpecFor(cfg.Command)
+	info := agentInfo{PaneID: paneID, TabID: tabID}
+	adopted := false
+	mode := bindModeShell
+	if spec.Kind != "" {
+		mode = bindModeAgent
+	}
+	// Seed the metadata sidecar from cfg.Env and persist a provisional pane
+	// binding BEFORE the launch. The launch below blocks for seconds (shell
+	// readiness + herdr's TUI detection), and reconcile ticks that fire in
+	// that window read both stores: the pending-create ownership check
+	// (runningSessionMatchesPendingCreateInfo) reads GC_SESSION_ID /
+	// GC_INSTANCE_TOKEN via GetMeta — with an unseeded sidecar it misreads
+	// the fresh runtime as "live runtime belongs to another session" and
+	// rolls it back mid-boot — and liveness reads the pane binding. tmux gets
+	// the env half for free (its GetMeta reads the session environment, which
+	// new-session initializes from cfg.Env); herdr's sidecar is populated
+	// only by SetMeta. Seeding the whole env also persists GC_SESSION_ID for
+	// ProcessAlive's session-scoped tree-walk widening (process env survives
+	// reparenting). Stop clears the whole meta dir, so teardown is covered,
+	// including a launch that fails below.
+	if err := p.seedMetaFromEnv(name, cfg.Env); err != nil {
+		return fmt.Errorf("herdr: seed session metadata for %q: %w", name, err)
+	}
+	if err := p.bindPlacement(name, info, mode); err != nil {
+		return fmt.Errorf("herdr: persist pane binding for %q: %w", name, err)
+	}
 	// Launch. herdr ≥0.7.5's `agent start` launches a supported agent kind's
 	// canonical executable into the shell pane and blocks until the TUI is
 	// detected (native claude-detection); commands that aren't a clean kind
@@ -112,13 +139,8 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 	// still dies with the command. On agent_name_taken (a concurrent Start
 	// won the name), adopt the live holder or reap a stale one and retry once
 	// — never loop placement, which is the pane/PTY/process storm.
-	spec := launchSpecFor(cfg.Command)
-	info := agentInfo{PaneID: paneID, TabID: tabID}
-	adopted := false
-	mode := bindModeShell
 	switch {
 	case spec.Kind != "":
-		mode = bindModeAgent
 		// herdr requires the target pane to be "an available shell" — a
 		// fresh pane's shell spends its first moments sourcing rc files
 		// (agent_pane_busy otherwise), so wait for the prompt, then retry a
@@ -152,30 +174,11 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 	if err != nil {
 		return fmt.Errorf("herdr: start %q: %w", name, err)
 	}
-	// Seed the metadata sidecar from cfg.Env NOW, before the (long) startup
-	// delivery below. tmux gets this for free — its GetMeta reads the tmux
-	// session environment, which new-session initializes from cfg.Env — but
-	// herdr's meta store is a sidecar populated only by SetMeta. The reconciler's
-	// pending-create ownership check (runningSessionMatchesPendingCreateInfo)
-	// reads GC_SESSION_ID / GC_INSTANCE_TOKEN via GetMeta on ticks that fire
-	// while Start is still waiting for the agent to idle; with an unseeded
-	// sidecar it misreads the fresh runtime as "live runtime belongs to another
-	// session" and reaps it seconds after a successful start.
-	//
-	// Seeding the whole env also persists GC_SESSION_ID, which ProcessAlive's
-	// session-scoped tree-walk widening reads (herdr does not capture the
-	// creation environment the way tmux does): process env survives reparenting
-	// (only ppid changes), so this is what lets the walk find the agent when it
-	// is no longer a descendant of the pane's shell/foreground PIDs. Stop clears
-	// the whole meta dir, so teardown is covered.
-	if err := p.seedMetaFromEnv(name, cfg.Env); err != nil {
-		return fmt.Errorf("herdr: seed session metadata for %q: %w", name, err)
-	}
-	// Persist the pane binding (fresh or adopted) and launch mode: herdr
-	// ≥0.7.4 clears the agent's name when the pane occupant changes, so this
-	// sidecar binding is what keeps IsRunning/paneID resolving the session
-	// afterwards — and it is the ONLY handle for raw/bare-shell sessions,
-	// which never register a herdr agent at all (see panebinding.go).
+	// Re-persist the binding with the launch's final placement: adoption may
+	// have landed on the live holder's pane rather than the one placed above.
+	// This binding is what keeps IsRunning/paneID resolving the session when
+	// no registry name exists — herdr ≥0.7.4 clears names on occupant change,
+	// and raw/bare-shell sessions never register one (see panebinding.go).
 	if err := p.bindPlacement(name, info, mode); err != nil {
 		return fmt.Errorf("herdr: persist pane binding for %q: %w", name, err)
 	}
