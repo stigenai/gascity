@@ -151,6 +151,14 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 			if err == nil || herdrErrorCode(err) != "agent_pane_busy" || attempt >= paneBusyRetries {
 				break
 			}
+			// Back off before re-probing: herdr's own shell-prompt detection
+			// lags the process-table probe on a fresh pane, so an immediate
+			// retry burns the attempt against the same stale verdict.
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("herdr: start %q: %w", name, ctx.Err())
+			case <-time.After(time.Second << attempt):
+			}
 			p.waitPaneShellReady(ctx, paneID)
 		}
 		if err == nil && adopted && info.PaneID != "" && info.PaneID != paneID {
@@ -423,7 +431,7 @@ func (p *Provider) IsAttached(_ string) bool { return false }
 
 // Attach runs `herdr agent attach`, blocking until the user detaches.
 func (p *Provider) Attach(name string) error {
-	cmd := exec.Command(p.c.bin, "--session", p.c.session, "agent", "attach", name)
+	cmd := exec.Command(p.c.bin, "--session", p.c.session, "agent", "attach", herdrAgentName(name))
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run() // blocks until the user detaches
 }
@@ -486,15 +494,16 @@ func (p *Provider) processAliveByPane(ctx context.Context, name, paneID string, 
 // true only when an already-running holder was adopted, so the caller can
 // skip re-priming a live agent.
 func (p *Provider) startAgentAdopting(ctx context.Context, name, kind, paneID string, args []string) (info agentInfo, adopted bool, err error) {
-	started, startErr := p.c.startAgentKind(ctx, name, kind, paneID, args)
+	hn := herdrAgentName(name) // herdr ≥0.7.5 rejects raw gc session names (invalid_agent_name)
+	started, startErr := p.c.startAgentKind(ctx, hn, kind, paneID, args)
 	return resolveAgentNameTaken(started, startErr, agentStartOps{
-		getAgent: func() (agentInfo, bool, error) { return p.c.getAgent(ctx, name) },
+		getAgent: func() (agentInfo, bool, error) { return p.c.getAgent(ctx, herdrAgentName(name)) },
 		paneAlive: func(holderPane string) bool {
 			probe, perr := p.probePane(ctx, holderPane)
 			return perr == nil && probe.Exists && probe.Busy
 		},
 		closePane:  func(holderPane string) error { return p.c.closePane(ctx, holderPane) },
-		retryStart: func() (agentInfo, error) { return p.c.startAgentKind(ctx, name, kind, paneID, args) },
+		retryStart: func() (agentInfo, error) { return p.c.startAgentKind(ctx, hn, kind, paneID, args) },
 	})
 }
 
@@ -615,7 +624,7 @@ func (p *Provider) ObserveLiveness(name string, _ []string) runtime.Liveness {
 		return runtime.Liveness{}
 	}
 	ctx := context.Background()
-	info, present, err := p.c.getAgent(ctx, name)
+	info, present, err := p.c.getAgent(ctx, herdrAgentName(name))
 	if err == nil && !present {
 		// Name absent — fall back to the bound pane before declaring the
 		// session gone: raw shell sessions never register a name at all, and
@@ -687,30 +696,35 @@ func (p *Provider) Peek(name string, lines int) (string, error) {
 }
 
 // ListRunning returns the names of running sessions whose names start with
-// prefix: herdr's registered agents merged with sidecar-bound sessions the
-// registry never sees (raw shell sessions, agents whose name herdr cleared),
-// each bound candidate verified running before it is listed.
+// prefix. The sidecar bindings are the primary source (they hold the exact
+// gc names — herdr's registry stores the mapped herdrAgentName forms, and
+// never sees raw shell sessions at all); each bound candidate is verified
+// running before it is listed. Registry agents that don't correspond to any
+// bound gc session (foreign/manual agents) are appended under their own
+// names.
 func (p *Provider) ListRunning(prefix string) ([]string, error) {
 	ctx := context.Background()
 	agents, err := p.c.listAgents(ctx)
 	if err != nil {
 		return nil, err
 	}
-	seen := make(map[string]bool)
+	seen := make(map[string]bool)   // gc names already listed
+	mapped := make(map[string]bool) // herdr-side names owned by bound gc sessions
 	var out []string
-	for _, a := range agents {
-		if strings.HasPrefix(a.Name, prefix) && !seen[a.Name] {
-			seen[a.Name] = true
-			out = append(out, a.Name)
-		}
-	}
 	for _, name := range p.boundSessionNames() {
+		mapped[herdrAgentName(name)] = true
 		if !strings.HasPrefix(name, prefix) || seen[name] {
 			continue
 		}
 		if _, running, err := resolveBinding(p.lookupOps(ctx, name)); err == nil && running {
 			seen[name] = true
 			out = append(out, name)
+		}
+	}
+	for _, a := range agents {
+		if !mapped[a.Name] && strings.HasPrefix(a.Name, prefix) && !seen[a.Name] {
+			seen[a.Name] = true
+			out = append(out, a.Name)
 		}
 	}
 	return out, nil
@@ -757,7 +771,7 @@ func (p *Provider) CopyTo(name, src, relDst string) error {
 	if _, err := os.Stat(src); err != nil {
 		return nil // best-effort: missing src
 	}
-	a, ok, err := p.c.getAgent(context.Background(), name)
+	a, ok, err := p.c.getAgent(context.Background(), herdrAgentName(name))
 	if err != nil || !ok || a.Cwd == "" {
 		return nil
 	}

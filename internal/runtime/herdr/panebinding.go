@@ -252,7 +252,7 @@ func (p *Provider) lookupOps(ctx context.Context, name string) paneLookupOps {
 		return v
 	}
 	return paneLookupOps{
-		getAgent:     func() (agentInfo, bool, error) { return p.c.getAgent(ctx, name) },
+		getAgent:     func() (agentInfo, bool, error) { return p.c.getAgent(ctx, herdrAgentName(name)) },
 		boundPane:    func() string { return meta(metaBoundPane) },
 		boundMode:    func() string { return strings.TrimSpace(meta(metaBoundMode)) },
 		probePane:    func(paneID string) (paneProbe, error) { return p.probePane(ctx, paneID) },

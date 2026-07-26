@@ -266,6 +266,36 @@ func TestStartRawPathExecsThroughPaneShell(t *testing.T) {
 	}
 }
 
+// gc session names carrying uppercase rig names must launch under their
+// mapped herdr agent name (herdr ≥0.7.5 rejects them verbatim with
+// invalid_agent_name — a hot retry loop found live), while the sidecar keeps
+// the exact gc name for enumeration.
+func TestStartMapsSessionNameToValidHerdrName(t *testing.T) {
+	p, session, state := newFakeHerdrProvider(t)
+	listenHerdrSocket(t, session)
+
+	if err := p.Start(context.Background(), "Indigo--anthony", runtime.Config{Command: "claude"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	calls := fakeCalls(t, state)
+	if !strings.Contains(calls, "agent start indigo--anthony --kind claude") {
+		t.Fatalf("Start did not use the mapped herdr agent name:\n%s", calls)
+	}
+	if strings.Contains(calls, "agent start Indigo--anthony") {
+		t.Fatalf("Start used the raw gc name herdr rejects:\n%s", calls)
+	}
+	if got, _ := p.GetMeta("Indigo--anthony", metaBoundName); got != "Indigo--anthony" {
+		t.Fatalf("sidecar name = %q; want the exact gc name", got)
+	}
+	// Liveness and enumeration still key on the gc name.
+	if !p.IsRunning("Indigo--anthony") {
+		t.Fatal("IsRunning(gc name) = false for the running mapped agent")
+	}
+	if names, err := p.ListRunning("Indigo"); err != nil || len(names) != 1 || names[0] != "Indigo--anthony" {
+		t.Fatalf("ListRunning = %v, %v; want [Indigo--anthony]", names, err)
+	}
+}
+
 // Placement must recycle EVERY stale tab carrying the session's label, not
 // just the first: reconciler churn can leave several behind, and a survivor
 // lingers forever (its shell pane with it).
