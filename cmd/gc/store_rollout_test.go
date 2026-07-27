@@ -101,6 +101,42 @@ func TestOpenStoreResultWithConfigSkipsLoad(t *testing.T) {
 	}
 }
 
+// TestOpenStoreResultWithConfigSkipsLoad_ExecProvider is the exec-provider
+// analog of TestOpenStoreResultWithConfigSkipsLoad, covering the gap left
+// open by the original ga-237xpr fix (PR #4682 review round 1, BLOCKER):
+// openStoreResultAtForCityWithConfig already threads its cfg into
+// OpenExecStore (main.go), but openExecStoreAtForCity's own call to
+// resolveConfiguredExecStoreTarget dropped it and re-parsed city.toml
+// unconditionally on every call regardless of whether the caller had a
+// resolved config in hand.
+func TestOpenStoreResultWithConfigSkipsLoad_ExecProvider(t *testing.T) {
+	cityDir := t.TempDir()
+	toml := "[workspace]\nname = \"t\"\n\n[beads]\nprovider = \"exec:noop.sh\"\n"
+	if err := os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte(toml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadCityConfig(cityDir, io.Discard)
+	if err != nil {
+		t.Fatalf("loadCityConfig: %v", err)
+	}
+
+	before := loadCityConfigCalls.Load()
+	if _, err := openStoreResultAtForCityWithConfig(cityDir, cityDir, gate.ModeUnset, false, false, cfg); err != nil {
+		t.Fatalf("openStoreResultAtForCityWithConfig(cfg): %v", err)
+	}
+	if grew := loadCityConfigCalls.Load() - before; grew != 0 {
+		t.Fatalf("openStoreResultAtForCityWithConfig re-parsed city config %d times despite a non-nil cfg (exec provider)", grew)
+	}
+
+	before = loadCityConfigCalls.Load()
+	if _, err := openStoreResultAtForCityWithConfig(cityDir, cityDir, gate.ModeUnset, false, false, nil); err != nil {
+		t.Fatalf("openStoreResultAtForCityWithConfig(nil): %v", err)
+	}
+	if grew := loadCityConfigCalls.Load() - before; grew != 1 {
+		t.Fatalf("openStoreResultAtForCityWithConfig(nil cfg) parsed city config %d times, want exactly 1 (fallback load, exec provider)", grew)
+	}
+}
+
 // TestOpenStoreResultNilConfigMatchesLegacy is a regression guard for the
 // ga-237xpr refactor: openStoreResultAtForCityWithAuthority (the pre-existing
 // entry point every non-dispatcher caller still uses) now delegates to

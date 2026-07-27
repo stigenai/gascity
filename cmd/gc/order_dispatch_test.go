@@ -1911,6 +1911,7 @@ func TestOrderDispatchDoesNotReparseConfigPerTick(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		ad.dispatch(context.Background(), cityDir, now.Add(time.Duration(i)*time.Millisecond))
 	}
+	ad.drain(context.Background())
 	if grew := loadCityConfigCalls.Load() - before; grew != 0 {
 		t.Fatalf("dispatch() re-parsed city config %d times across 10 ticks; want 0 — every tick's store open must reuse the dispatcher's cached config instead of reloading city.toml from disk", grew)
 	}

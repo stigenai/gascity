@@ -1473,7 +1473,7 @@ func openStoreResultAtForCityWithConfig(storePath, cityPath string, modeOverride
 // projection instead of a second loadCityConfig call; if cfg is nil it is
 // loaded on demand, matching the pre-ga-237xpr behavior.
 func openExecStoreAtForCity(provider, scopeRoot, runtimeCityPath string, cfg *config.City) (beads.Store, error) {
-	target, err := resolveConfiguredExecStoreTarget(runtimeCityPath, scopeRoot)
+	target, err := resolveConfiguredExecStoreTargetWithConfig(runtimeCityPath, scopeRoot, cfg)
 	if err != nil {
 		return nil, err
 	}

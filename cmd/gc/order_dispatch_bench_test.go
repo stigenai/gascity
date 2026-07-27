@@ -121,3 +121,50 @@ func BenchmarkOrderDispatchTick(b *testing.B) {
 		b.ReportMetric(float64(reparses)/float64(b.N), "reparses/op")
 	})
 }
+
+// BenchmarkResolveConfiguredExecStoreTarget is the exec-provider analog of
+// BenchmarkOrderDispatchTick, isolated to the function PR #4682 review round
+// 1 flagged as the BLOCKER left open by the original fix:
+// resolveConfiguredExecStoreTarget ignored a caller's already-resolved
+// *config.City and re-parsed city.toml unconditionally on every call.
+// PreFix_ReparsePerCall drives the legacy nil-cfg entry point (still live,
+// used by the non-hot-path beads_provider_lifecycle.go caller); PostFix
+// drives the WithConfig variant openExecStoreAtForCity now calls on the hot
+// per-tick path. Run with:
+//
+//	go test ./cmd/gc/ -run '^$' -bench '^BenchmarkResolveConfiguredExecStoreTarget$' -benchtime=200x
+func BenchmarkResolveConfiguredExecStoreTarget(b *testing.B) {
+	cityDir := b.TempDir()
+	writeMultiPackBenchCityFixture(b, cityDir, 15)
+
+	cfg, err := loadCityConfig(cityDir, io.Discard)
+	if err != nil {
+		b.Fatalf("loadCityConfig: %v", err)
+	}
+
+	b.Run("PreFix_ReparsePerCall", func(b *testing.B) {
+		before := loadCityConfigCalls.Load()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			if _, err := resolveConfiguredExecStoreTarget(cityDir, cityDir); err != nil {
+				b.Fatalf("resolveConfiguredExecStoreTarget: %v", err)
+			}
+		}
+		b.StopTimer()
+		reparses := loadCityConfigCalls.Load() - before
+		b.ReportMetric(float64(reparses)/float64(b.N), "reparses/op")
+	})
+
+	b.Run("PostFix_CachedConfig", func(b *testing.B) {
+		before := loadCityConfigCalls.Load()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			if _, err := resolveConfiguredExecStoreTargetWithConfig(cityDir, cityDir, cfg); err != nil {
+				b.Fatalf("resolveConfiguredExecStoreTargetWithConfig: %v", err)
+			}
+		}
+		b.StopTimer()
+		reparses := loadCityConfigCalls.Load() - before
+		b.ReportMetric(float64(reparses)/float64(b.N), "reparses/op")
+	})
+}
