@@ -95,13 +95,19 @@ func (c *client) run(ctx context.Context, args ...string) (json.RawMessage, erro
 
 // agentInfo mirrors herdr's agent object.
 type agentInfo struct {
-	Name        string `json:"name"`
-	PaneID      string `json:"pane_id"`
-	WorkspaceID string `json:"workspace_id"`
-	TabID       string `json:"tab_id"`
-	TerminalID  string `json:"terminal_id"`
-	AgentStatus string `json:"agent_status"`
-	Cwd         string `json:"cwd"`
+	Name         string `json:"name"`
+	PaneID       string `json:"pane_id"`
+	WorkspaceID  string `json:"workspace_id"`
+	TabID        string `json:"tab_id"`
+	TerminalID   string `json:"terminal_id"`
+	AgentStatus  string `json:"agent_status"`
+	Cwd          string `json:"cwd"`
+	AgentSession struct {
+		Agent  string `json:"agent"`
+		Kind   string `json:"kind"`
+		Source string `json:"source"`
+		Value  string `json:"value"`
+	} `json:"agent_session"`
 }
 
 // agentStartTimeoutMS bounds herdr's own wait for the launched agent TUI to

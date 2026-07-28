@@ -414,6 +414,48 @@ func TestObserveLivenessRejectsRegisteredAgentWithMissingPane(t *testing.T) {
 	}
 }
 
+func TestGetMetaFallsBackToRegisteredAgentSessionID(t *testing.T) {
+	p, _, state := newFakeHerdrProvider(t)
+	setState(t, state, "registered")
+	rewriteFake(
+		t,
+		p,
+		`"agent_status":"idle"}}}`,
+		`"agent_status":"idle","agent_session":{"agent":"claude","kind":"id","source":"herdr:claude","value":"6359c25f-aa92-4f83-9329-ab3497b22de7"}}}}`,
+	)
+
+	got, err := p.GetMeta("gastown__witness", "GC_PROVIDER_SESSION_ID")
+	if err != nil {
+		t.Fatalf("GetMeta(GC_PROVIDER_SESSION_ID): %v", err)
+	}
+	if want := "6359c25f-aa92-4f83-9329-ab3497b22de7"; got != want {
+		t.Fatalf("GetMeta(GC_PROVIDER_SESSION_ID) = %q, want %q", got, want)
+	}
+
+	if err := p.SetMeta("gastown__witness", "GC_PROVIDER_SESSION_ID", "explicit-sidecar-id"); err != nil {
+		t.Fatalf("SetMeta(GC_PROVIDER_SESSION_ID): %v", err)
+	}
+	got, err = p.GetMeta("gastown__witness", "GC_PROVIDER_SESSION_ID")
+	if err != nil {
+		t.Fatalf("GetMeta(explicit GC_PROVIDER_SESSION_ID): %v", err)
+	}
+	if got != "explicit-sidecar-id" {
+		t.Fatalf("GetMeta(explicit GC_PROVIDER_SESSION_ID) = %q, want explicit-sidecar-id", got)
+	}
+
+	if err := p.RemoveMeta("gastown__witness", "GC_PROVIDER_SESSION_ID"); err != nil {
+		t.Fatalf("RemoveMeta(GC_PROVIDER_SESSION_ID): %v", err)
+	}
+	rewriteFake(t, p, `"kind":"id"`, `"kind":"name"`)
+	got, err = p.GetMeta("gastown__witness", "GC_PROVIDER_SESSION_ID")
+	if err != nil {
+		t.Fatalf("GetMeta(non-ID agent session): %v", err)
+	}
+	if got != "" {
+		t.Fatalf("GetMeta(non-ID agent session) = %q, want empty", got)
+	}
+}
+
 // ListRunning must see sessions that herdr's registry does not: raw shell
 // sessions never register an agent, so listing by registry alone hides them
 // from every session-enumeration consumer (orphan detection, gc ls).
