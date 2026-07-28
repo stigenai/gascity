@@ -398,13 +398,18 @@ func TestObserveLivenessRejectsRegisteredAgentWithMissingPane(t *testing.T) {
 	p, _, state := newFakeHerdrProvider(t)
 	setState(t, state, "registered")
 	setState(t, state, "pane_gone")
+	bindTestPane(t, p, "gastown__witness", bindModeAgent)
 
 	if got := p.ObserveLiveness("gastown__witness", nil); got.Running || got.Alive {
 		t.Fatalf("ObserveLiveness = %+v for stale registry row; want zero", got)
 	}
 	if calls := fakeCalls(t, state); !strings.Contains(calls, "agent get gastown__witness") ||
-		!strings.Contains(calls, "pane process-info --pane %5") {
-		t.Fatalf("ObserveLiveness did not validate the registered pane:\n%s", calls)
+		!strings.Contains(calls, "pane process-info --pane %5") ||
+		!strings.Contains(calls, "pane close %5") {
+		t.Fatalf("ObserveLiveness did not validate and reap the registered pane:\n%s", calls)
+	}
+	if got, _ := p.GetMeta("gastown__witness", metaBoundPane); got != "" {
+		t.Fatalf("stale registry binding survived reap: %q", got)
 	}
 }
 
