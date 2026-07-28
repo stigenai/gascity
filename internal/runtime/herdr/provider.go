@@ -34,6 +34,8 @@ type Provider struct {
 	// plus this absolute ceiling.
 	setupMaxTimeout time.Duration
 	mu              sync.Mutex // serializes workspace/tab find-or-create across concurrent Starts
+	activityMu      sync.Mutex // serializes durable activity status/timestamp updates
+	now             func() time.Time
 }
 
 // defaultSetupTimeout mirrors the tmux provider's [session] setup_timeout
@@ -60,7 +62,13 @@ func New(herdrSession, metaDir, cityRoot string, setupTimeout, setupMaxTimeout t
 	if setupTimeout <= 0 {
 		setupTimeout = defaultSetupTimeout
 	}
-	return &Provider{c: newClient(herdrSession, cityRoot), metaDir: metaDir, setupTimeout: setupTimeout, setupMaxTimeout: setupMaxTimeout}
+	return &Provider{
+		c:               newClient(herdrSession, cityRoot),
+		metaDir:         metaDir,
+		setupTimeout:    setupTimeout,
+		setupMaxTimeout: setupMaxTimeout,
+		now:             time.Now,
+	}
 }
 
 // ── ServerLifecycleProvider: own the shared herdr session-server ─────────────
@@ -131,6 +139,9 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 	}
 	if err := p.bindPlacement(name, info, mode); err != nil {
 		return fmt.Errorf("herdr: persist pane binding for %q: %w", name, err)
+	}
+	if err := p.markActivity(name); err != nil {
+		fmt.Fprintf(os.Stderr, "herdr: recording start activity for %q: %v\n", name, err) //nolint:errcheck // observability must not fail a successful start
 	}
 	// Launch. herdr ≥0.7.5's `agent start` launches a supported agent kind's
 	// canonical executable into the shell pane and blocks until the TUI is
@@ -635,10 +646,19 @@ func (p *Provider) ObserveLiveness(name string, _ []string) runtime.Liveness {
 		// clears the stale binding; a transport failure clears nothing and
 		// falls through to not-running (as a failed name query already does).
 		if _, running, perr := resolveBinding(p.lookupOps(ctx, name)); perr == nil && running {
+			if aerr := p.recordObservedActivity(name, "bound-running"); aerr != nil {
+				fmt.Fprintf(os.Stderr, "herdr: recording bound activity for %q: %v\n", name, aerr) //nolint:errcheck // best-effort observability
+			}
 			return runtime.Liveness{Running: true, Alive: true}
 		}
 	}
-	return livenessFromAgent(info, present, err)
+	liveness := livenessFromAgent(info, present, err)
+	if liveness.Running {
+		if aerr := p.recordObservedActivity(name, info.AgentStatus); aerr != nil {
+			fmt.Fprintf(os.Stderr, "herdr: recording observed activity for %q: %v\n", name, aerr) //nolint:errcheck // best-effort observability
+		}
+	}
+	return liveness
 }
 
 // livenessFromAgent folds a herdr `agent get` result into a Liveness verdict.
@@ -677,7 +697,10 @@ func (p *Provider) Nudge(name string, content []runtime.ContentBlock) error {
 	if err != nil || pid == "" {
 		return runtime.ErrSessionNotFound
 	}
-	return p.c.deliverNudge(ctx, pid, runtime.FlattenText(content))
+	if err := p.c.deliverNudge(ctx, pid, runtime.FlattenText(content)); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Peek reads the current rendered screen ("visible") — the liveness/fingerprint
@@ -748,17 +771,13 @@ func (p *Provider) SendKeys(name string, keys ...string) error {
 func (p *Provider) Capabilities() runtime.ProviderCapabilities {
 	return runtime.ProviderCapabilities{
 		CanReportAttachment: false, // no clean IsAttached query
-		CanReportActivity:   false, // no GetLastActivity
+		CanReportActivity:   true,  // durable status transitions + working heartbeats
 		CanStream:           false, // socket-event streaming is a later optimization
 		CanAttachTTY:        true,  // agent attach
 	}
 }
 
 // ── best-effort / unsupported (the contract permits these) ───────────────────
-
-// GetLastActivity is unsupported (herdr exposes no activity timestamp); it
-// returns the zero time.
-func (p *Provider) GetLastActivity(_ string) (time.Time, error) { return time.Time{}, nil }
 
 // ClearScrollback is a no-op: herdr exposes no scrollback-clear op.
 func (p *Provider) ClearScrollback(_ string) error { return nil }
