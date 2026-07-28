@@ -14,7 +14,7 @@ func (h *SessionHandle) TranscriptPath(_ context.Context) (string, error) {
 	if id == "" {
 		return "", ErrHistoryUnavailable
 	}
-	path, err := h.manager.TranscriptPath(id, h.adapter.SearchPaths)
+	path, err := h.transcriptPath(id)
 	if err != nil {
 		return "", err
 	}
@@ -22,6 +22,29 @@ func (h *SessionHandle) TranscriptPath(_ context.Context) (string, error) {
 		return "", ErrHistoryUnavailable
 	}
 	return path, nil
+}
+
+func (h *SessionHandle) transcriptPath(id string) (string, error) {
+	info, err := h.manager.Get(id)
+	if err != nil {
+		return "", err
+	}
+	return h.transcriptPathForInfo(id, info)
+}
+
+func (h *SessionHandle) transcriptPathForInfo(id string, info sessionpkg.Info) (string, error) {
+	if strings.TrimSpace(info.SessionKey) == "" {
+		sessionKey, observeErr := h.manager.ObserveProviderSessionKey(info)
+		if observeErr != nil {
+			return "", observeErr
+		}
+		if sessionKey != "" {
+			if persistErr := h.manager.PersistSessionKey(id, sessionKey); persistErr != nil {
+				return "", persistErr
+			}
+		}
+	}
+	return h.manager.TranscriptPath(id, h.adapter.SearchPaths)
 }
 
 // Transcript loads the provider-native transcript through the worker boundary.
@@ -84,7 +107,7 @@ func (h *SessionHandle) historyWithRequest(req HistoryRequest) (*HistorySnapshot
 	if err != nil {
 		return nil, err
 	}
-	path, err := h.manager.TranscriptPath(id, h.adapter.SearchPaths)
+	path, err := h.transcriptPathForInfo(id, info)
 	if err != nil {
 		return nil, err
 	}

@@ -980,6 +980,71 @@ func TestSessionHandleHistoryLoadsNormalizedTranscript(t *testing.T) {
 	}
 }
 
+func TestSessionHandleHistoryPersistsRuntimeObservedProviderSessionKey(t *testing.T) {
+	searchBase := t.TempDir()
+	workDir := t.TempDir()
+	store := beads.NewMemStore()
+	sp := runtime.NewFake()
+	manager := sessionpkg.NewManagerWithOptions(store, sp)
+	handle, err := NewSessionHandle(SessionHandleConfig{
+		Manager:     manager,
+		SearchPaths: []string{searchBase},
+		Session: SessionSpec{
+			Profile:  ProfileClaudeTmuxCLI,
+			Template: "probe",
+			Title:    "Probe",
+			Command:  "claude",
+			WorkDir:  workDir,
+			Provider: "claude",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSessionHandle: %v", err)
+	}
+	info, err := handle.Create(context.Background(), CreateModeStarted)
+	if err != nil {
+		t.Fatalf("Create(started): %v", err)
+	}
+	if info.SessionKey != "" {
+		t.Fatalf("initial SessionKey = %q, want empty", info.SessionKey)
+	}
+
+	const providerSessionKey = "6359c25f-aa92-4f83-9329-ab3497b22de7"
+	if err := sp.SetMeta(info.SessionName, "GC_PROVIDER_SESSION_ID", providerSessionKey); err != nil {
+		t.Fatalf("SetMeta(GC_PROVIDER_SESSION_ID): %v", err)
+	}
+	slugDir := filepath.Join(searchBase, sessionlog.ProjectSlug(workDir))
+	if err := os.MkdirAll(slugDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q): %v", slugDir, err)
+	}
+	path := filepath.Join(slugDir, providerSessionKey+".jsonl")
+	writeWorkerTestJSONL(t, path, []map[string]any{{
+		"uuid":      "assistant-1",
+		"type":      "assistant",
+		"timestamp": "2026-07-28T12:00:00Z",
+		"sessionId": providerSessionKey,
+		"message": map[string]any{
+			"role":    "assistant",
+			"content": "runtime-observed history",
+		},
+	}})
+
+	history, err := handle.History(context.Background(), HistoryRequest{})
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if history == nil || len(history.Entries) == 0 {
+		t.Fatalf("History = %#v, want transcript entries", history)
+	}
+	updated, err := manager.Get(info.ID)
+	if err != nil {
+		t.Fatalf("manager.Get(%q): %v", info.ID, err)
+	}
+	if updated.SessionKey != providerSessionKey {
+		t.Fatalf("persisted SessionKey = %q, want %q", updated.SessionKey, providerSessionKey)
+	}
+}
+
 func TestSessionHandleHistoryDoesNotPersistCodexResumeKeyFromTranscript(t *testing.T) {
 	base := t.TempDir()
 	dayDir := filepath.Join(base, "2026", "04", "14")

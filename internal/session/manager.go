@@ -1977,6 +1977,24 @@ func (m *Manager) PersistSessionKey(id, sessionKey string) error {
 	})
 }
 
+// ObserveProviderSessionKey returns the provider-native resume key reported by
+// the live runtime for a keyless session. It does not mutate the session bead;
+// callers persist a confirmed value through [Manager.PersistSessionKey].
+func (m *Manager) ObserveProviderSessionKey(info Info) (string, error) {
+	if key := strings.TrimSpace(info.SessionKey); key != "" {
+		return key, nil
+	}
+	sessionName := strings.TrimSpace(info.SessionName)
+	if sessionName == "" || m.sp == nil {
+		return "", nil
+	}
+	key, err := m.sp.GetMeta(sessionName, runtime.MetaProviderSessionID)
+	if err != nil {
+		return "", fmt.Errorf("observing provider session key for %q: %w", sessionName, err)
+	}
+	return strings.TrimSpace(key), nil
+}
+
 // MetadataKeyInvocationUsageCursor stores the identity of the most recently
 // telemetry-recorded invocation for a session: the provider message id
 // (msg_*) when the transcript carries one, otherwise the transcript entry

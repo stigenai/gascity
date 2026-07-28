@@ -5,6 +5,10 @@ import (
 	"fmt"
 )
 
+// MetaProviderSessionID is the runtime metadata key for a provider-native
+// conversation identifier that can resume and address the current session.
+const MetaProviderSessionID = "GC_PROVIDER_SESSION_ID"
+
 // PartialListError reports that ListRunning returned best-effort results while
 // one or more backends failed. Callers may continue using the returned names
 // slice, but should surface the degraded backend error to operators.

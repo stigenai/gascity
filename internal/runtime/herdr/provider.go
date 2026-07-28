@@ -873,17 +873,29 @@ func (p *Provider) SetMeta(name, key, value string) error {
 	return os.WriteFile(filepath.Join(dir, sanitize(key)), []byte(value), 0o644)
 }
 
-// GetMeta reads a per-session metadata value from the sidecar store; a missing
-// key returns an empty string.
+// GetMeta reads a per-session metadata value from the sidecar store. For the
+// provider-native session ID, a missing or empty sidecar value falls back to
+// Herdr's live registered-agent identity. A missing key returns an empty
+// string.
 func (p *Provider) GetMeta(name, key string) (string, error) {
 	b, err := os.ReadFile(filepath.Join(p.metaDir, sanitize(name), sanitize(key)))
-	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
+	if err == nil && strings.TrimSpace(string(b)) != "" {
+		return string(b), nil
 	}
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
-	return string(b), nil
+	if key != runtime.MetaProviderSessionID {
+		return "", nil
+	}
+	info, present, err := p.c.getAgent(context.Background(), herdrAgentName(name))
+	if err != nil {
+		return "", fmt.Errorf("reading Herdr provider session identity for %q: %w", name, err)
+	}
+	if !present || strings.TrimSpace(info.AgentSession.Kind) != "id" {
+		return "", nil
+	}
+	return strings.TrimSpace(info.AgentSession.Value), nil
 }
 
 // RemoveMeta deletes a per-session metadata value from the sidecar store.
