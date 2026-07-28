@@ -52,6 +52,7 @@ agent_list)
 agent_start)
   : > "$STATE/agent_started"
   : > "$STATE/registered"
+  : > "$STATE/busy"
   if [ -e "$METADIR/$3/GC_SESSION_ID" ]; then : > "$STATE/meta_seeded_before_launch"; fi
   if [ -e "$METADIR/$3/GC_HERDR_PANE_ID" ]; then : > "$STATE/bound_before_launch"; fi
   printf '%s' '{"result":{"agent":{"name":"'"$3"'","pane_id":"%5","tab_id":"t1","workspace_id":"w1","agent_status":"idle"}}}' ;;
@@ -451,5 +452,53 @@ func TestListRunningSkipsGonePanes(t *testing.T) {
 	got, err := p.ListRunning("gastown__")
 	if err != nil || len(got) != 0 {
 		t.Fatalf("ListRunning = %v, %v; want empty", got, err)
+	}
+}
+
+// A persisted binding marks the registry name as provider-owned. Before this
+// regression test, ListRunning trusted the matching registry row without the
+// pane probe, so the startup adoption barrier never called ObserveLiveness and
+// the stale Herdr name lease survived every controller restart.
+func TestListRunningReapsRegisteredBoundSessionWithMissingPane(t *testing.T) {
+	p, _, state := newFakeHerdrProvider(t)
+	setState(t, state, "registered")
+	setState(t, state, "pane_gone")
+	bindTestPane(t, p, "gastown__worker-1", bindModeAgent)
+	if err := p.SetMeta("gastown__worker-1", metaBoundName, "gastown__worker-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := p.ListRunning("gastown__")
+	if err != nil {
+		t.Fatalf("ListRunning: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("ListRunning = %v; want empty for stale registered pane", got)
+	}
+	if calls := fakeCalls(t, state); !strings.Contains(calls, "pane process-info --pane %5") ||
+		!strings.Contains(calls, "pane close %5") {
+		t.Fatalf("ListRunning did not validate and reap stale registered pane:\n%s", calls)
+	}
+	if got, _ := p.GetMeta("gastown__worker-1", metaBoundPane); got != "" {
+		t.Fatalf("stale registry binding survived ListRunning: %q", got)
+	}
+}
+
+// A registered agent whose pane has returned to a bare shell is just as dead
+// as one whose pane disappeared. Keeping the shell leaves the registry name
+// leased and makes every replacement collide.
+func TestObserveLivenessReapsRegisteredAgentAtBareShell(t *testing.T) {
+	p, _, state := newFakeHerdrProvider(t)
+	setState(t, state, "registered")
+	bindTestPane(t, p, "gastown__worker-1", bindModeAgent)
+
+	if got := p.ObserveLiveness("gastown__worker-1", nil); got.Running || got.Alive {
+		t.Fatalf("ObserveLiveness = %+v for registered bare shell; want zero", got)
+	}
+	if calls := fakeCalls(t, state); !strings.Contains(calls, "pane close %5") {
+		t.Fatalf("ObserveLiveness did not release bare-shell name lease:\n%s", calls)
+	}
+	if got, _ := p.GetMeta("gastown__worker-1", metaBoundPane); got != "" {
+		t.Fatalf("bare-shell registry binding survived reap: %q", got)
 	}
 }
