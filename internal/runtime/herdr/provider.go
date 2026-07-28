@@ -661,6 +661,19 @@ func (p *Provider) ObserveLiveness(name string, _ []string) runtime.Liveness {
 		probe, probeErr = p.probePane(ctx, info.PaneID)
 	}
 	liveness := livenessFromAgentAndPane(info, present, err, probe, probeErr)
+	if err == nil && present && strings.TrimSpace(info.PaneID) != "" &&
+		probeErr == nil && !probe.Exists {
+		// A stale registry row is also a name lease. Merely reporting it dead
+		// leaves the name occupied, so the replacement Start collides with the
+		// same row and burns its restart budget without ever creating a new
+		// process. Reap the confirmed-missing pane now; Herdr's close operation
+		// also releases the registry name. The sidecar binding cannot be trusted
+		// again even if close itself fails.
+		if cerr := p.c.closePane(ctx, info.PaneID); cerr != nil {
+			fmt.Fprintf(os.Stderr, "herdr: reaping stale registered pane %q for %q: %v\n", info.PaneID, name, cerr) //nolint:errcheck // liveness remains missing; next tick retries
+		}
+		p.clearPaneBinding(name)
+	}
 	if liveness.Running {
 		if aerr := p.recordObservedActivity(name, info.AgentStatus); aerr != nil {
 			fmt.Fprintf(os.Stderr, "herdr: recording observed activity for %q: %v\n", name, aerr) //nolint:errcheck // best-effort observability
