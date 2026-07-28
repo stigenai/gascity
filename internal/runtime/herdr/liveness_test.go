@@ -53,3 +53,33 @@ func TestLivenessFromAgentPresent(t *testing.T) {
 		t.Errorf("present exited agent: got %+v; want Running=true Alive=false", terminal)
 	}
 }
+
+// TestLivenessFromAgentAndPaneRejectsStaleRegistryEntry reproduces the
+// production Herdr restart failure: agent list/get retained an idle registry
+// row after the old pane disappeared. Trusting agent_status alone kept the
+// missing runtime active forever, consumed the pool's max slot, and prevented
+// routed work from starting a replacement.
+func TestLivenessFromAgentAndPaneRejectsStaleRegistryEntry(t *testing.T) {
+	info := agentInfo{Name: "worker", PaneID: "w2:p3G", AgentStatus: "idle"}
+
+	missing := livenessFromAgentAndPane(info, true, nil, paneProbe{}, nil)
+	if missing.Running || missing.Alive {
+		t.Errorf("confirmed-missing pane: got %+v; want Running=false Alive=false", missing)
+	}
+
+	bareShell := livenessFromAgentAndPane(info, true, nil, paneProbe{Exists: true, Busy: false}, nil)
+	if bareShell.Running || bareShell.Alive {
+		t.Errorf("bare-shell pane: got %+v; want Running=false Alive=false", bareShell)
+	}
+
+	live := livenessFromAgentAndPane(info, true, nil, paneProbe{Exists: true, Busy: true}, nil)
+	if !live.Running || !live.Alive {
+		t.Errorf("busy pane: got %+v; want Running=true Alive=true", live)
+	}
+
+	probeErr := errors.New("herdr transport failure")
+	uncertain := livenessFromAgentAndPane(info, true, nil, paneProbe{}, probeErr)
+	if !uncertain.Running || !uncertain.Alive {
+		t.Errorf("probe uncertainty: got %+v; want fail-safe Running=true Alive=true", uncertain)
+	}
+}

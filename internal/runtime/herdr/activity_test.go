@@ -103,6 +103,7 @@ func TestCapabilitiesDeclareActivity(t *testing.T) {
 func TestObserveLivenessPublishesDurableActivity(t *testing.T) {
 	p, _, state := newFakeHerdrProvider(t)
 	setState(t, state, "registered")
+	setState(t, state, "busy")
 	now := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
 	p.now = func() time.Time { return now }
 

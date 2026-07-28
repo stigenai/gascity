@@ -390,6 +390,24 @@ func TestObserveLivenessExitedAgentReadsDead(t *testing.T) {
 	}
 }
 
+// Herdr may retain an idle agent registry entry after a server restart even
+// though the referenced pane no longer exists. The registry row is not a
+// liveness lease: the pane probe must fence it out so the reconciler can heal
+// and replace the session.
+func TestObserveLivenessRejectsRegisteredAgentWithMissingPane(t *testing.T) {
+	p, _, state := newFakeHerdrProvider(t)
+	setState(t, state, "registered")
+	setState(t, state, "pane_gone")
+
+	if got := p.ObserveLiveness("gastown__witness", nil); got.Running || got.Alive {
+		t.Fatalf("ObserveLiveness = %+v for stale registry row; want zero", got)
+	}
+	if calls := fakeCalls(t, state); !strings.Contains(calls, "agent get gastown__witness") ||
+		!strings.Contains(calls, "pane process-info --pane %5") {
+		t.Fatalf("ObserveLiveness did not validate the registered pane:\n%s", calls)
+	}
+}
+
 // ListRunning must see sessions that herdr's registry does not: raw shell
 // sessions never register an agent, so listing by registry alone hides them
 // from every session-enumeration consumer (orphan detection, gc ls).
