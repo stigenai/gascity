@@ -662,13 +662,14 @@ func (p *Provider) ObserveLiveness(name string, _ []string) runtime.Liveness {
 	}
 	liveness := livenessFromAgentAndPane(info, present, err, probe, probeErr)
 	if err == nil && present && strings.TrimSpace(info.PaneID) != "" &&
-		probeErr == nil && !probe.Exists {
+		probeErr == nil && (!probe.Exists || !probe.Busy) {
 		// A stale registry row is also a name lease. Merely reporting it dead
 		// leaves the name occupied, so the replacement Start collides with the
 		// same row and burns its restart budget without ever creating a new
-		// process. Reap the confirmed-missing pane now; Herdr's close operation
-		// also releases the registry name. The sidecar binding cannot be trusted
-		// again even if close itself fails.
+		// process. Reap a confirmed-missing pane or one that has returned to its
+		// bare shell prompt; Herdr's close operation also releases the registry
+		// name. The sidecar binding cannot be trusted again even if close itself
+		// fails.
 		if cerr := p.c.closePane(ctx, info.PaneID); cerr != nil {
 			fmt.Fprintf(os.Stderr, "herdr: reaping stale registered pane %q for %q: %v\n", info.PaneID, name, cerr) //nolint:errcheck // liveness remains missing; next tick retries
 		}
@@ -777,7 +778,11 @@ func (p *Provider) ListRunning(prefix string) ([]string, error) {
 		if !strings.HasPrefix(name, prefix) || seen[name] {
 			continue
 		}
-		if _, running, err := resolveBinding(p.lookupOps(ctx, name)); err == nil && running {
+		// ListRunning feeds the startup adoption barrier. It must apply the
+		// same pane fence as every per-session liveness read; resolveBinding's
+		// registry fast path intentionally trusts a present name and therefore
+		// cannot detect Herdr's persisted row + missing-pane restart artifact.
+		if liveness := p.ObserveLiveness(name, nil); liveness.Running {
 			seen[name] = true
 			out = append(out, name)
 		}
