@@ -609,8 +609,8 @@ func processTreeAlive(shellPID int, fg []proc, processNames []string, sessionID 
 }
 
 // ObserveLiveness reports session presence (Running) and agent-process
-// liveness (Alive) in one `agent get` pass, derived from herdr's own agent
-// registry and status — the herdr analog of the tmux provider's
+// liveness (Alive) from herdr's agent registry/status plus a pane probe — the
+// herdr analog of the tmux provider's
 // ObserveLiveness. This is the LivenessObserver fast-path that
 // runtime.ObserveLiveness prefers over the generic IsRunning + ProcessAlive
 // fold, so it is what every liveness consumer (the API observer, the session
@@ -627,9 +627,12 @@ func processTreeAlive(shellPID int, fg []proc, processNames []string, sessionID 
 // which upstream reads as "runtime missing" and drives an endless
 // continuation-reset / quarantine loop. herdr tracks the pane's agent process
 // directly, so its agent_status does not depend on either fragile signal and
-// keeps a live orchestrator classified alive. ProcessAlive is retained
-// unchanged for the non-observer call sites (doctor) and the caffeinate-wrapper
-// case; processNames is unused here because herdr's status supersedes it.
+// keeps a live orchestrator classified alive. The pane probe is still required:
+// herdr can retain an idle registry row after its pane disappears, and trusting
+// that stale row forever consumes the pool slot and prevents replacement.
+// ProcessAlive is retained unchanged for the non-observer call sites (doctor)
+// and the caffeinate-wrapper case; processNames is unused here because herdr's
+// status supersedes configured process-name matching.
 func (p *Provider) ObserveLiveness(name string, _ []string) runtime.Liveness {
 	if strings.TrimSpace(name) == "" {
 		return runtime.Liveness{}
@@ -652,7 +655,12 @@ func (p *Provider) ObserveLiveness(name string, _ []string) runtime.Liveness {
 			return runtime.Liveness{Running: true, Alive: true}
 		}
 	}
-	liveness := livenessFromAgent(info, present, err)
+	var probe paneProbe
+	var probeErr error
+	if err == nil && present && strings.TrimSpace(info.PaneID) != "" {
+		probe, probeErr = p.probePane(ctx, info.PaneID)
+	}
+	liveness := livenessFromAgentAndPane(info, present, err, probe, probeErr)
 	if liveness.Running {
 		if aerr := p.recordObservedActivity(name, info.AgentStatus); aerr != nil {
 			fmt.Fprintf(os.Stderr, "herdr: recording observed activity for %q: %v\n", name, aerr) //nolint:errcheck // best-effort observability
@@ -670,6 +678,23 @@ func livenessFromAgent(info agentInfo, present bool, err error) runtime.Liveness
 		return runtime.Liveness{}
 	}
 	return runtime.Liveness{Running: true, Alive: agentAliveFromStatus(info.AgentStatus)}
+}
+
+// livenessFromAgentAndPane rejects a stale registry row when herdr can
+// positively show that its pane is gone or has fallen back to a bare shell.
+// Probe uncertainty preserves the status-derived fail-safe verdict: a
+// transient control-socket error must not trigger destructive session churn.
+// Older/foreign registry rows without a pane id keep the prior status-only
+// behavior because there is no stable handle to validate.
+func livenessFromAgentAndPane(info agentInfo, present bool, agentErr error, probe paneProbe, probeErr error) runtime.Liveness {
+	liveness := livenessFromAgent(info, present, agentErr)
+	if !liveness.Running || strings.TrimSpace(info.PaneID) == "" || probeErr != nil {
+		return liveness
+	}
+	if !probe.Exists || !probe.Busy {
+		return runtime.Liveness{}
+	}
+	return liveness
 }
 
 // agentAliveFromStatus maps a herdr agent_status to agent-process liveness. An
