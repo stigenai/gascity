@@ -136,10 +136,25 @@ func execProviderNeedsScopedDoltStoreEnv(provider string) bool {
 }
 
 func resolveConfiguredExecStoreTarget(cityPath, storePath string) (execStoreTarget, error) {
+	return resolveConfiguredExecStoreTargetWithConfig(cityPath, storePath, nil)
+}
+
+// resolveConfiguredExecStoreTargetWithConfig is resolveConfiguredExecStoreTarget
+// with the resolved city config supplied by the caller instead of always
+// reloaded from disk. openExecStoreAtForCity (the hot per-tick dispatch path,
+// main.go) passes its already-resolved *config.City through here so opening
+// N scope targets on M ticks costs one config load, not N*M (ga-237xpr,
+// PR #4682 review round 1 BLOCKER). cfg == nil reproduces the legacy
+// always-reload behavior exactly, which the lifecycle-init call site
+// (beads_provider_lifecycle.go) still relies on.
+func resolveConfiguredExecStoreTargetWithConfig(cityPath, storePath string, cfg *config.City) (execStoreTarget, error) {
 	scopeRoot := resolveStoreScopeRoot(cityPath, storePath)
-	cfg, err := loadCityConfig(cityPath, io.Discard)
-	if err != nil {
-		return execStoreTarget{}, err
+	if cfg == nil {
+		var err error
+		cfg, err = loadCityConfig(cityPath, io.Discard)
+		if err != nil {
+			return execStoreTarget{}, err
+		}
 	}
 	if samePath(scopeRoot, cityPath) {
 		return execStoreTarget{

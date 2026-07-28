@@ -85,6 +85,12 @@ type AwakeWorkBead struct {
 	Assignee string
 	Status   string // "open", "in_progress"
 	Ready    bool   // true for open work only after readiness/blocker filtering
+	// Blocked is true when an in_progress bead carries an open
+	// ready-blocking dependency or gate (bd's IsBlocked projection). It is
+	// meaningless for open work, whose blocker state is already folded into
+	// Ready. Zero value is false, so every existing in_progress caller that
+	// does not populate it keeps today's unconditional-wake behavior.
+	Blocked bool
 }
 
 // AwakeDecision is the output for a single session.
@@ -368,8 +374,19 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 		}
 	}
 
+	// continuation_reset_pending means "the next wake must start a fresh
+	// conversation" — it is not itself a reason to wake a Drained session.
+	// AcknowledgeDrainPatch(freshWake=true) stamps state=drained +
+	// continuation_reset_pending=true together when a wake_mode=fresh session
+	// drain-acks (e.g. it only has blocked assigned work). Without this guard
+	// that pending flag alone re-desires the session every tick, undoing the
+	// drain-ack and driving a perpetual wake/drain oscillation (each cycle a
+	// full fresh model boot). Mirrors the Drained guard on the pin arm below.
+	// A legitimate reset-pending session is asleep-but-not-drained (restart
+	// request, config-drift reset) or already carries pending-create/
+	// explicit-wake — both remain unaffected by this guard.
 	for _, bead := range input.SessionBeads {
-		if !bead.ContinuationResetPending || bead.RestartRequested || bead.WaitHold {
+		if !bead.ContinuationResetPending || bead.RestartRequested || bead.WaitHold || bead.Drained {
 			continue
 		}
 		switch desired[bead.SessionName] {
@@ -702,7 +719,7 @@ func sessionHasAssignedWork(workBeads []AwakeWorkBead, named []AwakeNamedSession
 func workBeadHasAwakeDemand(bead AwakeWorkBead) bool {
 	switch bead.Status {
 	case "in_progress":
-		return true
+		return !bead.Blocked
 	case "open":
 		return bead.Ready
 	default:
