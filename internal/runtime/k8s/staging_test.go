@@ -49,6 +49,74 @@ func TestTarDirStripsOwnership(t *testing.T) {
 	}
 }
 
+func TestTarDirExcludesReproducibleCaches(t *testing.T) {
+	dir := t.TempDir()
+	included := map[string]string{
+		"source.go":               "source",
+		".claude/settings.json":   "settings",
+		"ui/package.json":         "package",
+		"nested/.next-source.txt": "not a cache directory",
+	}
+	excluded := map[string]string{
+		".devenv/state/profile":          "nix cache",
+		".direnv/cache":                  "direnv cache",
+		"ui/.next/cache/bundle":          "next cache",
+		"ui/node_modules/pkg/index.js":   "node cache",
+		".claude/worktrees/task/file.go": "nested checkout",
+	}
+	for name, contents := range included {
+		writeTarTestFile(t, dir, name, contents)
+	}
+	for name, contents := range excluded {
+		writeTarTestFile(t, dir, name, contents)
+	}
+
+	var buf bytes.Buffer
+	if err := tarDir(dir, &buf); err != nil {
+		t.Fatal(err)
+	}
+	got := make(map[string]string)
+	tr := tar.NewReader(&buf)
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hdr.FileInfo().IsDir() {
+			continue
+		}
+		data, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got[filepath.ToSlash(hdr.Name)] = string(data)
+	}
+	for name, want := range included {
+		if got[name] != want {
+			t.Errorf("included file %q = %q, want %q", name, got[name], want)
+		}
+	}
+	for name := range excluded {
+		if _, ok := got[name]; ok {
+			t.Errorf("cache file %q was included in archive", name)
+		}
+	}
+}
+
+func writeTarTestFile(t *testing.T, root, name, contents string) {
+	t.Helper()
+	target := filepath.Join(root, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTarFileStripsOwnership(t *testing.T) {
 	f := filepath.Join(t.TempDir(), "test.txt")
 	if err := os.WriteFile(f, []byte("hello"), 0o644); err != nil {
@@ -366,8 +434,52 @@ func TestWaitForExecReadyReturnsContextCancellationDuringDelay(t *testing.T) {
 	}
 }
 
+func TestCopyDirToPodStreamsArchive(t *testing.T) {
+	dir := t.TempDir()
+	payload := strings.Repeat("bounded-stream-", 4096)
+	if err := os.WriteFile(filepath.Join(dir, "payload.txt"), []byte(payload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ops := newCapturingStageOps()
+	if err := copyDirToPod(context.Background(), ops, "pod", "stage", dir, "/workspace"); err != nil {
+		t.Fatalf("copyDirToPod: %v", err)
+	}
+	if !ops.sawPipeReader {
+		t.Fatal("copyDirToPod stdin was not streamed through io.Pipe")
+	}
+	if got := ops.files["/workspace/payload.txt"]; got != payload {
+		t.Fatalf("staged payload length = %d, want %d", len(got), len(payload))
+	}
+}
+
+func TestStreamArchiveToPodReturnsProducerError(t *testing.T) {
+	want := errors.New("archive read failed")
+	ops := newCapturingStageOps()
+
+	err := streamArchiveToPod(
+		context.Background(),
+		ops,
+		"pod",
+		"stage",
+		"/source",
+		"/workspace",
+		func(w io.Writer) error {
+			tw := tar.NewWriter(w)
+			if err := tw.WriteHeader(&tar.Header{Name: "partial", Mode: 0o644, Size: 1}); err != nil {
+				return err
+			}
+			return want
+		},
+	)
+	if !errors.Is(err, want) {
+		t.Fatalf("streamArchiveToPod error = %v, want %v", err, want)
+	}
+}
+
 type capturingStageOps struct {
-	files map[string]string
+	files         map[string]string
+	sawPipeReader bool
 }
 
 func newCapturingStageOps() *capturingStageOps {
@@ -400,6 +512,7 @@ func (o *capturingStageOps) listPods(context.Context, string, string) ([]corev1.
 
 func (o *capturingStageOps) execInPod(_ context.Context, _, _ string, cmd []string, stdin io.Reader) (string, error) {
 	if len(cmd) == 5 && cmd[0] == "tar" && cmd[1] == "xf" && cmd[2] == "-" && cmd[3] == "-C" && stdin != nil {
+		_, o.sawPipeReader = stdin.(*io.PipeReader)
 		tr := tar.NewReader(stdin)
 		for {
 			hdr, err := tr.Next()

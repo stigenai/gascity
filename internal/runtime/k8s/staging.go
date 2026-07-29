@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -202,16 +203,9 @@ func copyDirToPod(ctx context.Context, ops k8sOps, podName, container, srcDir, d
 	_, _ = ops.execInPod(ctx, podName, container,
 		[]string{"mkdir", "-p", dstDir}, nil)
 
-	// Build tar archive of the source directory.
-	var buf bytes.Buffer
-	if err := tarDir(srcDir, &buf); err != nil {
-		return fmt.Errorf("creating tar of %s: %w", srcDir, err)
-	}
-
-	// Extract in the pod.
-	_, err = ops.execInPod(ctx, podName, container,
-		[]string{"tar", "xf", "-", "-C", dstDir}, &buf)
-	return err
+	return streamArchiveToPod(ctx, ops, podName, container, srcDir, dstDir, func(w io.Writer) error {
+		return tarDir(srcDir, w)
+	})
 }
 
 // copyToPod copies a single file or directory to the pod.
@@ -230,13 +224,42 @@ func copyToPod(ctx context.Context, ops k8sOps, podName, container, src, dst str
 	_, _ = ops.execInPod(ctx, podName, container,
 		[]string{"mkdir", "-p", parentDir}, nil)
 
-	var buf bytes.Buffer
-	if err := tarFile(src, info, filepath.Base(dst), &buf); err != nil {
-		return fmt.Errorf("creating tar of %s: %w", src, err)
+	return streamArchiveToPod(ctx, ops, podName, container, src, parentDir, func(w io.Writer) error {
+		return tarFile(src, info, filepath.Base(dst), w)
+	})
+}
+
+// streamArchiveToPod creates a tar archive concurrently with extraction in the
+// pod. Work directories can be many gigabytes; buffering the complete archive
+// in a bytes.Buffer made supervisor memory scale with repository size and could
+// OOM the shared town container. io.Pipe keeps the resident staging footprint
+// bounded by the transport's in-flight data instead.
+func streamArchiveToPod(
+	ctx context.Context,
+	ops k8sOps,
+	podName, container, src, dstDir string,
+	writeArchive func(io.Writer) error,
+) error {
+	pr, pw := io.Pipe()
+	archiveErr := make(chan error, 1)
+	go func() {
+		err := writeArchive(pw)
+		_ = pw.CloseWithError(err)
+		archiveErr <- err
+	}()
+
+	_, execErr := ops.execInPod(ctx, podName, container,
+		[]string{"tar", "xf", "-", "-C", dstDir}, pr)
+	// If exec stops consuming stdin early, unblock the archive producer before
+	// waiting for it. The buffered channel also prevents a completed producer
+	// from depending on this goroutine receiving immediately.
+	_ = pr.CloseWithError(execErr)
+	tarErr := <-archiveErr
+
+	if tarErr != nil && (execErr == nil || !errors.Is(tarErr, io.ErrClosedPipe)) {
+		return fmt.Errorf("creating tar of %s: %w", src, tarErr)
 	}
-	_, err = ops.execInPod(ctx, podName, container,
-		[]string{"tar", "xf", "-", "-C", parentDir}, &buf)
-	return err
+	return execErr
 }
 
 // tarDir creates a tar archive of a directory's contents.
@@ -255,6 +278,9 @@ func tarDir(dir string, w io.Writer) error {
 		}
 		if rel == "." {
 			return nil
+		}
+		if info.IsDir() && skipStagingCacheDir(rel) {
+			return filepath.SkipDir
 		}
 
 		// Dereference symlinks: use the resolved path for both stat and open
@@ -304,6 +330,24 @@ func tarDir(dir string, w io.Writer) error {
 		_, err = io.CopyN(tw, f, header.Size)
 		return err
 	})
+}
+
+// skipStagingCacheDir omits local, reproducible caches that must not be copied
+// into an isolated worker. Besides wasting network and startup time, these can
+// dwarf the repository itself (multi-gigabyte node_modules/.next/.devenv
+// trees). Claude's nested worktrees are also independent checkouts, not agent
+// configuration; the rest of .claude remains staged.
+func skipStagingCacheDir(rel string) bool {
+	clean := filepath.ToSlash(filepath.Clean(rel))
+	if clean == ".claude/worktrees" {
+		return true
+	}
+	switch filepath.Base(clean) {
+	case ".devenv", ".direnv", ".next", "node_modules":
+		return true
+	default:
+		return false
+	}
 }
 
 // tarFile creates a tar archive containing a single file.
