@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
@@ -1911,13 +1912,36 @@ func (m *Manager) EnrichInfo(info Info) Info {
 	return info
 }
 
+const maxConcurrentRuntimeEnrichments = 8
+
 // EnrichInfos applies EnrichInfo to each element in place and returns the same
 // slice, for the list read path (filter the persisted projection first, then
-// enrich the survivors — matching ListFullFromBeads' order).
+// enrich the survivors — matching ListFullFromBeads' order). Runtime providers
+// may perform remote observation for each session, so independent rows are
+// enriched concurrently with a fixed worker bound. The result slice retains
+// persisted order and each row still receives the complete EnrichInfo overlay.
 func (m *Manager) EnrichInfos(infos []Info) []Info {
-	for i := range infos {
-		infos[i] = m.EnrichInfo(infos[i])
+	workers := min(len(infos), maxConcurrentRuntimeEnrichments)
+	if workers == 0 {
+		return infos
 	}
+
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				infos[i] = m.EnrichInfo(infos[i])
+			}
+		}()
+	}
+	for i := range infos {
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
 	return infos
 }
 
