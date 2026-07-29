@@ -49,9 +49,12 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 		}
 	}
 
-	// Built at most once, and only if a deterministic session-name probe misses
-	// (see #4703 — bounded-pool slots never match their ephemeral session name).
+	// Build the durable session projection at most once. The controller owns
+	// runtime liveness/fencing; this list endpoint must not synchronously probe
+	// every configured agent because Herdr probes are process-aware and
+	// intentionally non-trivial.
 	liveSessions := s.memoizedAgentSessionIndex(cityName, sessTmpl)
+	runningSessions := memoizedAgentRuntimeIndex(sp)
 
 	var agents []agentResponse
 	for _, a := range cfg.Agents {
@@ -67,11 +70,11 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 				continue
 			}
 
-			sessionName, running := resolveAgentRuntime(
-				sp,
+			sessionName, running := resolveAgentRuntimeProjected(
 				agentSessionName(cityName, ea.qualifiedName, sessTmpl),
 				ea.qualifiedName,
 				liveSessions,
+				runningSessions,
 			)
 
 			if input.Running == "true" && !running {
@@ -82,8 +85,10 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 			}
 
 			suspended := ea.suspended
-			if v, err := sp.GetMeta(sessionName, "suspended"); err == nil && v == "true" {
-				suspended = true
+			if running {
+				if v, err := sp.GetMeta(sessionName, "suspended"); err == nil && v == "true" {
+					suspended = true
+				}
 			}
 
 			provider, displayName := resolveProviderInfo(ea.provider, cfg)

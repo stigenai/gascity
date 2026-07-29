@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -31,6 +32,22 @@ func (p partialAgentSessionLister) ListRunning(prefix string) ([]string, error) 
 		}
 	}
 	return filtered, p.err
+}
+
+type countingIsRunningProvider struct {
+	runtime.Provider
+	isRunningCalls   int
+	listRunningCalls int
+}
+
+func (p *countingIsRunningProvider) IsRunning(name string) bool {
+	p.isRunningCalls++
+	return p.Provider.IsRunning(name)
+}
+
+func (p *countingIsRunningProvider) ListRunning(prefix string) ([]string, error) {
+	p.listRunningCalls++
+	return p.Provider.ListRunning(prefix)
 }
 
 type activeBeadQueryStore struct {
@@ -68,6 +85,36 @@ func TestAgentList(t *testing.T) {
 	}
 	if resp.Total != 1 {
 		t.Errorf("Total = %d, want 1", resp.Total)
+	}
+}
+
+func TestAgentListUsesDurableProjectionWithoutRuntimeFanout(t *testing.T) {
+	state := newFakeState(t)
+	state.cityBeadStore = beads.NewMemStore()
+	state.cfg.Agents = nil
+	for i := 0; i < 40; i++ {
+		state.cfg.Agents = append(state.cfg.Agents, config.Agent{
+			Name:              fmt.Sprintf("worker-%02d", i),
+			Dir:               "myrig",
+			Provider:          "test-agent",
+			MaxActiveSessions: intPtr(1),
+		})
+	}
+	provider := &countingIsRunningProvider{Provider: state.sp}
+	state.sessionProvider = provider
+
+	h := newTestCityHandler(t, state)
+	req := httptest.NewRequest("GET", cityURL(state, "/agents"), nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if provider.isRunningCalls != 0 {
+		t.Fatalf("IsRunning calls = %d, want 0 for projected roster", provider.isRunningCalls)
+	}
+	if provider.listRunningCalls != 0 {
+		t.Fatalf("ListRunning calls = %d, want 0 with healthy projection", provider.listRunningCalls)
 	}
 }
 
