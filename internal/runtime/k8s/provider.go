@@ -68,11 +68,14 @@ type schedulingFields struct {
 //   - GC_K8S_SERVICE_ACCOUNT — pod service account name (default: namespace default)
 //   - GC_K8S_CPU_REQUEST, GC_K8S_MEM_REQUEST — resource requests
 //   - GC_K8S_CPU_LIMIT, GC_K8S_MEM_LIMIT — resource limits
+//   - GC_K8S_DOLT_SECRET — namespace-local Secret containing username/password
 //
 // The in-cluster Dolt service alias defaults to the provider defaults
 // (dolt.gc.svc.cluster.local:3307). Pods receive projected GC_DOLT_* env;
 // GC_K8S_DOLT_* remains a deprecated compatibility input for the provider-
-// managed in-cluster alias only.
+// managed in-cluster alias only. When GC_K8S_DOLT_SECRET is set, both the GC
+// and BEADS credential variables are required SecretKeyRef projections; Dolt
+// credential literals are never copied from the controller into Pod specs.
 //
 // Uses rest.InClusterConfig() when running in a pod, falls back to
 // clientcmd.BuildConfigFromFlags() for local development.
