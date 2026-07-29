@@ -337,6 +337,13 @@ test.describe('dashboard render smoke over the seeded corpus', () => {
         exact: false,
       }),
     ).toBeVisible();
+    // The seeded corpus has no live provider runtime, so the guarded direct
+    // message control renders in its designed stopped-session state. Presence
+    // here proves Agent Detail wires the explicit session-message endpoint
+    // instead of remaining read-only.
+    await expect(page.getByRole('textbox', { name: 'Message agent' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Send' })).toBeDisabled();
+    await expect(page.getByText('Session is not running.')).toBeVisible();
   });
 
   test('run detail run-evidence panel shows the session view with no diff tab', async ({

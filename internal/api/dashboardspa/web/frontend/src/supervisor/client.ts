@@ -29,8 +29,10 @@ import {
   replyMail as postSupervisorMailReply,
   respondSession as postSupervisorSessionRespond,
   sendMail as postSupervisorMail,
+  sendSessionMessage as postSupervisorSessionMessage,
 } from 'gas-city-dashboard-shared/gc-supervisor';
 import type {
+  AsyncAcceptedBody,
   Bead,
   BeadCreateInputBody,
   BeadUpdateBody,
@@ -65,6 +67,7 @@ import type {
   SessionTranscriptGetResponse,
   SessionPendingResponse,
   SessionRespondInputBody,
+  SessionMessageInputBody,
   SlingInputBody,
   SlingResponse,
   SupervisorCitiesOutputBody,
@@ -161,6 +164,11 @@ export interface SupervisorApi {
     sessionId: string,
     body: SessionRespondInputBody,
   ): Promise<RespondSessionResponse>;
+  sendSessionMessage(
+    cityName: string,
+    sessionId: string,
+    body: SessionMessageInputBody,
+  ): Promise<AsyncAcceptedBody>;
   sessionTranscript(
     cityName: string,
     sessionId: string,
@@ -508,6 +516,17 @@ export function createSupervisorApi(options: CreateSupervisorApiOptions = {}): S
           body,
         }) as Promise<SupervisorResult<RespondSessionResponse>>,
         'gc supervisor session respond response was empty',
+      );
+    },
+    sendSessionMessage(cityName, sessionId, body) {
+      return unwrapSupervisorResult<AsyncAcceptedBody>(
+        postSupervisorSessionMessage({
+          client,
+          path: { cityName, id: sessionId },
+          headers: GC_MUTATION_HEADERS,
+          body,
+        }) as Promise<SupervisorResult<AsyncAcceptedBody>>,
+        'gc supervisor session message response was empty',
       );
     },
     sessionTranscript(cityName, sessionId, format) {
