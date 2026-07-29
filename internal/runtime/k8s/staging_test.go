@@ -242,6 +242,32 @@ func TestStageFilesStagesKiroPackOverlayAtPodWorkDirForRigWorkDir(t *testing.T) 
 	}
 }
 
+func TestStageFilesKeepsExternalRigOutsideCityWorkspace(t *testing.T) {
+	cityRoot := t.TempDir()
+	workDir := t.TempDir()
+	writeTarTestFile(t, workDir, ".beads/metadata.json", `{"dolt_database":"ib"}`)
+	writeTarTestFile(t, workDir, "task.txt", "rig payload")
+
+	ops := newCapturingStageOps()
+	err := stageFiles(context.Background(), ops, "gc-external-rig", runtime.Config{
+		WorkDir: workDir,
+		Env:     map[string]string{"GC_CITY": cityRoot},
+	}, cityRoot, io.Discard)
+	if err != nil {
+		t.Fatalf("stageFiles: %v", err)
+	}
+
+	if got := ops.files["/workspace/rig/.beads/metadata.json"]; got != `{"dolt_database":"ib"}` {
+		t.Fatalf("external rig metadata = %q, want staged under /workspace/rig", got)
+	}
+	if got := ops.files["/workspace/rig/task.txt"]; got != "rig payload" {
+		t.Fatalf("external rig payload = %q, want staged under /workspace/rig", got)
+	}
+	if _, ok := ops.files["/workspace/.beads/metadata.json"]; ok {
+		t.Fatal("external rig metadata was staged at city root and can be overwritten by city initialization")
+	}
+}
+
 func TestStageFilesUsesConcreteProviderOverlayName(t *testing.T) {
 	workDir := t.TempDir()
 	packOverlay := t.TempDir()

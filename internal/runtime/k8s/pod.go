@@ -45,15 +45,52 @@ func remapControllerPathToPod(val, ctrlCity string) string {
 	return val
 }
 
+func remapControllerOrWorkDirPathToPod(val, ctrlCity, ctrlWorkDir, podWorkDir string) string {
+	val = strings.TrimSpace(val)
+	if val == "" {
+		return val
+	}
+	if remapped := remapControllerPathToPod(val, ctrlCity); remapped != val {
+		return remapped
+	}
+	ctrlWorkDir = strings.TrimSpace(ctrlWorkDir)
+	podWorkDir = strings.TrimSpace(podWorkDir)
+	if ctrlWorkDir != "" && podWorkDir != "" &&
+		(val == ctrlWorkDir || strings.HasPrefix(val, ctrlWorkDir+"/")) {
+		return podWorkDir + val[len(ctrlWorkDir):]
+	}
+	return val
+}
+
 func projectedPodWorkDir(cfg runtime.Config) string {
+	return projectedPodWorkDirForController(cfg, controllerCityPath(cfg.Env))
+}
+
+func projectedPodWorkDirForController(cfg runtime.Config, ctrlCity string) string {
 	podWorkDir := "/workspace"
-	ctrlCity := controllerCityPath(cfg.Env)
 	if ctrlCity != "" && cfg.WorkDir != "" && cfg.WorkDir != ctrlCity {
 		if rel, ok := strings.CutPrefix(cfg.WorkDir, ctrlCity+"/"); ok {
 			podWorkDir = "/workspace/" + rel
+		} else {
+			// External rigs are siblings of the city in common deployments
+			// (for example /data/city and /data/rigs/repo). Keep the rig in a
+			// distinct pod directory so initCityInPod can materialize city
+			// state at /workspace without overwriting the rig's .beads identity.
+			podWorkDir = "/workspace/rig"
 		}
 	}
 	return podWorkDir
+}
+
+func remapControllerCommandToPod(cmd string, cfg runtime.Config) string {
+	ctrlCity := controllerCityPath(cfg.Env)
+	if ctrlCity != "" {
+		cmd = strings.ReplaceAll(cmd, ctrlCity, "/workspace")
+	}
+	if cfg.WorkDir != "" {
+		cmd = strings.ReplaceAll(cmd, cfg.WorkDir, projectedPodWorkDir(cfg))
+	}
+	return cmd
 }
 
 // agentCommandB64 resolves the agent command, remaps controller-side city path
@@ -67,9 +104,7 @@ func agentCommandB64(cfg runtime.Config) string {
 	}
 	// The controller expands {{.ConfigDir}} templates using its own city path
 	// (e.g. /city/packs/...) but pods have files at /workspace/....
-	if ctrlCity := controllerCityPath(cfg.Env); ctrlCity != "" {
-		cmd = strings.ReplaceAll(cmd, ctrlCity, "/workspace")
-	}
+	cmd = remapControllerCommandToPod(cmd, cfg)
 	return base64.StdEncoding.EncodeToString([]byte(cmd))
 }
 
@@ -99,7 +134,12 @@ func projectedPodStoreRoot(cfg runtime.Config, podWorkDir string) string {
 	if storeRoot == "" {
 		storeRoot = controllerCityPath(cfg.Env)
 	}
-	storeRoot = remapControllerPathToPod(storeRoot, controllerCityPath(cfg.Env))
+	storeRoot = remapControllerOrWorkDirPathToPod(
+		storeRoot,
+		controllerCityPath(cfg.Env),
+		cfg.WorkDir,
+		podWorkDir,
+	)
 	if storeRoot == "" {
 		return podWorkDir
 	}
@@ -219,10 +259,7 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 	// shell metacharacter injection from user-supplied commands.
 	var preStartCmds string
 	for _, cmd := range cfg.PreStart {
-		c := cmd
-		if ctrlCity != "" {
-			c = strings.ReplaceAll(c, ctrlCity, "/workspace")
-		}
+		c := remapControllerCommandToPod(cmd, cfg)
 		b64 := base64.StdEncoding.EncodeToString([]byte(c))
 		preStartCmds += fmt.Sprintf("echo '%s' | base64 -d | sh; ", b64)
 	}
@@ -267,7 +304,7 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 	}
 
 	// Build environment, remapping K8s-specific vars.
-	env, err := buildPodEnv(cfg.Env, podWorkDir, p.managedServiceHost, p.managedServicePort)
+	env, err := buildPodEnv(cfg.Env, cfg.WorkDir, podWorkDir, p.managedServiceHost, p.managedServicePort)
 	if err != nil {
 		return nil, err
 	}
@@ -429,7 +466,7 @@ func agentSecurityContext(linuxUsername string) *corev1.SecurityContext {
 // buildPodEnv creates the env var list for the agent container.
 // Removes controller-only vars, strips deprecated K8s compatibility inputs,
 // and remaps pod-visible ones.
-func buildPodEnv(cfgEnv map[string]string, podWorkDir, managedServiceHost, managedServicePort string) ([]corev1.EnvVar, error) {
+func buildPodEnv(cfgEnv map[string]string, ctrlWorkDir, podWorkDir, managedServiceHost, managedServicePort string) ([]corev1.EnvVar, error) {
 	// Start with cfg.Env, removing controller-only vars.
 	skip := map[string]bool{
 		"GC_BEADS":               true,
@@ -473,7 +510,7 @@ func buildPodEnv(cfgEnv map[string]string, podWorkDir, managedServiceHost, manag
 		case "GC_CONTROL_DISPATCHER_TRACE_DEFAULT", "GC_PACK_STATE_DIR":
 			val = projectControllerRuntimePathToPod(val, ctrlCity, ctrlRuntimeDir, podRuntimeDir)
 		case "GC_STORE_ROOT", "GC_RIG_ROOT", "BEADS_DIR", "GT_ROOT", "GC_PACK_DIR":
-			val = remapControllerPathToPod(val, ctrlCity)
+			val = remapControllerOrWorkDirPathToPod(val, ctrlCity, ctrlWorkDir, podWorkDir)
 		}
 		env = append(env, corev1.EnvVar{Name: k, Value: val})
 	}
