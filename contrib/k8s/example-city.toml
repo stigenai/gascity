@@ -36,6 +36,13 @@ provider = "k8s"
 # K8s-specific settings. Env vars (GC_K8S_*) override TOML values.
 [session.k8s]
 namespace = "gc"
+# Provider credentials stay namespace-local and optional. Materialize only the
+# providers this city uses:
+#   Secret/claude-credentials    -> Claude config files (mounted read-only)
+#   Secret/git-credentials       -> key `token` (GITHUB_TOKEN)
+#   Secret/litellm-credentials   -> key `credential` (LITELLM_MASTER_KEY)
+# Literal GITHUB_TOKEN/LITELLM_MASTER_KEY values in controller session config
+# are deliberately discarded instead of being serialized into Pod specs.
 # image = "gc-agent:latest"       # or set GC_K8S_IMAGE env var
 # context = ""                     # uses current kubeconfig context
 # cpu_request = "500m"

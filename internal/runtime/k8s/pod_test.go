@@ -115,6 +115,63 @@ func TestBuildPod_DefaultSecurityBoundary(t *testing.T) {
 	assertRestrictedAgentContext(t, pod.Spec.Containers[0].SecurityContext)
 }
 
+func TestBuildPod_ProviderCredentialsUseNamespaceLocalSecrets(t *testing.T) {
+	p := newProviderWithOps(newFakeK8sOps())
+	pod, err := buildPod(
+		"test-session",
+		runtime.Config{
+			Command: "/bin/bash",
+			Env: map[string]string{
+				"GITHUB_TOKEN":       "must-not-leak",
+				"LITELLM_MASTER_KEY": "must-not-leak",
+			},
+		},
+		p,
+	)
+	if err != nil {
+		t.Fatalf("buildPod: %v", err)
+	}
+
+	env := make(map[string]corev1.EnvVar)
+	counts := make(map[string]int)
+	for _, entry := range pod.Spec.Containers[0].Env {
+		env[entry.Name] = entry
+		counts[entry.Name]++
+	}
+	for name, want := range map[string]struct {
+		secret string
+		key    string
+	}{
+		"GITHUB_TOKEN":       {secret: "git-credentials", key: "token"},
+		"LITELLM_MASTER_KEY": {secret: "litellm-credentials", key: "credential"},
+	} {
+		if counts[name] != 1 {
+			t.Fatalf("%s appears %d times in Pod env, want exactly once", name, counts[name])
+		}
+		entry := env[name]
+		if entry.Value != "" {
+			t.Fatalf("%s leaked a literal value into the Pod spec", name)
+		}
+		if entry.ValueFrom == nil || entry.ValueFrom.SecretKeyRef == nil {
+			t.Fatalf("%s does not use a SecretKeyRef", name)
+		}
+		ref := entry.ValueFrom.SecretKeyRef
+		if ref.Name != want.secret || ref.Key != want.key {
+			t.Fatalf(
+				"%s SecretKeyRef = %s/%s, want %s/%s",
+				name,
+				ref.Name,
+				ref.Key,
+				want.secret,
+				want.key,
+			)
+		}
+		if ref.Optional == nil || !*ref.Optional {
+			t.Fatalf("%s SecretKeyRef must remain optional", name)
+		}
+	}
+}
+
 func TestBuildPod_InitContainerUsesDefaultSecurityBoundary(t *testing.T) {
 	p := newProviderWithOps(newFakeK8sOps())
 	p.prebaked = false
