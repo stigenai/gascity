@@ -99,6 +99,71 @@ func TestBuildPod_NoSchedulingFields_NoBehaviorChange(t *testing.T) {
 	}
 }
 
+func TestBuildPod_DefaultSecurityBoundary(t *testing.T) {
+	p := newProviderWithOps(newFakeK8sOps())
+	pod, err := buildPod("test-session", runtime.Config{Command: "/bin/bash"}, p)
+	if err != nil {
+		t.Fatalf("buildPod: %v", err)
+	}
+
+	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken {
+		t.Fatal("worker pods must disable service-account token automount")
+	}
+	if len(pod.Spec.Containers) != 1 {
+		t.Fatalf("len(Containers) = %d, want 1", len(pod.Spec.Containers))
+	}
+	assertRestrictedAgentContext(t, pod.Spec.Containers[0].SecurityContext)
+}
+
+func TestBuildPod_InitContainerUsesDefaultSecurityBoundary(t *testing.T) {
+	p := newProviderWithOps(newFakeK8sOps())
+	p.prebaked = false
+	pod, err := buildPod(
+		"test-session",
+		runtime.Config{
+			Command: "/bin/bash",
+			Env:     map[string]string{"GC_CITY": "/city"},
+			WorkDir: "/workspace",
+		},
+		p,
+	)
+	if err != nil {
+		t.Fatalf("buildPod: %v", err)
+	}
+	if len(pod.Spec.InitContainers) != 1 {
+		t.Fatalf("len(InitContainers) = %d, want 1", len(pod.Spec.InitContainers))
+	}
+	assertRestrictedAgentContext(t, pod.Spec.InitContainers[0].SecurityContext)
+}
+
+func assertRestrictedAgentContext(t *testing.T, security *corev1.SecurityContext) {
+	t.Helper()
+	if security == nil {
+		t.Fatal("SecurityContext is nil")
+	}
+	if security.RunAsNonRoot == nil || !*security.RunAsNonRoot {
+		t.Fatal("RunAsNonRoot must be true")
+	}
+	if security.RunAsUser == nil || *security.RunAsUser != 1001 {
+		t.Fatalf("RunAsUser = %v, want 1001", security.RunAsUser)
+	}
+	if security.RunAsGroup == nil || *security.RunAsGroup != 1001 {
+		t.Fatalf("RunAsGroup = %v, want 1001", security.RunAsGroup)
+	}
+	if security.AllowPrivilegeEscalation == nil || *security.AllowPrivilegeEscalation {
+		t.Fatal("AllowPrivilegeEscalation must be false")
+	}
+	if security.Capabilities == nil ||
+		len(security.Capabilities.Drop) != 1 ||
+		security.Capabilities.Drop[0] != corev1.Capability("ALL") {
+		t.Fatalf("Capabilities.Drop = %v, want [ALL]", security.Capabilities)
+	}
+	if security.SeccompProfile == nil ||
+		security.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Fatalf("SeccompProfile = %v, want RuntimeDefault", security.SeccompProfile)
+	}
+}
+
 func TestBuildPod_ClonesSchedulingFields(t *testing.T) {
 	seconds := int64(30)
 	p := newProviderWithOps(newFakeK8sOps())

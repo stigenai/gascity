@@ -329,8 +329,9 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 			},
 		},
 		Spec: corev1.PodSpec{
-			ServiceAccountName: p.serviceAccount,
-			RestartPolicy:      corev1.RestartPolicyNever,
+			ServiceAccountName:           p.serviceAccount,
+			AutomountServiceAccountToken: boolPtr(false),
+			RestartPolicy:                corev1.RestartPolicyNever,
 			Containers: []corev1.Container{{
 				Name:            "agent",
 				Image:           p.image,
@@ -373,6 +374,7 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 			ImagePullPolicy: corev1.PullIfNotPresent,
 			Command:         []string{"sh", "-c", "while [ ! -f /workspace/.gc-ready ]; do sleep 0.5; done"},
 			VolumeMounts:    initVolMounts,
+			SecurityContext: agentSecurityContext(""),
 		}}
 	}
 
@@ -396,14 +398,31 @@ func cloneTolerations(in []corev1.Toleration) []corev1.Toleration {
 // agentSecurityContext returns a container security context.
 // When a dynamic linux username is configured, the container starts as root
 // (UID 0) so it can create the user at runtime before dropping privileges.
-// When no dynamic user is set, returns nil (uses Dockerfile default: gcagent).
+// Otherwise it locks the official agent image to its numeric gcagent UID/GID
+// and the Kubernetes Restricted Pod Security profile.
 func agentSecurityContext(linuxUsername string) *corev1.SecurityContext {
-	if linuxUsername == "" {
-		return nil
+	if linuxUsername != "" {
+		var rootUID int64
+		return &corev1.SecurityContext{
+			RunAsUser: &rootUID,
+		}
 	}
-	var rootUID int64
+
+	agentUID := int64(1001)
+	agentGID := int64(1001)
+	runAsNonRoot := true
+	allowPrivilegeEscalation := false
 	return &corev1.SecurityContext{
-		RunAsUser: &rootUID,
+		RunAsNonRoot:             &runAsNonRoot,
+		RunAsUser:                &agentUID,
+		RunAsGroup:               &agentGID,
+		AllowPrivilegeEscalation: &allowPrivilegeEscalation,
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{"ALL"},
+		},
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
+		},
 	}
 }
 
