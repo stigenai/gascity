@@ -1,9 +1,12 @@
 package api
 
 import (
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/agent"
+	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/session"
 )
 
@@ -13,8 +16,11 @@ import (
 // is unavailable.
 type liveAgentSession struct {
 	sessionName string
+	template    string
 	state       session.State
 	id          string
+	lastActive  time.Time
+	attached    bool
 }
 
 // agentSessionIdentities returns the qualified agent identities a live session
@@ -112,8 +118,11 @@ func (s *Server) agentLiveSessionIndex(cityName, sessTmpl string) map[string]liv
 
 		live := liveAgentSession{
 			sessionName: runtimeName,
+			template:    strings.TrimSpace(info.Template),
 			state:       state,
 			id:          strings.TrimSpace(info.ID),
+			lastActive:  info.LastActive,
+			attached:    info.Attached,
 		}
 		keys := agentSessionIdentities(cityName, sessTmpl, info)
 		// A singleton's template is its agent identity. Pool templates are
@@ -143,6 +152,93 @@ func (s *Server) agentLiveSessionIndex(cityName, sessTmpl string) map[string]liv
 	return index
 }
 
+// expandAgentProjected expands an agent for the roster without turning every
+// unlimited pool into a Kubernetes ListPods request. A healthy durable session
+// projection is authoritative; only a missing/degraded projection falls back
+// to the runtime provider.
+func expandAgentProjected(
+	a config.Agent,
+	cityName, sessTmpl string,
+	sp sessionLister,
+	lookup func() map[string]liveAgentSession,
+) []expandedAgent {
+	maxSess := a.EffectiveMaxActiveSessions()
+	isUnlimited := isMultiSessionAgent(a) && (maxSess == nil || *maxSess < 0)
+	if !isUnlimited {
+		return expandAgent(a, cityName, sessTmpl, sp)
+	}
+	if lookup != nil {
+		if index := lookup(); index != nil {
+			return discoverUnlimitedPoolProjected(a, a.QualifiedName(), index)
+		}
+	}
+	if sp == nil {
+		return nil
+	}
+	return discoverUnlimitedPool(a, a.QualifiedName(), cityName, sessTmpl, sp)
+}
+
+// discoverUnlimitedPoolProjected enumerates ephemeral pool identities from the
+// durable session projection. A session may be indexed under more than one
+// identity (agent name, alias, and runtime-name reversal), so runtime name
+// deduplicates rows. Sorting keys keeps the API response deterministic.
+func discoverUnlimitedPoolProjected(
+	a config.Agent,
+	poolName string,
+	index map[string]liveAgentSession,
+) []expandedAgent {
+	prefix := poolName + "-"
+	keys := make([]string, 0, len(index))
+	for qualifiedName, live := range index {
+		if live.template == poolName && strings.HasPrefix(qualifiedName, prefix) {
+			keys = append(keys, qualifiedName)
+		}
+	}
+	sort.Strings(keys)
+
+	seenSessions := make(map[string]bool, len(keys))
+	result := make([]expandedAgent, 0, len(keys))
+	for _, qualifiedName := range keys {
+		live := index[qualifiedName]
+		if seenSessions[live.sessionName] {
+			continue
+		}
+		seenSessions[live.sessionName] = true
+		result = append(result, expandedAgent{
+			qualifiedName: qualifiedName,
+			rig:           a.Dir,
+			pool:          poolName,
+			suspended:     a.Suspended,
+			provider:      a.Provider,
+			description:   a.Description,
+		})
+	}
+	return result
+}
+
+func projectedAgentRuntime(
+	deterministicName string,
+	qualifiedName string,
+	lookup func() map[string]liveAgentSession,
+	runtimeLookup func() map[string]struct{},
+) (liveAgentSession, bool, bool) {
+	fallback := liveAgentSession{sessionName: deterministicName}
+	if lookup != nil {
+		index := lookup()
+		if live, ok := index[qualifiedName]; ok {
+			return live, live.state == session.StateActive, true
+		}
+		if index != nil {
+			return fallback, false, true
+		}
+	}
+	if runtimeLookup == nil {
+		return fallback, false, false
+	}
+	_, running := runtimeLookup()[deterministicName]
+	return fallback, running, false
+}
+
 // resolveAgentRuntimeProjected resolves an agent roster row from the durable
 // session read model, with a single runtime snapshot as a degraded-store
 // fallback. Agent-list requests are a dashboard projection, not a liveness
@@ -157,22 +253,9 @@ func resolveAgentRuntimeProjected(
 	lookup func() map[string]liveAgentSession,
 	runtimeLookup func() map[string]struct{},
 ) (string, bool) {
-	if lookup != nil {
-		index := lookup()
-		if live, ok := index[qualifiedName]; ok {
-			return live.sessionName, live.state == session.StateActive
-		}
-		// A non-nil projection is authoritative. Do not turn a missing
-		// projected session into N per-agent runtime probes.
-		if index != nil {
-			return deterministicName, false
-		}
-	}
-	if runtimeLookup == nil {
-		return deterministicName, false
-	}
-	_, running := runtimeLookup()[deterministicName]
-	return deterministicName, running
+	live, running, _ := projectedAgentRuntime(
+		deterministicName, qualifiedName, lookup, runtimeLookup)
+	return live.sessionName, running
 }
 
 // resolveAgentRuntime returns the runtime session name to use for an agent slot
