@@ -5,9 +5,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gastownhall/gascity/internal/beads/contract"
 )
 
 // recordingRoundTripper is a fake in-process transport standing in for the
@@ -199,5 +203,85 @@ func TestEnsureDoesNotStoreCityPath(t *testing.T) {
 	// Calling ensure again returns the same sampler instance.
 	if again := m.ensure("alpha"); again != cs {
 		t.Error("ensure should return the cached sampler for a known city")
+	}
+}
+
+// TestProbeRigUsesResolvedExternalTarget catches the production external-Dolt
+// regression: the dashboard sampler must use the canonical per-rig endpoint,
+// not the managed-mode dolt-server.port artifact (which is intentionally
+// absent after use-external).
+func TestProbeRigUsesResolvedExternalTarget(t *testing.T) {
+	rigPath := t.TempDir()
+	if err := os.Mkdir(filepath.Join(rigPath, ".beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	m := newSamplerManager(Deps{}, newExecRunner())
+	wantTarget := contract.DoltConnectionTarget{
+		Host:     "gastown-dolt-primary.gastown.svc.cluster.local",
+		Port:     "3306",
+		Database: "spec",
+		User:     "gastown",
+	}
+	m.resolveDoltTarget = func(cityRoot, scopeRoot string) (contract.DoltConnectionTarget, error) {
+		if cityRoot != "/data/city" {
+			t.Fatalf("city root = %q, want /data/city", cityRoot)
+		}
+		if scopeRoot != rigPath {
+			t.Fatalf("scope root = %q, want %q", scopeRoot, rigPath)
+		}
+		return wantTarget, nil
+	}
+	m.execBdDoctor = func(_ context.Context, beadsPath string, target contract.DoltConnectionTarget) (*execResult, error) {
+		if beadsPath != filepath.Join(rigPath, ".beads") {
+			t.Fatalf("beads path = %q", beadsPath)
+		}
+		if target != wantTarget {
+			t.Fatalf("doctor target = %+v, want %+v", target, wantTarget)
+		}
+		return &execResult{stdout: `{"checks":[{"category":"Database","name":"Dolt Connection","status":"ok","message":"Connected"}]}`}, nil
+	}
+	m.probeDolt = func(host, port string) bool {
+		if host != wantTarget.Host || port != wantTarget.Port {
+			t.Fatalf("TCP target = %s:%s, want %s:%s", host, port, wantTarget.Host, wantTarget.Port)
+		}
+		return true
+	}
+
+	got := m.probeRig(context.Background(), "/data/city", "specs", rigPath)
+	wantEndpoint := "gastown-dolt-primary.gastown.svc.cluster.local:3306"
+	if got.DoltEndpoint == nil || *got.DoltEndpoint != wantEndpoint {
+		t.Fatalf("dolt endpoint = %v, want %q", got.DoltEndpoint, wantEndpoint)
+	}
+	if got.DoltConnected == nil || !*got.DoltConnected {
+		t.Fatalf("dolt connected = %v, want true", got.DoltConnected)
+	}
+	if got.Rollup != "ok" {
+		t.Fatalf("rollup = %q, want ok; report = %+v", got.Rollup, got)
+	}
+}
+
+func TestBdDoctorConnectionEnvUsesResolvedTargetAndMinimalCredentials(t *testing.T) {
+	target := contract.DoltConnectionTarget{
+		Host: "db.gastown.svc.cluster.local",
+		Port: "3306",
+		User: "gastown",
+	}
+	values := map[string]string{
+		"BEADS_DOLT_PASSWORD":    "secret-from-beads",
+		"GC_DOLT_PASSWORD":       "must-not-win",
+		"BEADS_CREDENTIALS_FILE": "/run/gastown/credentials",
+		"GITHUB_TOKEN":           "must-not-leak",
+	}
+	got := bdDoctorConnectionEnv(target, func(key string) string { return values[key] })
+	want := []string{
+		"BEADS_DOLT_SERVER_HOST=db.gastown.svc.cluster.local",
+		"BEADS_DOLT_SERVER_PORT=3306",
+		"BEADS_DOLT_SERVER_USER=gastown",
+		"BEADS_DOLT_PASSWORD=secret-from-beads",
+		"BEADS_CREDENTIALS_FILE=/run/gastown/credentials",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("doctor env = %#v, want %#v", got, want)
 	}
 }

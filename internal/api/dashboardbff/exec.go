@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/gastownhall/gascity/internal/beads/contract"
 )
 
 // Output caps and concurrency, mirroring the BFF's exec-core.ts contract.
@@ -64,6 +66,10 @@ func newExecRunner() *execRunner {
 // timeout, or spawn failure; a non-zero exit code is reported in the result,
 // not as an error.
 func (r *execRunner) run(ctx context.Context, cmd string, args []string, timeout time.Duration, capBytes int) (*execResult, error) {
+	return r.runWithEnv(ctx, cmd, args, nil, timeout, capBytes)
+}
+
+func (r *execRunner) runWithEnv(ctx context.Context, cmd string, args, extraEnv []string, timeout time.Duration, capBytes int) (*execResult, error) {
 	if capBytes <= 0 {
 		capBytes = maxBytes
 	}
@@ -79,7 +85,7 @@ func (r *execRunner) run(ctx context.Context, cmd string, args []string, timeout
 
 	start := time.Now()
 	c := exec.CommandContext(cctx, cmd, args...)
-	c.Env = cleanEnv()
+	c.Env = append(cleanEnv(), extraEnv...)
 	stdout := &cappedBuffer{limit: capBytes, onOverflow: cancel}
 	stderr := &cappedBuffer{limit: maxBytes}
 	c.Stdout = stdout
@@ -262,9 +268,40 @@ func (r *execRunner) execGitLog(ctx context.Context, view string) (*execResult, 
 // execBdDoctor runs a read-only `bd doctor` health probe of a rig's embedded
 // dolt .beads store. The path is supervisor-reported and validated here; --fix
 // is never passed, so the probe only inspects.
-func (r *execRunner) execBdDoctor(ctx context.Context, beadsPath string) (*execResult, error) {
+func (r *execRunner) execBdDoctor(ctx context.Context, beadsPath string, target contract.DoltConnectionTarget) (*execResult, error) {
 	if !isValidHostPath(beadsPath) || !strings.HasSuffix(beadsPath, "/.beads") {
 		return nil, validationErr("invalid beads store path")
 	}
-	return r.run(ctx, "bd", []string{"doctor", "--readonly", "--db", beadsPath, "--json"}, bdDoctorTimeout, maxBytes)
+	return r.runWithEnv(
+		ctx,
+		"bd",
+		[]string{"doctor", "--readonly", "--db", beadsPath, "--json"},
+		bdDoctorConnectionEnv(target, os.Getenv),
+		bdDoctorTimeout,
+		maxBytes,
+	)
+}
+
+func bdDoctorConnectionEnv(target contract.DoltConnectionTarget, getenv func(string) string) []string {
+	env := make([]string, 0, 5)
+	if target.Host != "" {
+		env = append(env, "BEADS_DOLT_SERVER_HOST="+target.Host)
+	}
+	if target.Port != "" {
+		env = append(env, "BEADS_DOLT_SERVER_PORT="+target.Port)
+	}
+	if target.User != "" {
+		env = append(env, "BEADS_DOLT_SERVER_USER="+target.User)
+	}
+	password := getenv("BEADS_DOLT_PASSWORD")
+	if password == "" {
+		password = getenv("GC_DOLT_PASSWORD")
+	}
+	if password != "" {
+		env = append(env, "BEADS_DOLT_PASSWORD="+password)
+	}
+	if path := getenv("BEADS_CREDENTIALS_FILE"); path != "" {
+		env = append(env, "BEADS_CREDENTIALS_FILE="+path)
+	}
+	return env
 }

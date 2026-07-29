@@ -14,6 +14,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gastownhall/gascity/internal/beads/contract"
+	"github.com/gastownhall/gascity/internal/fsys"
 )
 
 // The three Health-view samplers (supervisor-status, dolt-noms trend, per-rig
@@ -98,8 +101,11 @@ type statusBodyParsed struct {
 
 type samplerManager struct {
 	deps  Deps
-	exec  *execRunner
 	httpc *http.Client
+
+	resolveDoltTarget func(cityRoot, scopeRoot string) (contract.DoltConnectionTarget, error)
+	execBdDoctor      func(context.Context, string, contract.DoltConnectionTarget) (*execResult, error)
+	probeDolt         func(host, port string) bool
 
 	mu      sync.Mutex
 	cities  map[string]*citySampler
@@ -109,12 +115,17 @@ type samplerManager struct {
 }
 
 func newSamplerManager(deps Deps, exec *execRunner) *samplerManager {
-	return &samplerManager{
+	m := &samplerManager{
 		deps:   deps,
-		exec:   exec,
 		httpc:  &http.Client{Timeout: statusFetchTimeout, Transport: deps.SelfReadTransport},
 		cities: make(map[string]*citySampler),
 	}
+	m.resolveDoltTarget = func(cityRoot, scopeRoot string) (contract.DoltConnectionTarget, error) {
+		return contract.ResolveDoltConnectionTarget(fsys.OSFS{}, cityRoot, scopeRoot)
+	}
+	m.execBdDoctor = exec.execBdDoctor
+	m.probeDolt = tcpProbeTarget
+	return m
 }
 
 // enable records the lifecycle context and waitgroup so lazily-started city
@@ -266,9 +277,13 @@ func (cs *citySampler) refresh(ctx context.Context) {
 		if cs.beforeProbe != nil {
 			cs.beforeProbe()
 		}
+		cityRoot := ""
+		if cs.mgr.deps.Resolver != nil {
+			cityRoot, _ = cs.mgr.deps.Resolver.CityPath(cs.name)
+		}
 		rigs := make([]rigStoreHealth, 0, len(parsed.RigDetails))
 		for _, rd := range parsed.RigDetails {
-			rigs = append(rigs, cs.mgr.probeRig(ctx, rd.Name, rd.Path))
+			rigs = append(rigs, cs.mgr.probeRig(ctx, cityRoot, rd.Name, rd.Path))
 		}
 		newRigs = rigs
 	}
@@ -391,7 +406,7 @@ var benignDoctorCategories = map[string]bool{"Git Integration": true, "Integrati
 
 const doltConnectionCheck = "Dolt Connection"
 
-func (m *samplerManager) probeRig(ctx context.Context, rigName, rigPath string) rigStoreHealth {
+func (m *samplerManager) probeRig(ctx context.Context, cityRoot, rigName, rigPath string) rigStoreHealth {
 	beadsPath := filepath.Join(rigPath, ".beads")
 	if !isDir(beadsPath) {
 		return rigStoreHealth{
@@ -401,15 +416,23 @@ func (m *samplerManager) probeRig(ctx context.Context, rigName, rigPath string) 
 	}
 
 	var doltEndpoint *string
-	port := readDoltServerPort(beadsPath)
-	if port > 0 {
-		ep := "127.0.0.1:" + strconv.Itoa(port)
+	var target contract.DoltConnectionTarget
+	var targetErr error
+	if cityRoot == "" {
+		targetErr = fmt.Errorf("city root unavailable")
+	} else {
+		target, targetErr = m.resolveDoltTarget(cityRoot, rigPath)
+	}
+	if targetErr == nil {
+		ep := net.JoinHostPort(strings.Trim(target.Host, "[]"), target.Port)
 		doltEndpoint = &ep
 	}
 
 	var checks []rigStoreCheck
 	var note string
-	if res, err := m.exec.execBdDoctor(ctx, beadsPath); err != nil {
+	if targetErr != nil {
+		note = "canonical Dolt endpoint unavailable: " + targetErr.Error()
+	} else if res, err := m.execBdDoctor(ctx, beadsPath, target); err != nil {
 		note = "bd doctor probe failed: " + err.Error()
 	} else if parsed, ok := parseDoctorChecks(res.stdout); ok {
 		checks = parsed
@@ -418,8 +441,8 @@ func (m *samplerManager) probeRig(ctx context.Context, rigName, rigPath string) 
 	}
 
 	var doltConnected *bool
-	if port > 0 {
-		ok := tcpProbe(port)
+	if targetErr == nil {
+		ok := m.probeDolt(target.Host, target.Port)
 		doltConnected = &ok
 	} else if checks != nil {
 		doltConnected = doltConnectedFromChecks(checks)
@@ -561,20 +584,8 @@ func isDir(p string) bool {
 	return err == nil && st.IsDir()
 }
 
-func readDoltServerPort(beadsPath string) int {
-	raw, err := os.ReadFile(filepath.Join(beadsPath, "dolt-server.port"))
-	if err != nil {
-		return 0
-	}
-	port, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil || port <= 0 || port > 65535 {
-		return 0
-	}
-	return port
-}
-
-func tcpProbe(port int) bool {
-	conn, err := net.DialTimeout("tcp", "127.0.0.1:"+strconv.Itoa(port), tcpProbeTimeout)
+func tcpProbeTarget(host, port string) bool {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(strings.Trim(host, "[]"), port), tcpProbeTimeout)
 	if err != nil {
 		return false
 	}
