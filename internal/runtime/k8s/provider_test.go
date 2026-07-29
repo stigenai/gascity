@@ -645,6 +645,34 @@ func TestStartCreatesPodsAndWaits(t *testing.T) {
 	}
 }
 
+func TestStartDeletesPodWhenCityImportsCannotInitialize(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+	fake.setExecResult(
+		"gc-test-agent",
+		[]string{"gc", "--city", "/workspace", "import", "install"},
+		"",
+		errors.New("locked import unavailable"),
+	)
+
+	err := p.Start(context.Background(), "gc-test-agent", runtime.Config{
+		Command: "claude",
+		Env: map[string]string{
+			"GC_AGENT": "mayor",
+			"GC_CITY":  "/workspace",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "installing locked city imports") {
+		t.Fatalf("Start error = %v, want locked import initialization failure", err)
+	}
+	if _, exists := fake.pods["gc-test-agent"]; exists {
+		t.Fatal("pod was not deleted after partial city initialization")
+	}
+	if command := findExecCmd(fake, "touch /workspace/.gc-workspace-ready"); command != nil {
+		t.Fatalf("workspace gate released after failed city initialization: %v", command)
+	}
+}
+
 func TestStartDetectsStalePod(t *testing.T) {
 	fake := newFakeK8sOps()
 	p := newProviderWithOps(fake)
@@ -2226,7 +2254,7 @@ func TestBuildPodServiceAccount(t *testing.T) {
 	})
 }
 
-func TestInitCityInPodSkipsDolt(t *testing.T) {
+func TestInitCityInPodMaterializesPacksAndImports(t *testing.T) {
 	fake := newFakeK8sOps()
 
 	err := initCityInPod(context.Background(), fake, "gc-mayor", "/city")
@@ -2237,18 +2265,24 @@ func TestInitCityInPodSkipsDolt(t *testing.T) {
 	// gc init must run with GC_DOLT=skip so it does not attempt to start a
 	// local Dolt server. In K8s pods, the in-cluster Dolt service is set up
 	// separately by verifyBeadsInPod.
-	var gcInitCmd []string
-	for _, c := range fake.calls {
+	var gcInitCmd, packCopyCmd, importInstallCmd []string
+	initIndex, packIndex, importIndex, cleanupIndex := -1, -1, -1, -1
+	for index, c := range fake.calls {
 		if c.method == "execInPod" && len(c.cmd) > 0 {
-			for _, arg := range c.cmd {
-				if arg == "gc" {
-					gcInitCmd = c.cmd
-					break
-				}
+			joined := strings.Join(c.cmd, " ")
+			switch {
+			case strings.Contains(joined, "gc init --from /tmp/city-src /workspace"):
+				gcInitCmd = c.cmd
+				initIndex = index
+			case strings.Contains(joined, "cp -a /tmp/city-src/packs/. /workspace/packs/"):
+				packCopyCmd = c.cmd
+				packIndex = index
+			case joined == "gc --city /workspace import install":
+				importInstallCmd = c.cmd
+				importIndex = index
+			case joined == "rm -rf /tmp/city-src":
+				cleanupIndex = index
 			}
-		}
-		if gcInitCmd != nil {
-			break
 		}
 	}
 	if gcInitCmd == nil {
@@ -2264,5 +2298,33 @@ func TestInitCityInPodSkipsDolt(t *testing.T) {
 	}
 	if !hasSkip {
 		t.Errorf("gc init should run with GC_DOLT=skip; got cmd=%v", gcInitCmd)
+	}
+	if packCopyCmd == nil {
+		t.Fatal("local city packs were not materialized after gc init")
+	}
+	if importInstallCmd == nil {
+		t.Fatal("locked city imports were not installed")
+	}
+	if initIndex >= packIndex || packIndex >= importIndex || importIndex >= cleanupIndex {
+		t.Fatalf(
+			"city initialization order = init:%d packs:%d imports:%d cleanup:%d",
+			initIndex, packIndex, importIndex, cleanupIndex,
+		)
+	}
+}
+
+func TestInitCityInPodImportFailureCleansTemporaryCity(t *testing.T) {
+	fake := newFakeK8sOps()
+	importCmd := []string{"gc", "--city", "/workspace", "import", "install"}
+	fake.setExecResult("gc-mayor", importCmd, "", errors.New("locked import unavailable"))
+
+	err := initCityInPod(context.Background(), fake, "gc-mayor", "/city")
+	if err == nil || !strings.Contains(err.Error(), "installing locked city imports") {
+		t.Fatalf("initCityInPod error = %v, want locked import failure", err)
+	}
+
+	cleanupCmd := findExecCmd(fake, "rm -rf /tmp/city-src")
+	if cleanupCmd == nil {
+		t.Fatal("temporary city source was not cleaned after import failure")
 	}
 }

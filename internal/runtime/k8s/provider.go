@@ -240,7 +240,8 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 		// Initialize the city inside the pod.
 		if ctrlCity != "" {
 			if err := initCityInPod(ctx, p.ops, podName, ctrlCity); err != nil {
-				fmt.Fprintf(p.stderr, "gc: warning: initCityInPod for %s: %v\n", podName, err) //nolint:errcheck
+				cleanup("city initialization failed")
+				return fmt.Errorf("initializing city for session %q: %w", name, err)
 			}
 		}
 
@@ -824,12 +825,19 @@ func waitForTmux(ctx context.Context, ops k8sOps, name string, timeout time.Dura
 	return fmt.Errorf("tmux session not ready in pod %s after %s", name, timeout)
 }
 
-// initCityInPod copies the city directory and runs gc init inside the pod.
+// initCityInPod copies the city directory, materializes local packs omitted by
+// gc init --from, and installs locked remote imports before releasing the
+// worker. A partially initialized city cannot run gc hook reliably.
 func initCityInPod(ctx context.Context, ops k8sOps, podName, ctrlCity string) error {
 	// Copy city dir (excluding .gc/) into the pod.
 	if err := copyDirToPod(ctx, ops, podName, "agent", ctrlCity, "/tmp/city-src"); err != nil {
 		return err
 	}
+	defer func() {
+		_, _ = ops.execInPod(ctx, podName, "agent",
+			[]string{"rm", "-rf", "/tmp/city-src"}, nil)
+	}()
+
 	// Run gc init --from with GC_DOLT=skip so gc init does not attempt to
 	// start a local Dolt server. Pod sessions consume the projected GC_DOLT_*
 	// connection target through env; they do not rewrite canonical .beads files.
@@ -838,9 +846,29 @@ func initCityInPod(ctx context.Context, ops k8sOps, podName, ctrlCity string) er
 	if err != nil {
 		return err
 	}
-	// Clean up.
-	_, _ = ops.execInPod(ctx, podName, "agent",
-		[]string{"rm", "-rf", "/tmp/city-src"}, nil)
+
+	// gc init --from scaffolds the city but intentionally omits local pack
+	// directories. Rig imports such as ./packs/rig-basic therefore fail during
+	// expansion unless the provider materializes those authored packs.
+	_, err = ops.execInPod(ctx, podName, "agent", []string{
+		"sh", "-c",
+		"if [ -d /tmp/city-src/packs ]; then " +
+			"mkdir -p /workspace/packs && " +
+			"cp -a /tmp/city-src/packs/. /workspace/packs/; " +
+			"fi",
+	}, nil)
+	if err != nil {
+		return fmt.Errorf("materializing local city packs: %w", err)
+	}
+
+	// Locked remote imports are stored outside the city tree under the worker
+	// home. Install them while startup credentials are available and before
+	// .gc-workspace-ready lets pre_start or the agent invoke gc hook.
+	_, err = ops.execInPod(ctx, podName, "agent",
+		[]string{"gc", "--city", "/workspace", "import", "install"}, nil)
+	if err != nil {
+		return fmt.Errorf("installing locked city imports: %w", err)
+	}
 	return nil
 }
 
