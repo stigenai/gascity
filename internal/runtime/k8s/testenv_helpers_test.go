@@ -33,6 +33,7 @@ func clearDoltAndCityEnv(t *testing.T) {
 		"GC_DOLT_PORT",
 		"GC_K8S_DOLT_HOST",
 		"GC_K8S_DOLT_PORT",
+		"GC_K8S_DOLT_SECRET",
 		"GC_CITY_PATH",
 		"GC_BIN",
 		"GC_STORE_ROOT",

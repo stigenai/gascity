@@ -1,6 +1,7 @@
 package k8s
 
 import (
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -115,15 +116,20 @@ func TestBuildPod_DefaultSecurityBoundary(t *testing.T) {
 	assertRestrictedAgentContext(t, pod.Spec.Containers[0].SecurityContext)
 }
 
-func TestBuildPod_ProviderCredentialsUseNamespaceLocalSecrets(t *testing.T) {
+func TestBuildPod_CredentialsUseNamespaceLocalSecrets(t *testing.T) {
 	p := newProviderWithOps(newFakeK8sOps())
 	pod, err := buildPod(
 		"test-session",
 		runtime.Config{
 			Command: "/bin/bash",
 			Env: map[string]string{
-				"GITHUB_TOKEN":       "must-not-leak",
-				"LITELLM_MASTER_KEY": "must-not-leak",
+				"GITHUB_TOKEN":           "must-not-leak",
+				"LITELLM_MASTER_KEY":     "must-not-leak",
+				"GC_K8S_DOLT_SECRET":     "dolt-credentials",
+				"GC_DOLT_USER":           "must-not-leak",
+				"GC_DOLT_PASSWORD":       "must-not-leak",
+				"BEADS_DOLT_SERVER_USER": "must-not-leak",
+				"BEADS_DOLT_PASSWORD":    "must-not-leak",
 			},
 		},
 		p,
@@ -139,11 +145,16 @@ func TestBuildPod_ProviderCredentialsUseNamespaceLocalSecrets(t *testing.T) {
 		counts[entry.Name]++
 	}
 	for name, want := range map[string]struct {
-		secret string
-		key    string
+		secret   string
+		key      string
+		optional bool
 	}{
-		"GITHUB_TOKEN":       {secret: "git-credentials", key: "token"},
-		"LITELLM_MASTER_KEY": {secret: "litellm-credentials", key: "credential"},
+		"GITHUB_TOKEN":           {secret: "git-credentials", key: "token", optional: true},
+		"LITELLM_MASTER_KEY":     {secret: "litellm-credentials", key: "credential", optional: true},
+		"GC_DOLT_USER":           {secret: "dolt-credentials", key: "username"},
+		"GC_DOLT_PASSWORD":       {secret: "dolt-credentials", key: "password"},
+		"BEADS_DOLT_SERVER_USER": {secret: "dolt-credentials", key: "username"},
+		"BEADS_DOLT_PASSWORD":    {secret: "dolt-credentials", key: "password"},
 	} {
 		if counts[name] != 1 {
 			t.Fatalf("%s appears %d times in Pod env, want exactly once", name, counts[name])
@@ -166,9 +177,30 @@ func TestBuildPod_ProviderCredentialsUseNamespaceLocalSecrets(t *testing.T) {
 				want.key,
 			)
 		}
-		if ref.Optional == nil || !*ref.Optional {
-			t.Fatalf("%s SecretKeyRef must remain optional", name)
+		if ref.Optional == nil || *ref.Optional != want.optional {
+			t.Fatalf("%s SecretKeyRef optional = %v, want %t", name, ref.Optional, want.optional)
 		}
+	}
+}
+
+func TestBuildPod_RejectsLiteralDoltCredentialsWithoutSecretProjection(t *testing.T) {
+	p := newProviderWithOps(newFakeK8sOps())
+	_, err := buildPod(
+		"test-session",
+		runtime.Config{
+			Command: "/bin/bash",
+			Env: map[string]string{
+				"GC_DOLT_USER":     "must-not-leak",
+				"GC_DOLT_PASSWORD": "must-not-leak",
+			},
+		},
+		p,
+	)
+	if err == nil {
+		t.Fatal("buildPod error = nil, want literal Dolt credential rejection")
+	}
+	if got := err.Error(); !strings.Contains(got, "GC_K8S_DOLT_SECRET") {
+		t.Fatalf("buildPod error = %q, want GC_K8S_DOLT_SECRET guidance", got)
 	}
 }
 

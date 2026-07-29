@@ -431,17 +431,21 @@ func agentSecurityContext(linuxUsername string) *corev1.SecurityContext {
 // and remaps pod-visible ones.
 func buildPodEnv(cfgEnv map[string]string, podWorkDir, managedServiceHost, managedServicePort string) ([]corev1.EnvVar, error) {
 	// Start with cfg.Env, removing controller-only vars.
-	// Auth creds (GC_DOLT_USER, GC_DOLT_PASSWORD, BEADS_DOLT_*_USER/PASSWORD) intentionally pass through.
 	skip := map[string]bool{
 		"GC_BEADS":               true,
 		"GC_SESSION":             true,
 		"GC_EVENTS":              true,
 		"GC_K8S_DOLT_HOST":       true,
 		"GC_K8S_DOLT_PORT":       true,
+		"GC_K8S_DOLT_SECRET":     true,
 		"GC_DOLT_HOST":           true,
 		"GC_DOLT_PORT":           true,
+		"GC_DOLT_USER":           true,
+		"GC_DOLT_PASSWORD":       true,
 		"BEADS_DOLT_SERVER_HOST": true,
 		"BEADS_DOLT_SERVER_PORT": true,
+		"BEADS_DOLT_SERVER_USER": true,
+		"BEADS_DOLT_PASSWORD":    true,
 		// These credentials are projected below from namespace-local Secrets.
 		// Never copy controller literals into the Pod spec.
 		"GITHUB_TOKEN":       true,
@@ -485,6 +489,42 @@ func buildPodEnv(cfgEnv map[string]string, podWorkDir, managedServiceHost, manag
 	sort.Strings(projectedKeys)
 	for _, key := range projectedKeys {
 		env = append(env, corev1.EnvVar{Name: key, Value: projectedDolt[key]})
+	}
+
+	doltSecret := strings.TrimSpace(cfgEnv["GC_K8S_DOLT_SECRET"])
+	doltCredentialKeys := map[string]string{
+		"GC_DOLT_USER":           "username",
+		"GC_DOLT_PASSWORD":       "password",
+		"BEADS_DOLT_SERVER_USER": "username",
+		"BEADS_DOLT_PASSWORD":    "password",
+	}
+	if doltSecret == "" {
+		for key := range doltCredentialKeys {
+			if strings.TrimSpace(cfgEnv[key]) != "" {
+				return nil, fmt.Errorf(
+					"GC_K8S_DOLT_SECRET is required to project %s without leaking a literal credential",
+					key,
+				)
+			}
+		}
+	} else {
+		keys := make([]string, 0, len(doltCredentialKeys))
+		for key := range doltCredentialKeys {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			env = append(env, corev1.EnvVar{
+				Name: key,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: doltSecret},
+						Key:                  doltCredentialKeys[key],
+						Optional:             boolPtr(false),
+					},
+				},
+			})
+		}
 	}
 
 	// Add tmux session env so agent's tmux provider uses the same session.

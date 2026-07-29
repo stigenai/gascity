@@ -857,6 +857,7 @@ func TestBuildPodEnvRemapsVars(t *testing.T) {
 		"BEADS_DOLT_SERVER_PORT":              "3307",
 		"GC_K8S_DOLT_HOST":                    "legacy-dolt.example.com",
 		"GC_K8S_DOLT_PORT":                    "3308",
+		"GC_K8S_DOLT_SECRET":                  "dolt-credentials",
 		"GC_DOLT_USER":                        "admin",
 		"GC_DOLT_PASSWORD":                    "secret",
 		"BEADS_DOLT_SERVER_USER":              "admin",
@@ -928,7 +929,7 @@ func TestBuildPodEnvRemapsVars(t *testing.T) {
 
 	// Controller-only vars should be removed. The pod adapter reprojects the
 	// canonical GC target and derives the BEADS host/port mirror from it.
-	for _, key := range []string{"GC_SESSION", "GC_BEADS", "GC_EVENTS", "GC_K8S_DOLT_HOST", "GC_K8S_DOLT_PORT"} {
+	for _, key := range []string{"GC_SESSION", "GC_BEADS", "GC_EVENTS", "GC_K8S_DOLT_HOST", "GC_K8S_DOLT_PORT", "GC_K8S_DOLT_SECRET"} {
 		if _, exists := envMap[key]; exists {
 			t.Errorf("controller-only var %s should be removed", key)
 		}
