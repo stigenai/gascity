@@ -442,6 +442,10 @@ func buildPodEnv(cfgEnv map[string]string, podWorkDir, managedServiceHost, manag
 		"GC_DOLT_PORT":           true,
 		"BEADS_DOLT_SERVER_HOST": true,
 		"BEADS_DOLT_SERVER_PORT": true,
+		// These credentials are projected below from namespace-local Secrets.
+		// Never copy controller literals into the Pod spec.
+		"GITHUB_TOKEN":       true,
+		"LITELLM_MASTER_KEY": true,
 	}
 
 	ctrlCity := controllerCityPath(cfgEnv)
@@ -502,6 +506,19 @@ func buildPodEnv(cfgEnv map[string]string, podWorkDir, managedServiceHost, manag
 			SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{Name: "git-credentials"},
 				Key:                  "token",
+				Optional:             boolPtr(true),
+			},
+		},
+	})
+	// Pi/OpenAI-compatible providers use the namespace-local LiteLLM
+	// credential. Keeping this optional preserves non-LiteLLM workers while
+	// avoiding secret values in the controller-authored Pod object.
+	env = append(env, corev1.EnvVar{
+		Name: "LITELLM_MASTER_KEY",
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "litellm-credentials"},
+				Key:                  "credential",
 				Optional:             boolPtr(true),
 			},
 		},
