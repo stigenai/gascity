@@ -14,6 +14,7 @@ import (
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/runtime"
+	sessionherdr "github.com/gastownhall/gascity/internal/runtime/herdr"
 	"github.com/gastownhall/gascity/internal/session"
 )
 
@@ -32,6 +33,45 @@ func TestTmuxConfigFromSessionPreservesExplicitSocket(t *testing.T) {
 	cfg := tmuxConfigFromSession(sc, "city", "/tmp/city-a")
 	if cfg.SocketName != "custom-socket" {
 		t.Fatalf("SocketName = %q, want %q", cfg.SocketName, "custom-socket")
+	}
+}
+
+func TestNewHybridLocalProviderDefaultsToTmux(t *testing.T) {
+	provider, err := newHybridLocalProvider("", config.SessionConfig{}, "city", t.TempDir())
+	if err != nil {
+		t.Fatalf("newHybridLocalProvider: %v", err)
+	}
+	if got := fmt.Sprintf("%T", provider); !strings.Contains(got, "tmux.") {
+		t.Fatalf("default hybrid local provider type = %s, want tmux backend", got)
+	}
+}
+
+func TestNewHybridLocalProviderSupportsHerdr(t *testing.T) {
+	provider, err := newHybridLocalProvider("herdr", config.SessionConfig{}, "city", t.TempDir())
+	if err != nil {
+		t.Fatalf("newHybridLocalProvider: %v", err)
+	}
+	if _, ok := provider.(*sessionherdr.Provider); !ok {
+		t.Fatalf("hybrid local provider type = %T, want *herdr.Provider", provider)
+	}
+}
+
+func TestNewHybridLocalProviderRejectsUnknownBackend(t *testing.T) {
+	_, err := newHybridLocalProvider("subprocess", config.SessionConfig{}, "city", t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "unsupported local backend") {
+		t.Fatalf("newHybridLocalProvider error = %v, want unsupported local backend", err)
+	}
+}
+
+func TestNewHybridProviderEnvironmentOverridesConfiguredLocalBackend(t *testing.T) {
+	t.Setenv("GC_HYBRID_LOCAL", "invalid-from-env")
+	_, err := newHybridProvider(
+		config.SessionConfig{HybridLocal: "herdr"},
+		"city",
+		t.TempDir(),
+	)
+	if err == nil || !strings.Contains(err.Error(), `"invalid-from-env"`) {
+		t.Fatalf("newHybridProvider error = %v, want GC_HYBRID_LOCAL override rejection", err)
 	}
 }
 

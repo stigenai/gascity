@@ -12,6 +12,49 @@ import (
 
 func isRemote(name string) bool { return strings.Contains(name, "remote-agent") }
 
+type lifecycleProvider struct {
+	*runtime.Fake
+	configureCalls int
+	teardownCalls  int
+}
+
+func (p *lifecycleProvider) ConfigureServer() error {
+	p.configureCalls++
+	return nil
+}
+
+func (p *lifecycleProvider) TeardownServer() error {
+	p.teardownCalls++
+	return nil
+}
+
+func TestProvider_ForwardsLocalServerLifecycle(t *testing.T) {
+	local := &lifecycleProvider{Fake: runtime.NewFake()}
+	remote := &lifecycleProvider{Fake: runtime.NewFake()}
+	h := New(local, remote, isRemote)
+
+	if err := h.ConfigureServer(); err != nil {
+		t.Fatalf("ConfigureServer: %v", err)
+	}
+	if err := h.TeardownServer(); err != nil {
+		t.Fatalf("TeardownServer: %v", err)
+	}
+	if local.configureCalls != 1 || local.teardownCalls != 1 {
+		t.Fatalf(
+			"local lifecycle calls = configure:%d teardown:%d, want 1 each",
+			local.configureCalls,
+			local.teardownCalls,
+		)
+	}
+	if remote.configureCalls != 0 || remote.teardownCalls != 0 {
+		t.Fatalf(
+			"remote lifecycle calls = configure:%d teardown:%d, want 0 each",
+			remote.configureCalls,
+			remote.teardownCalls,
+		)
+	}
+}
+
 // Relaunch must reach the routed backend (local vs remote), or the reconciler's
 // RelaunchProvider type-assert would be masked by the hybrid router and fall
 // back to Stop+Start.

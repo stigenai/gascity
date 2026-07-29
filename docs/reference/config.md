@@ -794,7 +794,7 @@ SessionConfig holds session provider settings.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `provider` | string |  |  | Provider selects the session backend: "fake", "fail", "subprocess", "acp", "exec:&lt;script&gt;", "k8s", or "" (default: tmux). |
+| `provider` | string |  |  | Provider selects the session backend: "fake", "fail", "subprocess", "acp", "exec:&lt;script&gt;", "k8s", "herdr", "hybrid", "tmux", or "" (default: tmux). |
 | `k8s` | K8sConfig |  |  | K8s holds Kubernetes-specific settings for the native K8s provider. |
 | `acp` | ACPSessionConfig |  |  | ACP holds settings for the ACP (Agent Client Protocol) session provider. |
 | `setup_timeout` | string |  | `10s` | SetupTimeout is the per-command/script timeout for session setup and pre_start commands. Duration string (e.g., "10s", "30s"). Defaults to "10s". |
@@ -809,7 +809,8 @@ SessionConfig holds session provider settings.
 | `progress_stall_timeout` | string |  |  | ProgressStallTimeout, when set, enables progress-aware session recycling: a desired, alive, claim-less session on a healthy provider whose last provider-reported activity is older than this duration is restarted fresh. Such a session has likely parked (e.g. its turn ended on a provider auth error) and will not self-recover. Set this above the longest legitimate alive-idle period for the city; values below 5m are clamped to 5m. Duration string (e.g. "30m"). Unset/zero disables it. |
 | `claim_holder_stall_timeout` | string |  |  | ClaimHolderStallTimeout, when set, enables progress-aware recycling of a desired, alive session that holds in-progress work but has stopped making progress. Because recycling a claim-holder interrupts work, set this above the longest legitimate quiet period. Values below 5m are clamped to 5m. Duration string (e.g. "20m"). Unset/zero disables it. |
 | `socket` | string |  |  | Socket specifies the tmux socket name for per-city isolation. When set, all tmux commands use "tmux -L &lt;socket&gt;" to connect to a dedicated server. When empty, defaults to the city name (workspace.name) — giving every city its own tmux server automatically. Set explicitly to override. |
-| `remote_match` | string |  |  | RemoteMatch is a substring pattern for the hybrid provider to route sessions to the remote (K8s) backend. Sessions whose names contain this pattern go to K8s; all others stay local (tmux). Overridden by the GC_HYBRID_REMOTE_MATCH env var if set. |
+| `hybrid_local` | string |  |  | HybridLocal selects the local backend used by the hybrid provider. Supported values are "tmux" (the default) and "herdr". This lets a Herdr city move selected sessions to Kubernetes without migrating every remaining local session back to tmux. Overridden by the GC_HYBRID_LOCAL environment variable if set. |
+| `remote_match` | string |  |  | RemoteMatch is a substring pattern for the hybrid provider to route sessions to the remote (K8s) backend. Sessions whose names contain this pattern go to K8s; all others stay on the configured hybrid-local backend. Overridden by the GC_HYBRID_REMOTE_MATCH env var if set. |
 
 ## SessionSleepConfig
 

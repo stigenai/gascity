@@ -82,11 +82,7 @@ func buildRuntimeRegistry() *registry.Registry {
 	// tmux stays the default; select "herdr" per-agent/city to pilot it. See
 	// internal/runtime/herdr-provider-design.md.
 	must(r.Register("herdr", func(_ string, sc config.SessionConfig, cityName, cityPath string) (runtime.Provider, error) {
-		session := cityName
-		if session == "" {
-			session = "default"
-		}
-		return sessionherdr.New(session, providerStateDir("herdr", cityPath), cityPath, sc.SetupTimeoutDuration(), sc.SetupMaxTimeoutDuration()), nil
+		return newHerdrProvider(sc, cityName, cityPath)
 	}))
 	must(r.Register("hybrid", func(_ string, sc config.SessionConfig, cityName, cityPath string) (runtime.Provider, error) {
 		return newHybridProvider(sc, cityName, cityPath)
@@ -118,6 +114,20 @@ func buildRuntimeRegistry() *registry.Registry {
 	must(r.Register("tmux", tmuxFactory))
 	r.SetFallback(tmuxFactory)
 	return r
+}
+
+func newHerdrProvider(sc config.SessionConfig, cityName, cityPath string) (runtime.Provider, error) {
+	session := cityName
+	if session == "" {
+		session = "default"
+	}
+	return sessionherdr.New(
+		session,
+		providerStateDir("herdr", cityPath),
+		cityPath,
+		sc.SetupTimeoutDuration(),
+		sc.SetupMaxTimeoutDuration(),
+	), nil
 }
 
 // validatePackRuntimeRegistrations fails city config loading when a

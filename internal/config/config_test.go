@@ -828,7 +828,9 @@ func TestParseSessionSection(t *testing.T) {
 name = "test-city"
 
 [session]
-provider = "subprocess"
+provider = "hybrid"
+hybrid_local = "herdr"
+remote_match = "review-pre"
 
 [[agent]]
 name = "mayor"
@@ -837,8 +839,14 @@ name = "mayor"
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	if cfg.Session.Provider != "subprocess" {
-		t.Errorf("Session.Provider = %q, want %q", cfg.Session.Provider, "subprocess")
+	if cfg.Session.Provider != "hybrid" {
+		t.Errorf("Session.Provider = %q, want %q", cfg.Session.Provider, "hybrid")
+	}
+	if cfg.Session.HybridLocal != "herdr" {
+		t.Errorf("Session.HybridLocal = %q, want %q", cfg.Session.HybridLocal, "herdr")
+	}
+	if cfg.Session.RemoteMatch != "review-pre" {
+		t.Errorf("Session.RemoteMatch = %q, want %q", cfg.Session.RemoteMatch, "review-pre")
 	}
 }
 

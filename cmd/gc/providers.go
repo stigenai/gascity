@@ -1129,14 +1129,21 @@ func openCityEventsProviderWithConfig(providerConfig func() config.EventsConfig,
 	return p, 0
 }
 
-// newHybridProvider constructs a composite provider that routes sessions to
-// tmux (local) or k8s (remote) based on session name. The GC_HYBRID_REMOTE_MATCH
-// env var controls which sessions go to k8s. If unset, all sessions route to
-// local tmux.
+// newHybridProvider constructs a composite provider that routes sessions to a
+// configured local backend (tmux by default, or herdr) or to k8s based on
+// session name. GC_HYBRID_LOCAL and GC_HYBRID_REMOTE_MATCH override the
+// corresponding city settings.
 func newHybridProvider(sc config.SessionConfig, cityName, cityPath string) (runtime.Provider, error) {
 	// Cut-over: hybrid routes to the seam-backed tmux/k8s providers, so
 	// hybrid-routed sessions flow through the seams like every other path.
-	local := sessiontmux.NewSeamBackedWithConfig(tmuxConfigFromSession(sc, cityName, cityPath))
+	localName := strings.TrimSpace(sc.HybridLocal)
+	if v := strings.TrimSpace(os.Getenv("GC_HYBRID_LOCAL")); v != "" {
+		localName = v
+	}
+	local, err := newHybridLocalProvider(localName, sc, cityName, cityPath)
+	if err != nil {
+		return nil, err
+	}
 	remote, err := sessionk8s.NewSeamBacked()
 	if err != nil {
 		return nil, fmt.Errorf("hybrid: k8s backend: %w", err)
@@ -1148,4 +1155,15 @@ func newHybridProvider(sc config.SessionConfig, cityName, cityPath string) (runt
 	return sessionhybrid.New(local, remote, func(name string) bool {
 		return pattern != "" && strings.Contains(name, pattern)
 	}), nil
+}
+
+func newHybridLocalProvider(name string, sc config.SessionConfig, cityName, cityPath string) (runtime.Provider, error) {
+	switch name {
+	case "", "tmux":
+		return sessiontmux.NewSeamBackedWithConfig(tmuxConfigFromSession(sc, cityName, cityPath)), nil
+	case "herdr":
+		return newHerdrProvider(sc, cityName, cityPath)
+	default:
+		return nil, fmt.Errorf("hybrid: unsupported local backend %q (supported: tmux, herdr)", name)
+	}
 }

@@ -2733,7 +2733,7 @@
       "properties": {
         "provider": {
           "type": "string",
-          "description": "Provider selects the session backend: \"fake\", \"fail\", \"subprocess\",\n\"acp\", \"exec:\u003cscript\u003e\", \"k8s\", or \"\" (default: tmux)."
+          "description": "Provider selects the session backend: \"fake\", \"fail\", \"subprocess\",\n\"acp\", \"exec:\u003cscript\u003e\", \"k8s\", \"herdr\", \"hybrid\", \"tmux\", or \"\"\n(default: tmux)."
         },
         "k8s": {
           "$ref": "#/$defs/K8sConfig",
@@ -2799,9 +2799,13 @@
           "type": "string",
           "description": "Socket specifies the tmux socket name for per-city isolation.\nWhen set, all tmux commands use \"tmux -L \u003csocket\u003e\" to connect to\na dedicated server. When empty, defaults to the city name\n(workspace.name) — giving every city its own tmux server\nautomatically. Set explicitly to override."
         },
+        "hybrid_local": {
+          "type": "string",
+          "description": "HybridLocal selects the local backend used by the hybrid provider.\nSupported values are \"tmux\" (the default) and \"herdr\". This lets a\nHerdr city move selected sessions to Kubernetes without migrating every\nremaining local session back to tmux. Overridden by the GC_HYBRID_LOCAL\nenvironment variable if set."
+        },
         "remote_match": {
           "type": "string",
-          "description": "RemoteMatch is a substring pattern for the hybrid provider to route\nsessions to the remote (K8s) backend. Sessions whose names contain\nthis pattern go to K8s; all others stay local (tmux).\nOverridden by the GC_HYBRID_REMOTE_MATCH env var if set."
+          "description": "RemoteMatch is a substring pattern for the hybrid provider to route\nsessions to the remote (K8s) backend. Sessions whose names contain\nthis pattern go to K8s; all others stay on the configured hybrid-local\nbackend.\nOverridden by the GC_HYBRID_REMOTE_MATCH env var if set."
         }
       },
       "additionalProperties": false,
