@@ -49,6 +49,7 @@ const baseApi: SupervisorApi = {
   listSessions: vi.fn(),
   sessionPending: vi.fn(),
   respondSession: vi.fn(),
+  sendSessionMessage: vi.fn(),
   sessionTranscript: vi.fn(),
   workflowRun: vi.fn(),
   formulaDetail: vi.fn(),

@@ -10,6 +10,7 @@ import { StatusBadge, stateTone } from '../components/StatusBadge';
 import { AgentBeadsAssigned } from '../components/agent/AgentBeadsAssigned';
 import { AgentChatThread } from '../components/agent/AgentChatThread';
 import { AgentLivePeek } from '../components/agent/AgentLivePeek';
+import { AgentMessageComposer } from '../components/agent/AgentMessageComposer';
 import { AgentMetadata } from '../components/agent/AgentMetadata';
 import { useOperatorConfig } from '../contexts/OperatorConfigContext';
 import { useViewingAs } from '../contexts/ViewingAsContext';
@@ -21,8 +22,9 @@ import { reportClientError } from '../lib/clientErrorReporting';
 import { listSupervisorBeadsAssignedTo, type SupervisorBead } from '../supervisor/beadReads';
 import { listSupervisorMail, type SupervisorMailItem } from '../supervisor/mailReads';
 import { listSupervisorSessions, type SupervisorSession } from '../supervisor/sessionReads';
+import { sendSupervisorSessionMessage } from '../supervisor/sessionWrites';
 
-// Read-only drilldown for a single agent. Route: /agents/:slug where
+// Drilldown for a single agent. Route: /agents/:slug where
 // slug resolves against session_name, alias, then id (see sessionSlug).
 //
 // Surface:
@@ -31,8 +33,8 @@ import { listSupervisorSessions, type SupervisorSession } from '../supervisor/se
 //   - Beads assigned to this agent (filtered from direct supervisor reads)
 //   - Live peek panel (live SSE stream for active sessions; snapshot otherwise)
 //
-// Read-only scope: nudge actions, chat compose, and directive edits stay
-// out of this route until the backend exposes explicit write endpoints.
+// The direct-message composer uses the explicit session message endpoint.
+// Agent/session lifecycle and directive edits remain out of scope.
 
 const CHAT_REFRESH_MS = 10_000;
 const CHAT_MAX_MESSAGES = 200;
@@ -216,6 +218,16 @@ export function AgentDetailPage() {
     return filtered;
   }, [chatState, agentAliases, operatorAliases]);
 
+  const sendDirectMessage = useCallback(
+    async (message: string) => {
+      if (session === null) {
+        throw new Error('session unavailable');
+      }
+      return sendSupervisorSessionMessage(session.id, message);
+    },
+    [session],
+  );
+
   if (sessions === null) {
     return (
       <section>
@@ -326,6 +338,14 @@ export function AgentDetailPage() {
       />
 
       <AgentLivePeek session={session} />
+
+      <AgentMessageComposer
+        enabled={viewingAs.isOperator && session.running === true}
+        disabledReason={
+          !viewingAs.isOperator ? 'Switch to operator identity to send.' : 'Session is not running.'
+        }
+        onSend={sendDirectMessage}
+      />
 
       <AgentChatThread messages={chatMessages} loading={chatLoading} error={chatError} now={now} />
 

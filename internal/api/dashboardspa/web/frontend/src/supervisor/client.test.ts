@@ -384,6 +384,46 @@ describe('supervisor client wrapper', () => {
     });
   });
 
+  it('sends supervisor session messages through the generated SDK with mutation headers', async () => {
+    const fetchSpy = vi.fn(
+      async (_input: RequestInfo | URL) =>
+        new Response(
+          JSON.stringify({
+            event_cursor: '42',
+            request_id: 'req-message-1',
+            status: 'accepted',
+          }),
+          {
+            status: 202,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
+    );
+
+    const api = createSupervisorApi({
+      baseUrl: 'http://gc-supervisor.test',
+      fetch: fetchSpy as typeof fetch,
+    });
+
+    await expect(
+      api.sendSessionMessage('test-city', 'gc-2568', { message: 'continue the review' }),
+    ).resolves.toMatchObject({
+      event_cursor: '42',
+      request_id: 'req-message-1',
+      status: 'accepted',
+    });
+
+    const req = fetchSpy.mock.calls[0]?.[0];
+    expect(requestedUrl(req)).toBe(
+      'http://gc-supervisor.test/v0/city/test-city/session/gc-2568/messages',
+    );
+    expect(req).toBeInstanceOf(Request);
+    const request = req as Request;
+    expect(request.method).toBe('POST');
+    expect(request.headers.get('X-GC-Request')).toBe('dashboard');
+    await expect(request.json()).resolves.toEqual({ message: 'continue the review' });
+  });
+
   it('calls supervisor agents through the generated SDK without dashboard DTO stripping', async () => {
     const fetchSpy = vi.fn(
       async (_input: RequestInfo | URL) =>
@@ -1331,6 +1371,7 @@ describe('supervisor client wrapper', () => {
       listSessions: vi.fn(),
       sessionPending: vi.fn(),
       respondSession: vi.fn(),
+      sendSessionMessage: vi.fn(),
       mailThread: vi.fn(),
       sendMail: vi.fn(),
       createBead: vi.fn(),
