@@ -202,6 +202,72 @@ func TestProjectedPodStoreRootPrefersGCStoreRoot(t *testing.T) {
 	}
 }
 
+func TestProjectedPodExternalRigSeparatesCityAndLedgerPaths(t *testing.T) {
+	cfg := runtime.Config{
+		WorkDir: "/data/rigs/infra-blocks",
+		Command: "cd /data/rigs/infra-blocks && pi",
+		Env: map[string]string{
+			"GC_CITY":       "/data/city",
+			"GC_DIR":        "/data/rigs/infra-blocks",
+			"GC_RIG_ROOT":   "/data/rigs/infra-blocks",
+			"GC_STORE_ROOT": "/data/rigs/infra-blocks",
+			"BEADS_DIR":     "/data/rigs/infra-blocks/.beads",
+			"GT_ROOT":       "/data/rigs/infra-blocks",
+			"GC_PACK_DIR":   "/data/rigs/infra-blocks/.gc/packs",
+		},
+		PreStart: []string{"test -f /data/rigs/infra-blocks/.beads/metadata.json"},
+	}
+
+	podWorkDir := projectedPodWorkDir(cfg)
+	if podWorkDir != "/workspace/rig" {
+		t.Fatalf("projectedPodWorkDir = %q, want /workspace/rig", podWorkDir)
+	}
+	if got := projectedPodStoreRoot(cfg, podWorkDir); got != "/workspace/rig" {
+		t.Fatalf("projectedPodStoreRoot = %q, want /workspace/rig", got)
+	}
+
+	commandBytes, err := base64.StdEncoding.DecodeString(agentCommandB64(cfg))
+	if err != nil {
+		t.Fatalf("decode agent command: %v", err)
+	}
+	if got := string(commandBytes); got != "cd /workspace/rig && pi" {
+		t.Fatalf("projected agent command = %q, want external rig path remapped", got)
+	}
+
+	p := newProviderWithOps(newFakeK8sOps())
+	pod, err := buildPod("gc-external-rig", cfg, p)
+	if err != nil {
+		t.Fatalf("buildPod: %v", err)
+	}
+	agent := pod.Spec.Containers[0]
+	if agent.WorkingDir != "/workspace/rig" {
+		t.Fatalf("agent.WorkingDir = %q, want /workspace/rig", agent.WorkingDir)
+	}
+	env := make(map[string]string, len(agent.Env))
+	for _, item := range agent.Env {
+		env[item.Name] = item.Value
+	}
+	for key, want := range map[string]string{
+		"GC_CITY":       "/workspace",
+		"GC_DIR":        "/workspace/rig",
+		"GC_RIG_ROOT":   "/workspace/rig",
+		"GC_STORE_ROOT": "/workspace/rig",
+		"BEADS_DIR":     "/workspace/rig/.beads",
+		"GT_ROOT":       "/workspace/rig",
+		"GC_PACK_DIR":   "/workspace/rig/.gc/packs",
+	} {
+		if got := env[key]; got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+	wantPreStart := base64.StdEncoding.EncodeToString(
+		[]byte("test -f /workspace/rig/.beads/metadata.json"),
+	)
+	if len(agent.Args) != 1 || !strings.Contains(agent.Args[0], wantPreStart) {
+		t.Fatalf("agent pre-start command does not contain remapped external rig path")
+	}
+}
+
 func TestIsRunning(t *testing.T) {
 	fake := newFakeK8sOps()
 	p := newProviderWithOps(fake)
@@ -827,7 +893,7 @@ func TestWorkspaceVolumeMountsAtRoot(t *testing.T) {
 
 func mustBuildPodEnv(t *testing.T, cfgEnv map[string]string, podWorkDir, managedServiceHost, managedServicePort string) []corev1.EnvVar {
 	t.Helper()
-	env, err := buildPodEnv(cfgEnv, podWorkDir, managedServiceHost, managedServicePort)
+	env, err := buildPodEnv(cfgEnv, cfgEnv["GC_DIR"], podWorkDir, managedServiceHost, managedServicePort)
 	if err != nil {
 		t.Fatalf("buildPodEnv: %v", err)
 	}
@@ -1060,7 +1126,7 @@ func TestBuildPodEnvRejectsHostOnlyProjectedTarget(t *testing.T) {
 	_, err := buildPodEnv(map[string]string{
 		"GC_AGENT":     "worker",
 		"GC_DOLT_HOST": "canonical-dolt.example.com",
-	}, "/workspace", podManagedDoltHost, podManagedDoltPort)
+	}, "", "/workspace", podManagedDoltHost, podManagedDoltPort)
 	if err == nil {
 		t.Fatal("expected host-only GC_DOLT_* projection to fail")
 	}
