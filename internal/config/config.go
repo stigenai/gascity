@@ -1540,7 +1540,8 @@ const ProgressStallTimeoutMinimum = 5 * time.Minute
 // SessionConfig holds session provider settings.
 type SessionConfig struct {
 	// Provider selects the session backend: "fake", "fail", "subprocess",
-	// "acp", "exec:<script>", "k8s", or "" (default: tmux).
+	// "acp", "exec:<script>", "k8s", "herdr", "hybrid", "tmux", or ""
+	// (default: tmux).
 	Provider string `toml:"provider,omitempty"`
 	// K8s holds Kubernetes-specific settings for the native K8s provider.
 	K8s K8sConfig `toml:"k8s,omitempty"`
@@ -1603,9 +1604,16 @@ type SessionConfig struct {
 	// (workspace.name) — giving every city its own tmux server
 	// automatically. Set explicitly to override.
 	Socket string `toml:"socket,omitempty"`
+	// HybridLocal selects the local backend used by the hybrid provider.
+	// Supported values are "tmux" (the default) and "herdr". This lets a
+	// Herdr city move selected sessions to Kubernetes without migrating every
+	// remaining local session back to tmux. Overridden by the GC_HYBRID_LOCAL
+	// environment variable if set.
+	HybridLocal string `toml:"hybrid_local,omitempty"`
 	// RemoteMatch is a substring pattern for the hybrid provider to route
 	// sessions to the remote (K8s) backend. Sessions whose names contain
-	// this pattern go to K8s; all others stay local (tmux).
+	// this pattern go to K8s; all others stay on the configured hybrid-local
+	// backend.
 	// Overridden by the GC_HYBRID_REMOTE_MATCH env var if set.
 	RemoteMatch string `toml:"remote_match,omitempty"`
 }

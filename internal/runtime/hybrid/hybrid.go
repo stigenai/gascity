@@ -25,6 +25,7 @@ var (
 	_ runtime.InterruptedTurnResetProvider  = (*Provider)(nil)
 	_ runtime.RelaunchProvider              = (*Provider)(nil)
 	_ runtime.LivenessObserver              = (*Provider)(nil)
+	_ runtime.ServerLifecycleProvider       = (*Provider)(nil)
 )
 
 // New creates a hybrid provider. isRemote returns true for sessions
@@ -38,6 +39,24 @@ func (p *Provider) route(name string) runtime.Provider {
 		return p.remote
 	}
 	return p.local
+}
+
+// ConfigureServer forwards shared local-server setup when the local backend
+// owns one. The hybrid remote backend is Kubernetes and has no shared server.
+func (p *Provider) ConfigureServer() error {
+	if lifecycle, ok := p.local.(runtime.ServerLifecycleProvider); ok {
+		return lifecycle.ConfigureServer()
+	}
+	return nil
+}
+
+// TeardownServer forwards shared local-server teardown after the hybrid
+// provider's sessions have drained.
+func (p *Provider) TeardownServer() error {
+	if lifecycle, ok := p.local.(runtime.ServerLifecycleProvider); ok {
+		return lifecycle.TeardownServer()
+	}
+	return nil
 }
 
 // Start delegates to the routed backend.

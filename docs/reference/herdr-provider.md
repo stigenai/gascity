@@ -24,9 +24,9 @@ selected onto herdr fail to start; install it before flipping the selector.
 ## Enabling herdr
 
 `herdr` is selected with the same runtime selector used for every other
-backend. That selector is city-wide (`[session] provider`) or, for a one-off
-run, process-wide (`GC_SESSION`); herdr cannot be selected for individual
-agents.
+backend. It can be the city-wide provider, or the local half of the hybrid
+provider while selected sessions run remotely on Kubernetes. It is not an
+individual agent transport.
 
 ### City default
 
@@ -41,12 +41,35 @@ Every agent the city starts runs under herdr, except agents on the ACP transport
 (whether pinned `session = "acp"` or because their provider defaults to ACP),
 which route to the separate ACP backend instead (see below).
 
+### Hybrid local backend
+
+Use herdr as the hybrid provider's local backend when only selected sessions
+should move to Kubernetes:
+
+```toml
+[session]
+provider = "hybrid"
+hybrid_local = "herdr"
+remote_match = "review-pre"
+```
+
+Sessions whose names contain `review-pre` route to Kubernetes. All other
+sessions remain on herdr. `GC_HYBRID_LOCAL` and `GC_HYBRID_REMOTE_MATCH`
+override these values for one process. The default `hybrid_local` remains
+`tmux` for backward compatibility. Unsupported local backend names fail
+provider construction instead of silently moving sessions to tmux.
+
+Changing `remote_match` transfers ownership between backends. Drain or stop
+matching sessions before an in-place reload so the old backend cannot retain a
+live duplicate. A container replacement naturally terminates the local herdr
+server, but the rollout should still verify that each selected session appears
+only in Kubernetes before accepting the change.
+
 ### Per-agent / per-rig
 
-herdr cannot be selected for individual agents. The runtime backend is chosen
-city-wide by `[session] provider` (above) or process-wide by `GC_SESSION`
-(below); no patch puts an agent onto herdr when the city default is something
-else.
+herdr cannot be selected as an individual agent transport. It is chosen
+city-wide by `[session] provider = "herdr"`, as the local backend of
+`provider = "hybrid"`, or process-wide by `GC_SESSION`.
 
 The per-agent patch field is `session`, but it selects a **transport**, not a
 backend. It accepts only `acp`, `tmux`, or omission (`IsValidSessionTransport`
@@ -83,9 +106,8 @@ way it selects `exec:<script>` or any other backend.
 
 ## Piloting safely
 
-herdr is opt-in, and the backend is a whole-city choice, so you pilot it by
-scoping which city runs on herdr, not by pinning individual agents. Recommended
-path:
+herdr is opt-in. Start with a whole scratch city, then use hybrid routing when
+you are ready to isolate selected Kubernetes workers. Recommended path:
 
 1. **Try it per-process on a scratch city.** Select herdr with the environment
    variable on a throwaway city, so nothing is committed and your real city is
@@ -110,8 +132,10 @@ path:
 
 3. **Widen** to your real city by flipping its `[session] provider` to
    `"herdr"`, once the scratch city has been stable across several work cycles.
-   The switch is city-wide with no way to move agents over one at a time, so
-   keep any city you are not ready to migrate on the tmux default.
+
+4. **Isolate selected workers** by switching the city to `provider = "hybrid"`,
+   retaining `hybrid_local = "herdr"`, and choosing a narrow `remote_match`.
+   Verify those sessions in Kubernetes before widening the match.
 
 ## Applying and verifying
 
