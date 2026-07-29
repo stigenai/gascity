@@ -92,6 +92,7 @@ func (s *Server) agentLiveSessionIndex(cityName, sessTmpl string) map[string]liv
 	}
 
 	index := make(map[string]liveAgentSession, len(infos))
+	cfg := s.state.Config()
 	for _, info := range infos {
 		if info.Closed {
 			continue
@@ -114,7 +115,22 @@ func (s *Server) agentLiveSessionIndex(cityName, sessTmpl string) map[string]liv
 			state:       state,
 			id:          strings.TrimSpace(info.ID),
 		}
-		for _, key := range agentSessionIdentities(cityName, sessTmpl, info) {
+		keys := agentSessionIdentities(cityName, sessTmpl, info)
+		// A singleton's template is its agent identity. Pool templates are
+		// deliberately excluded because one pool session must never
+		// masquerade as every slot, but retaining the singleton identity lets
+		// the roster use the durable projection without probing Herdr once per
+		// configured agent.
+		if cfg != nil {
+			if configured, ok := findAgent(cfg, info.Template); ok &&
+				!isMultiSessionAgent(configured) {
+				keys = append(keys, strings.TrimSpace(info.Template))
+			}
+		}
+		for _, key := range keys {
+			if key == "" {
+				continue
+			}
 			// The read model is sorted created-desc, so the first session to
 			// claim a slot is the newest one holding it. Later (older) sessions
 			// for the same slot must not overwrite it.
@@ -125,6 +141,38 @@ func (s *Server) agentLiveSessionIndex(cityName, sessTmpl string) map[string]liv
 		}
 	}
 	return index
+}
+
+// resolveAgentRuntimeProjected resolves an agent roster row from the durable
+// session read model, with a single runtime snapshot as a degraded-store
+// fallback. Agent-list requests are a dashboard projection, not a liveness
+// scan: probing the runtime once per configured agent made a 40-row roster
+// issue 80+ synchronous Herdr calls and take 30-40 seconds. The controller
+// already owns runtime fencing and continuously projects its answer into
+// session state, so the roster consumes that bounded projection while the
+// single-agent detail endpoint retains its direct live probe.
+func resolveAgentRuntimeProjected(
+	deterministicName string,
+	qualifiedName string,
+	lookup func() map[string]liveAgentSession,
+	runtimeLookup func() map[string]struct{},
+) (string, bool) {
+	if lookup != nil {
+		index := lookup()
+		if live, ok := index[qualifiedName]; ok {
+			return live.sessionName, live.state == session.StateActive
+		}
+		// A non-nil projection is authoritative. Do not turn a missing
+		// projected session into N per-agent runtime probes.
+		if index != nil {
+			return deterministicName, false
+		}
+	}
+	if runtimeLookup == nil {
+		return deterministicName, false
+	}
+	_, running := runtimeLookup()[deterministicName]
+	return deterministicName, running
 }
 
 // resolveAgentRuntime returns the runtime session name to use for an agent slot
@@ -169,6 +217,37 @@ func (s *Server) memoizedAgentSessionIndex(cityName, sessTmpl string) func() map
 		if !built {
 			index = s.agentLiveSessionIndex(cityName, sessTmpl)
 			built = true
+		}
+		return index
+	}
+}
+
+// memoizedAgentRuntimeIndex is the degraded-store fallback for the roster. It
+// snapshots runtime names with one ListRunning call instead of issuing one
+// process-aware IsRunning probe per configured agent. A healthy durable session
+// projection remains authoritative and never calls this lookup.
+func memoizedAgentRuntimeIndex(sp sessionLister) func() map[string]struct{} {
+	var (
+		built bool
+		index map[string]struct{}
+	)
+	return func() map[string]struct{} {
+		if built {
+			return index
+		}
+		built = true
+		if sp == nil {
+			return nil
+		}
+		names, err := sp.ListRunning("")
+		if err != nil {
+			return nil
+		}
+		index = make(map[string]struct{}, len(names))
+		for _, name := range names {
+			if name = strings.TrimSpace(name); name != "" {
+				index[name] = struct{}{}
+			}
 		}
 		return index
 	}

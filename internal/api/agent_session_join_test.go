@@ -152,6 +152,82 @@ func TestResolveAgentRuntimeNoMatchKeepsDeterministicName(t *testing.T) {
 	}
 }
 
+func TestResolveAgentRuntimeProjectedNeverProbesRuntime(t *testing.T) {
+	lookupCalls := 0
+	lookup := func() map[string]liveAgentSession {
+		lookupCalls++
+		return map[string]liveAgentSession{
+			"myrig/pack.archivist-1": {
+				sessionName: "pack__archivist-de-o44",
+				state:       session.StateActive,
+			},
+		}
+	}
+
+	name, running := resolveAgentRuntimeProjected(
+		"myrig--pack__archivist-1",
+		"myrig/pack.archivist-1",
+		lookup,
+		nil,
+	)
+	if !running || name != "pack__archivist-de-o44" {
+		t.Fatalf("got (%q, %v), want projected live session", name, running)
+	}
+	if lookupCalls != 1 {
+		t.Fatalf("lookup calls = %d, want 1", lookupCalls)
+	}
+}
+
+func TestResolveAgentRuntimeProjectedUsesOneRuntimeSnapshotWhenProjectionUnavailable(t *testing.T) {
+	runtimeLookupCalls := 0
+	runtimeLookup := func() map[string]struct{} {
+		runtimeLookupCalls++
+		return map[string]struct{}{"myrig--worker": {}}
+	}
+
+	name, running := resolveAgentRuntimeProjected(
+		"myrig--worker",
+		"myrig/worker",
+		func() map[string]liveAgentSession { return nil },
+		runtimeLookup,
+	)
+	if !running || name != "myrig--worker" {
+		t.Fatalf("got (%q, %v), want degraded-store runtime snapshot match", name, running)
+	}
+	if runtimeLookupCalls != 1 {
+		t.Fatalf("runtime lookup calls = %d, want 1", runtimeLookupCalls)
+	}
+}
+
+func TestAgentLiveSessionIndexMapsSingletonTemplate(t *testing.T) {
+	state := newFakeState(t)
+	state.cityBeadStore = beads.NewMemStore()
+	state.cfg.Agents = []config.Agent{
+		{Name: "mayor", Provider: "test-agent", MaxActiveSessions: intPtr(1)},
+	}
+	mgr := session.NewManagerWithOptions(state.cityBeadStore, state.sp)
+	info, err := mgr.CreateSession(context.Background(), session.CreateOptions{
+		Template: "mayor",
+		Title:    "mayor",
+		Command:  "echo test",
+		WorkDir:  "/tmp",
+		Provider: "test-agent",
+		Hints:    runtime.Config{},
+	})
+	if err != nil {
+		t.Fatalf("create singleton session: %v", err)
+	}
+
+	index := New(state).agentLiveSessionIndex(state.CityName(), "")
+	got, ok := index["mayor"]
+	if !ok {
+		t.Fatalf("singleton template absent from index: %+v", index)
+	}
+	if got.sessionName != info.SessionName || got.state != session.StateActive {
+		t.Fatalf("indexed singleton = %+v, want session %q active", got, info.SessionName)
+	}
+}
+
 // End-to-end regression for #4703: a bounded pool whose live session is named
 // after its session id (not its slot ordinal) must still report running.
 func TestAgentListReportsBoundedPoolSlotRunningFromAliasedSession(t *testing.T) {
