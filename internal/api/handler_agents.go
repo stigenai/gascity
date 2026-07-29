@@ -434,6 +434,24 @@ func resolveProviderInfo(agentProvider string, cfg *config.City) (provider, disp
 	return provider, strings.ToUpper(provider[:1]) + provider[1:]
 }
 
+// providerFamily returns the built-in family for a provider alias. Runtime
+// configs normally carry the eager resolved-provider cache, while Phase A
+// and focused tests may only have the raw provider specs available.
+func providerFamily(provider string, cfg *config.City) string {
+	provider = strings.TrimSpace(provider)
+	if provider == "" || cfg == nil {
+		return ""
+	}
+	if resolved, ok := config.ResolvedProviderCached(cfg, provider); ok {
+		return strings.TrimSpace(resolved.BuiltinAncestor)
+	}
+	return strings.TrimSpace(config.BuiltinFamily(provider, cfg.Providers))
+}
+
+func isProviderFamily(provider, family string, cfg *config.City) bool {
+	return providerFamily(provider, cfg) == family
+}
+
 // computeAgentState derives the state enum from existing agent data.
 func computeAgentState(suspended, quarantined, running bool, activeBead string, lastActivity *time.Time) string {
 	if suspended {
@@ -503,7 +521,7 @@ func canAttributeSession(agentCfg config.Agent, qualifiedName string, cfg *confi
 		if provider == "" {
 			provider = cfg.Workspace.Provider
 		}
-		if provider == "claude" {
+		if isProviderFamily(provider, "claude", cfg) {
 			if isMultiSessionAgent(a) {
 				if multiSessionSharesWorkDir(cityPath, cityName, target, a, cfg.Rigs) {
 					return false
