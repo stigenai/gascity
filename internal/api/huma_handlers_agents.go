@@ -12,6 +12,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/sse"
 	"github.com/gastownhall/gascity/internal/api/apierr"
 	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/session"
 )
 
 // humaHandleAgentList is the Huma-typed handler for GET /v0/agents.
@@ -61,7 +62,7 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 		// Provenance is a property of the declared agent, shared by every
 		// pool-expanded instance, so compute it once per source agent.
 		pack, packDerived := agentPackProvenance(a, rawCfg, cfg)
-		expanded := expandAgent(a, cityName, sessTmpl, sp)
+		expanded := expandAgentProjected(a, cityName, sessTmpl, sp, liveSessions)
 		for _, ea := range expanded {
 			if input.Rig != "" && ea.rig != input.Rig {
 				continue
@@ -70,12 +71,13 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 				continue
 			}
 
-			sessionName, running := resolveAgentRuntimeProjected(
+			liveSession, running, projected := projectedAgentRuntime(
 				agentSessionName(cityName, ea.qualifiedName, sessTmpl),
 				ea.qualifiedName,
 				liveSessions,
 				runningSessions,
 			)
+			sessionName := liveSession.sessionName
 
 			if input.Running == "true" && !running {
 				continue
@@ -84,8 +86,8 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 				continue
 			}
 
-			suspended := ea.suspended
-			if running {
+			suspended := ea.suspended || liveSession.state == session.StateSuspended
+			if running && !projected {
 				if v, err := sp.GetMeta(sessionName, "suspended"); err == nil && v == "true" {
 					suspended = true
 				}
@@ -121,18 +123,28 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 			}
 
 			var lastActivity *time.Time
-			sessionID := ""
+			sessionID := liveSession.id
 			if running {
-				si := &sessionInfo{Name: sessionName}
-				if t, err := sp.GetLastActivity(sessionName); err == nil && !t.IsZero() {
+				si := &sessionInfo{Name: sessionName, Attached: liveSession.attached}
+				if !liveSession.lastActive.IsZero() {
+					t := liveSession.lastActive
 					si.LastActivity = &t
 					lastActivity = &t
 				}
-				si.Attached = sp.IsAttached(sessionName)
-				resp.Session = si
-				if id, err := sp.GetMeta(sessionName, "GC_SESSION_ID"); err == nil {
-					sessionID = strings.TrimSpace(id)
+				// A missing durable projection is an exceptional/degraded-store
+				// path. Preserve the older runtime-enriched response there;
+				// healthy projections never issue these per-row probes.
+				if !projected {
+					if t, err := sp.GetLastActivity(sessionName); err == nil && !t.IsZero() {
+						si.LastActivity = &t
+						lastActivity = &t
+					}
+					si.Attached = sp.IsAttached(sessionName)
+					if id, err := sp.GetMeta(sessionName, "GC_SESSION_ID"); err == nil {
+						sessionID = strings.TrimSpace(id)
+					}
 				}
+				resp.Session = si
 			}
 
 			resp.ActiveBead = s.findActiveBeadForAssignees(ea.rig, sessionID, sessionName, ea.qualifiedName)

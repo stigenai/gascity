@@ -16,6 +16,7 @@ import (
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/runtime"
+	"github.com/gastownhall/gascity/internal/session"
 	"github.com/gastownhall/gascity/internal/sessionlog"
 )
 
@@ -36,8 +37,12 @@ func (p partialAgentSessionLister) ListRunning(prefix string) ([]string, error) 
 
 type countingIsRunningProvider struct {
 	runtime.Provider
-	isRunningCalls   int
-	listRunningCalls int
+	isRunningCalls       int
+	listRunningCalls     int
+	getMetaCalls         int
+	getLastActivityCalls int
+	isAttachedCalls      int
+	peekCalls            int
 }
 
 func (p *countingIsRunningProvider) IsRunning(name string) bool {
@@ -48,6 +53,26 @@ func (p *countingIsRunningProvider) IsRunning(name string) bool {
 func (p *countingIsRunningProvider) ListRunning(prefix string) ([]string, error) {
 	p.listRunningCalls++
 	return p.Provider.ListRunning(prefix)
+}
+
+func (p *countingIsRunningProvider) GetMeta(name, key string) (string, error) {
+	p.getMetaCalls++
+	return p.Provider.GetMeta(name, key)
+}
+
+func (p *countingIsRunningProvider) GetLastActivity(name string) (time.Time, error) {
+	p.getLastActivityCalls++
+	return p.Provider.GetLastActivity(name)
+}
+
+func (p *countingIsRunningProvider) IsAttached(name string) bool {
+	p.isAttachedCalls++
+	return p.Provider.IsAttached(name)
+}
+
+func (p *countingIsRunningProvider) Peek(name string, lines int) (string, error) {
+	p.peekCalls++
+	return p.Provider.Peek(name, lines)
 }
 
 type activeBeadQueryStore struct {
@@ -115,6 +140,77 @@ func TestAgentListUsesDurableProjectionWithoutRuntimeFanout(t *testing.T) {
 	}
 	if provider.listRunningCalls != 0 {
 		t.Fatalf("ListRunning calls = %d, want 0 with healthy projection", provider.listRunningCalls)
+	}
+	if provider.getMetaCalls != 0 || provider.getLastActivityCalls != 0 ||
+		provider.isAttachedCalls != 0 || provider.peekCalls != 0 {
+		t.Fatalf("runtime enrichment calls = meta:%d activity:%d attached:%d peek:%d, want all 0",
+			provider.getMetaCalls, provider.getLastActivityCalls,
+			provider.isAttachedCalls, provider.peekCalls)
+	}
+}
+
+func TestAgentListUnlimitedPoolUsesDurableProjectionWithoutRuntimeFanout(t *testing.T) {
+	state := newFakeState(t)
+	state.cityBeadStore = beads.NewMemStore()
+	state.cfg.Agents = []config.Agent{{
+		Name:              "polecat",
+		Dir:               "myrig",
+		Provider:          "test-agent",
+		MinActiveSessions: intPtr(0),
+		MaxActiveSessions: intPtr(-1),
+	}}
+
+	mgr := session.NewManagerWithOptions(state.cityBeadStore, state.sp)
+	info, err := mgr.CreateSession(context.Background(), session.CreateOptions{
+		Template: "myrig/polecat",
+		Alias:    "myrig/polecat-7",
+		Title:    "myrig/polecat-7",
+		Command:  "echo test",
+		WorkDir:  "/tmp",
+		Provider: "test-agent",
+		Hints:    runtime.Config{},
+		ExtraMeta: map[string]string{
+			"agent_name":     "myrig/polecat-7",
+			"session_origin": "ephemeral",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create projected pool session: %v", err)
+	}
+
+	provider := &countingIsRunningProvider{Provider: state.sp}
+	state.sessionProvider = provider
+	h := newTestCityHandler(t, state)
+	req := httptest.NewRequest("GET", cityURL(state, "/agents"), nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp struct {
+		Items []agentResponse `json:"items"`
+		Total int             `json:"total"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Total != 1 || len(resp.Items) != 1 {
+		t.Fatalf("roster = %+v, want one projected pool member", resp)
+	}
+	item := resp.Items[0]
+	if item.Name != "myrig/polecat-7" || !item.Running {
+		t.Fatalf("item = %+v, want myrig/polecat-7 running", item)
+	}
+	if item.Session == nil || item.Session.Name != info.SessionName {
+		t.Fatalf("session = %+v, want projected runtime %q", item.Session, info.SessionName)
+	}
+	if provider.isRunningCalls != 0 || provider.listRunningCalls != 0 ||
+		provider.getMetaCalls != 0 || provider.getLastActivityCalls != 0 ||
+		provider.isAttachedCalls != 0 || provider.peekCalls != 0 {
+		t.Fatalf("runtime calls = isRunning:%d list:%d meta:%d activity:%d attached:%d peek:%d, want all 0",
+			provider.isRunningCalls, provider.listRunningCalls, provider.getMetaCalls,
+			provider.getLastActivityCalls, provider.isAttachedCalls, provider.peekCalls)
 	}
 }
 
