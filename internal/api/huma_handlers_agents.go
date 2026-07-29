@@ -157,7 +157,8 @@ func (s *Server) humaHandleAgentList(ctx context.Context, input *AgentListInput)
 				}
 			}
 
-			if running && provider == "claude" && canAttributeSession(a, ea.qualifiedName, cfg, s.state.CityPath()) {
+			if running && isProviderFamily(provider, "claude", cfg) &&
+				canAttributeSession(a, ea.qualifiedName, cfg, s.state.CityPath()) {
 				s.enrichSessionMeta(&resp, a, ea.qualifiedName)
 			}
 
@@ -278,7 +279,8 @@ func (s *Server) agentByName(name string) (*IndexOutput[agentResponse], error) {
 	quarantined := s.state.IsQuarantined(sessionName)
 	resp.State = computeAgentState(suspended, quarantined, running, resp.ActiveBead, lastActivity)
 
-	if running && provider == "claude" && canAttributeSession(agentCfg, name, cfg, s.state.CityPath()) {
+	if running && isProviderFamily(provider, "claude", cfg) &&
+		canAttributeSession(agentCfg, name, cfg, s.state.CityPath()) {
 		s.enrichSessionMeta(&resp, agentCfg, name)
 	}
 

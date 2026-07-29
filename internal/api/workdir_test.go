@@ -23,6 +23,34 @@ func TestCanAttributeSessionUsesResolvedWorkDir(t *testing.T) {
 	}
 }
 
+func TestCanAttributeSessionRecognizesClaudeAliasesSharingWorkDir(t *testing.T) {
+	cityPath := t.TempDir()
+	rigRoot := filepath.Join(t.TempDir(), "demo-repo")
+	base := "builtin:claude"
+	cfg := &config.City{
+		Workspace: config.Workspace{Provider: "claude-opus"},
+		Providers: map[string]config.ProviderSpec{
+			"claude-opus": {Base: &base},
+		},
+		ResolvedProviders: map[string]config.ResolvedProvider{
+			"claude-opus": {
+				Name:            "claude-opus",
+				BuiltinAncestor: "claude",
+				Command:         "claude",
+			},
+		},
+		Rigs: []config.Rig{{Name: "demo", Path: rigRoot}},
+		Agents: []config.Agent{
+			{Name: "refinery", Dir: "demo", Provider: "claude-opus", MaxActiveSessions: intPtr(1)},
+			{Name: "witness", Dir: "demo", Provider: "claude-opus", MaxActiveSessions: intPtr(1)},
+		},
+	}
+
+	if canAttributeSession(cfg.Agents[0], "demo/refinery", cfg, cityPath) {
+		t.Fatal("canAttributeSession() = true, want false when Claude aliases share a workdir")
+	}
+}
+
 func TestCanAttributeSessionRejectsSharedRigRootWhenClaudePoolExists(t *testing.T) {
 	cityPath := t.TempDir()
 	rigRoot := filepath.Join(t.TempDir(), "demo-repo")

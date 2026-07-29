@@ -1071,55 +1071,97 @@ func TestAgentPeekViaQueryParam(t *testing.T) {
 }
 
 func TestAgentModelAndContext(t *testing.T) {
-	state := newFakeState(t)
-	state.cfg.Workspace.Provider = "claude"
-	state.cfg.Agents = []config.Agent{
-		{Name: "worker", Dir: "myrig", Provider: "claude", MaxActiveSessions: intPtr(1)},
-	}
-	state.cfg.Rigs = []config.Rig{{Name: "myrig", Path: "/tmp/myrig"}}
-	state.sp.Start(context.Background(), "myrig--worker", runtime.Config{}) //nolint:errcheck
+	for _, tt := range []struct {
+		name     string
+		provider string
+		alias    bool
+	}{
+		{name: "builtin", provider: "claude"},
+		{name: "alias", provider: "claude-opus", alias: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			state := newFakeState(t)
+			state.cfg.Workspace.Provider = tt.provider
+			state.cfg.Agents = []config.Agent{
+				{Name: "worker", Dir: "myrig", Provider: tt.provider, MaxActiveSessions: intPtr(1)},
+			}
+			if tt.alias {
+				base := "builtin:claude"
+				state.cfg.Providers = map[string]config.ProviderSpec{
+					tt.provider: {Base: &base},
+				}
+				state.cfg.ResolvedProviders = map[string]config.ResolvedProvider{
+					tt.provider: {
+						Name:            tt.provider,
+						BuiltinAncestor: "claude",
+						Command:         "claude",
+					},
+				}
+			}
+			state.cfg.Rigs = []config.Rig{{Name: "myrig", Path: "/tmp/myrig"}}
+			state.sp.Start(context.Background(), "myrig--worker", runtime.Config{}) //nolint:errcheck
 
-	// Create a fake session JSONL file for the rig path.
-	searchDir := t.TempDir()
-	slug := sessionlog.ProjectSlug("/tmp/myrig")
-	slugDir := filepath.Join(searchDir, slug)
-	if err := os.MkdirAll(slugDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+			// Create a fake session JSONL file for the rig path.
+			searchDir := t.TempDir()
+			slug := sessionlog.ProjectSlug("/tmp/myrig")
+			slugDir := filepath.Join(searchDir, slug)
+			if err := os.MkdirAll(slugDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
 
-	// Write session JSONL with model + usage.
-	sessionFile := filepath.Join(slugDir, "test-session.jsonl")
-	lines := `{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-5-20251101","usage":{"input_tokens":10000,"cache_read_input_tokens":5000,"cache_creation_input_tokens":2000}}}` + "\n"
-	if err := os.WriteFile(sessionFile, []byte(lines), 0o644); err != nil {
-		t.Fatal(err)
-	}
+			sessionFile := filepath.Join(slugDir, "test-session.jsonl")
+			lines := `{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-5-20251101","usage":{"input_tokens":10000,"cache_read_input_tokens":5000,"cache_creation_input_tokens":2000}}}` + "\n"
+			if err := os.WriteFile(sessionFile, []byte(lines), 0o644); err != nil {
+				t.Fatal(err)
+			}
 
-	srv := New(state)
-	srv.sessionLogSearchPaths = []string{searchDir}
-	h := newTestCityHandlerWith(t, state, srv)
+			srv := New(state)
+			srv.sessionLogSearchPaths = []string{searchDir}
+			h := newTestCityHandlerWith(t, state, srv)
 
-	req := httptest.NewRequest("GET", cityURL(state, "/agent/myrig/worker"), nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+			req := httptest.NewRequest("GET", cityURL(state, "/agent/myrig/worker"), nil)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
-	}
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
 
-	var resp agentResponse
-	json.NewDecoder(rec.Body).Decode(&resp) //nolint:errcheck
-	if resp.Model != "claude-opus-4-5-20251101" {
-		t.Errorf("Model = %q, want %q", resp.Model, "claude-opus-4-5-20251101")
-	}
-	if resp.ContextPct == nil {
-		t.Error("expected non-nil ContextPct")
-	} else if *resp.ContextPct != 8 {
-		t.Errorf("ContextPct = %d, want 8", *resp.ContextPct)
-	}
-	if resp.ContextWindow == nil {
-		t.Error("expected non-nil ContextWindow")
-	} else if *resp.ContextWindow != 200000 {
-		t.Errorf("ContextWindow = %d, want 200000", *resp.ContextWindow)
+			var resp agentResponse
+			json.NewDecoder(rec.Body).Decode(&resp) //nolint:errcheck
+			if resp.Model != "claude-opus-4-5-20251101" {
+				t.Errorf("Model = %q, want %q", resp.Model, "claude-opus-4-5-20251101")
+			}
+			if resp.ContextPct == nil {
+				t.Error("expected non-nil ContextPct")
+			} else if *resp.ContextPct != 8 {
+				t.Errorf("ContextPct = %d, want 8", *resp.ContextPct)
+			}
+			if resp.ContextWindow == nil {
+				t.Error("expected non-nil ContextWindow")
+			} else if *resp.ContextWindow != 200000 {
+				t.Errorf("ContextWindow = %d, want 200000", *resp.ContextWindow)
+			}
+
+			listReq := httptest.NewRequest("GET", cityURL(state, "/agents"), nil)
+			listRec := httptest.NewRecorder()
+			h.ServeHTTP(listRec, listReq)
+			if listRec.Code != http.StatusOK {
+				t.Fatalf("list status = %d, want %d", listRec.Code, http.StatusOK)
+			}
+			var listResp struct {
+				Items []agentResponse `json:"items"`
+			}
+			if err := json.NewDecoder(listRec.Body).Decode(&listResp); err != nil {
+				t.Fatalf("decode list response: %v", err)
+			}
+			if len(listResp.Items) != 1 {
+				t.Fatalf("list items = %d, want 1", len(listResp.Items))
+			}
+			if got := listResp.Items[0].Model; got != "claude-opus-4-5-20251101" {
+				t.Errorf("list Model = %q, want %q", got, "claude-opus-4-5-20251101")
+			}
+		})
 	}
 }
 
