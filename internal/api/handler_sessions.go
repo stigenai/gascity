@@ -91,12 +91,12 @@ func (p sessionListRuntimeSnapshot) IsRunning(name string) bool {
 	return ok
 }
 
-// snapshotSessionListProvider replaces repeated per-session liveness RPCs with
-// one provider inventory request for the duration of a session-list response.
+// snapshotRuntimeProvider replaces repeated liveness RPCs with one provider
+// inventory request for the duration of an API response.
 // If inventory is unavailable, retain the original provider so callers keep
-// the existing per-session fallback semantics instead of reporting false
-// negatives from an incomplete snapshot.
-func snapshotSessionListProvider(sp runtime.Provider) runtime.Provider {
+// the existing per-item fallback semantics instead of reporting false negatives
+// from an incomplete snapshot.
+func snapshotRuntimeProvider(sp runtime.Provider) runtime.Provider {
 	if sp == nil {
 		return nil
 	}
@@ -114,7 +114,7 @@ func snapshotSessionListProvider(sp runtime.Provider) runtime.Provider {
 func sessionListProvider(sp runtime.Provider, sessions []session.Info) runtime.Provider {
 	for _, info := range sessions {
 		if info.State == session.StateActive {
-			return snapshotSessionListProvider(sp)
+			return snapshotRuntimeProvider(sp)
 		}
 	}
 	return sp

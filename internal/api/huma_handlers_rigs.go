@@ -54,7 +54,7 @@ func (s *Server) humaHandleRigList(ctx context.Context, input *RigListInput) (*L
 	}
 
 	cfg := s.state.Config()
-	sp := s.state.SessionProvider()
+	sp := snapshotRuntimeProvider(s.state.SessionProvider())
 	cityName := s.state.CityName()
 	store := s.state.CityBeadStore()
 	if err := cacheLiveOr503(store); err != nil {
@@ -81,7 +81,7 @@ func (s *Server) humaHandleRigList(ctx context.Context, input *RigListInput) (*L
 func (s *Server) humaHandleRigGet(_ context.Context, input *RigGetInput) (*IndexOutput[rigResponse], error) {
 	name := input.Name
 	cfg := s.state.Config()
-	sp := s.state.SessionProvider()
+	sp := snapshotRuntimeProvider(s.state.SessionProvider())
 	wantGit := input.Git
 
 	for _, rig := range cfg.Rigs {
