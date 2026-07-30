@@ -213,7 +213,12 @@ func processAttemptControl(store beads.Store, bead beads.Bead, opts ProcessOptio
 		}
 		if strategy.beforeContinue != nil {
 			if err := strategy.beforeContinue(store, attempt, opts); err != nil {
-				return ControlResult{}, fmt.Errorf("%s: preparing %s retry: %w", bead.ID, strategy.subjectNoun, err)
+				retryErr := fmt.Errorf("%s: preparing %s retry: %w", bead.ID, strategy.subjectNoun, err)
+				if IsTransientControllerError(retryErr) {
+					markControllerSpawnError(store, bead.ID, retryErr, opts)
+					return ControlResult{}, ErrControlPending
+				}
+				return ControlResult{}, retryErr
 			}
 		}
 		nextAttempt := attemptNum + 1
@@ -255,10 +260,13 @@ func recyclePooledRetryAttempt(store beads.Store, attempt beads.Bead, opts Proce
 		return fmt.Errorf("pooled retry attempt %s missing assignee", attempt.ID)
 	}
 	if err := opts.RecycleSession(attempt); err != nil {
-		return fmt.Errorf("recycling pooled session %s: %w", attempt.Assignee, err)
+		// Killing a runtime process crosses an operational boundary. A failed
+		// stop is not evidence that the workflow graph is malformed, so leave
+		// the control open and re-enter without consuming another attempt.
+		return markTransientControllerBoundaryError(fmt.Errorf("recycling pooled session %s: %w", attempt.Assignee, err))
 	}
 	if err := store.SetMetadata(attempt.ID, beadmeta.RetrySessionRecycledMetadataKey, "true"); err != nil {
-		return fmt.Errorf("recording pooled session recycle: %w", err)
+		return markTransientControllerBoundaryError(fmt.Errorf("recording pooled session recycle: %w", err))
 	}
 	return nil
 }

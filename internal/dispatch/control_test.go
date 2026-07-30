@@ -601,15 +601,40 @@ func TestProcessRetryControlMissingOutcomeRecyclesPooledSession(t *testing.T) {
 	mustDep(t, store, control.ID, attempt1.ID, "blocks")
 
 	var recycled []string
-	result, err := processRetryControl(store, mustGet(t, store, control.ID), ProcessOptions{
+	recycleCalls := 0
+	opts := ProcessOptions{
 		routeCfg: routeCfg,
 		RecycleSession: func(subject beads.Bead) error {
+			recycleCalls++
+			if recycleCalls == 1 {
+				return errors.New("temporary runtime stop failure")
+			}
 			recycled = append(recycled, subject.Assignee)
 			return nil
 		},
-	})
+	}
+	result, err := processRetryControl(store, mustGet(t, store, control.ID), opts)
+	if !errors.Is(err, ErrControlPending) {
+		t.Fatalf("processRetryControl recycle failure error = %v, want ErrControlPending", err)
+	}
+	if result.Processed {
+		t.Fatalf("processRetryControl recycle failure result = %+v, want pending", result)
+	}
+	afterFailure := mustGet(t, store, control.ID)
+	if afterFailure.Status != "open" {
+		t.Fatalf("control status after recycle failure = %q, want open", afterFailure.Status)
+	}
+	if afterFailure.Metadata["gc.controller_error_class"] != "transient" ||
+		afterFailure.Metadata["gc.controller_retryable"] != "true" {
+		t.Fatalf("controller retry metadata after recycle failure = %v, want transient retryable", afterFailure.Metadata)
+	}
+	if got := mustGet(t, store, attempt1.ID).Metadata["gc.retry_session_recycled"]; got != "" {
+		t.Fatalf("attempt marker after failed recycle = %q, want empty", got)
+	}
+
+	result, err = processRetryControl(store, mustGet(t, store, control.ID), opts)
 	if err != nil {
-		t.Fatalf("processRetryControl: %v", err)
+		t.Fatalf("processRetryControl after recycle recovery: %v", err)
 	}
 	if result.Action != "retry" {
 		t.Fatalf("action = %q, want retry", result.Action)
