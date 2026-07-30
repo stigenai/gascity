@@ -12,11 +12,14 @@ import (
 // bindProjectedRuntimeRig restores the deployment-specific path intentionally
 // omitted from reusable city configuration inside a managed session runtime.
 //
-// Kubernetes workers receive a single rig checkout projected beneath the city
-// mount. The controller publishes that binding through the GC_RIG* and
-// GC_STORE* environment contract. This function validates the complete
-// contract and applies it only to the in-memory config used by gc hook. It
-// never persists the path and never replaces a different authored binding.
+// Kubernetes workers receive a single rig checkout projected into the runtime.
+// The controller publishes that binding through the GC_RIG* and GC_STORE*
+// environment contract. This function validates the binding's path, declared
+// rig, store, prefix, and managed-session identity, then applies it only to the
+// in-memory config used by gc hook. Controller preflight remains responsible
+// for the full session record and store metadata contract. This function never
+// persists the path and never replaces a different effective configured
+// binding.
 func bindProjectedRuntimeRig(cityPath string, cfg *config.City) error {
 	rigName := strings.TrimSpace(os.Getenv("GC_RIG"))
 	rigRoot := strings.TrimSpace(os.Getenv("GC_RIG_ROOT"))
@@ -46,22 +49,10 @@ func bindProjectedRuntimeRig(cityPath string, cfg *config.City) error {
 		return fmt.Errorf("projected GC_RIG_ROOT must be absolute: %q", rigRoot)
 	}
 
-	cleanCity, err := filepath.Abs(filepath.Clean(cityPath))
-	if err != nil {
-		return fmt.Errorf("resolve city root: %w", err)
-	}
 	cleanRig := filepath.Clean(rigRoot)
-	resolvedCity, err := filepath.EvalSymlinks(cleanCity)
-	if err != nil {
-		return fmt.Errorf("resolve city root %q: %w", cleanCity, err)
-	}
 	resolvedRig, err := filepath.EvalSymlinks(cleanRig)
 	if err != nil {
 		return fmt.Errorf("resolve projected GC_RIG_ROOT %q: %w", cleanRig, err)
-	}
-	rel, err := filepath.Rel(resolvedCity, resolvedRig)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return fmt.Errorf("projected GC_RIG_ROOT %q must be inside city root %q", cleanRig, cleanCity)
 	}
 
 	storeRoot := strings.TrimSpace(os.Getenv("GC_STORE_ROOT"))
@@ -102,6 +93,24 @@ func bindProjectedRuntimeRig(cityPath string, cfg *config.City) error {
 			)
 		}
 		return nil
+	}
+
+	// A pathless reusable config has no deployment-owned trust anchor for an
+	// arbitrary runtime path. Keep that projection confined to the city. An
+	// effectively configured rig above may intentionally live elsewhere (for
+	// example, /data/city plus /data/rigs/<name>) because the exact canonical
+	// path match against the configured binding supplies the trust boundary.
+	cleanCity, err := filepath.Abs(filepath.Clean(cityPath))
+	if err != nil {
+		return fmt.Errorf("resolve city root: %w", err)
+	}
+	resolvedCity, err := filepath.EvalSymlinks(cleanCity)
+	if err != nil {
+		return fmt.Errorf("resolve city root %q: %w", cleanCity, err)
+	}
+	rel, err := filepath.Rel(resolvedCity, resolvedRig)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("unconfigured projected GC_RIG_ROOT %q must be inside city root %q", cleanRig, cleanCity)
 	}
 
 	metadataPath := filepath.Join(cleanRig, ".beads", "metadata.json")
