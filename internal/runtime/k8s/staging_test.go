@@ -438,6 +438,33 @@ func TestWaitForExecReadySucceedsImmediately(t *testing.T) {
 	}
 }
 
+func TestInitContainerWaitTimeoutUsesRemainingStartupBudget(t *testing.T) {
+	now := time.Now()
+	ctx, cancel := context.WithDeadline(context.Background(), now.Add(5*time.Minute))
+	defer cancel()
+
+	got := initContainerWaitTimeout(ctx, now)
+	if got != 5*time.Minute {
+		t.Fatalf("initContainerWaitTimeout = %v, want remaining 5m startup budget", got)
+	}
+}
+
+func TestInitContainerWaitTimeoutWithoutDeadlineUsesBoundedFallback(t *testing.T) {
+	if got := initContainerWaitTimeout(context.Background(), time.Now()); got != time.Minute {
+		t.Fatalf("initContainerWaitTimeout = %v, want 1m fallback", got)
+	}
+}
+
+func TestWaitForInitContainerHonorsCanceledStartupBudget(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := waitForInitContainer(ctx, nil, "pod", time.Minute)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitForInitContainer error = %v, want context canceled", err)
+	}
+}
+
 func TestWaitForExecReadyRetriesTransientErrors(t *testing.T) {
 	ops := &execReadyOps{
 		errors: []error{
