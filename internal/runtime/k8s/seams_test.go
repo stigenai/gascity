@@ -236,6 +236,34 @@ func TestSeamsK8sStopDeletesNonRunningPod(t *testing.T) {
 	}
 }
 
+// TestSeamsK8sStopRefusesSameNameReplacement proves Stop binds deletion to the
+// immutable UID returned by its list. A Pod name can be reused immediately
+// after deletion; deleting only by name lets a list/delete race remove a
+// replacement that Stop never inspected.
+func TestSeamsK8sStopRefusesSameNameReplacement(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+	addFailedPod(fake, "s", "s")
+	fake.pods["s"].UID = "listed-uid"
+	fake.beforeDelete = func(name string) {
+		addFailedPod(fake, name, "s")
+		fake.pods[name].UID = "replacement-uid"
+	}
+
+	seam := runtime.NewProviderFromSeams(p.Seams())
+	err := seam.Stop("s")
+	if err == nil {
+		t.Fatal("seam Stop must surface a UID-precondition conflict")
+	}
+	replacement, exists := fake.pods["s"]
+	if !exists {
+		t.Fatal("same-name replacement was deleted")
+	}
+	if replacement.UID != "replacement-uid" {
+		t.Fatalf("remaining Pod UID = %q, want replacement-uid", replacement.UID)
+	}
+}
+
 // TestSeamsK8sStopSurfacesTransportFailure is the M3 carrier guard for the
 // un-weld lifecycle (Runtime.Teardown → Stop): a transport failure during
 // teardown must surface as an error so the seam adapter keeps tracking the

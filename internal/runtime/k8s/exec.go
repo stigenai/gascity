@@ -8,7 +8,10 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -21,7 +24,7 @@ import (
 type k8sOps interface {
 	createPod(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error)
 	getPod(ctx context.Context, name string) (*corev1.Pod, error)
-	deletePod(ctx context.Context, name string, grace int64) error
+	deletePod(ctx context.Context, name string, uid types.UID, grace int64) error
 	listPods(ctx context.Context, selector string, fieldSelector string) ([]corev1.Pod, error)
 	execInPod(ctx context.Context, pod, container string, cmd []string, stdin io.Reader) (string, error)
 }
@@ -41,9 +44,13 @@ func (r *realK8sOps) getPod(ctx context.Context, name string) (*corev1.Pod, erro
 	return r.clientset.CoreV1().Pods(r.namespace).Get(ctx, name, metav1.GetOptions{})
 }
 
-func (r *realK8sOps) deletePod(ctx context.Context, name string, grace int64) error {
+func (r *realK8sOps) deletePod(ctx context.Context, name string, uid types.UID, grace int64) error {
+	if uid == "" {
+		return fmt.Errorf("refusing to delete pod %q without an immutable UID", name)
+	}
 	return r.clientset.CoreV1().Pods(r.namespace).Delete(ctx, name, metav1.DeleteOptions{
 		GracePeriodSeconds: &grace,
+		Preconditions:      &metav1.Preconditions{UID: &uid},
 	})
 }
 
@@ -105,18 +112,20 @@ type fakeK8sOps struct {
 	calls []fakeCall
 
 	// Configurable behaviors.
-	execOutput map[string]string                              // pod+cmd key → stdout
-	execErr    map[string]error                               // pod+cmd key → error
-	execFunc   func(pod string, cmd []string) (string, error) // dynamic override, checked first
-	createErr  error
-	deleteErr  error
-	getErr     error
-	listErr    error
+	execOutput   map[string]string                              // pod+cmd key → stdout
+	execErr      map[string]error                               // pod+cmd key → error
+	execFunc     func(pod string, cmd []string) (string, error) // dynamic override, checked first
+	createErr    error
+	deleteErr    error
+	getErr       error
+	listErr      error
+	beforeDelete func(name string)
 }
 
 type fakeCall struct {
 	method    string
 	pod       string
+	uid       types.UID
 	container string
 	cmd       []string
 	selector  string
@@ -140,6 +149,9 @@ func (f *fakeK8sOps) createPod(_ context.Context, pod *corev1.Pod) (*corev1.Pod,
 		return nil, f.createErr
 	}
 	p := pod.DeepCopy()
+	if p.UID == "" {
+		p.UID = types.UID("fake-uid-" + p.Name)
+	}
 	p.Status.Phase = corev1.PodRunning
 	f.pods[pod.Name] = p
 	return p, nil
@@ -157,10 +169,23 @@ func (f *fakeK8sOps) getPod(_ context.Context, name string) (*corev1.Pod, error)
 	return p.DeepCopy(), nil
 }
 
-func (f *fakeK8sOps) deletePod(_ context.Context, name string, _ int64) error {
-	f.record("deletePod", name, nil)
+func (f *fakeK8sOps) deletePod(_ context.Context, name string, uid types.UID, _ int64) error {
+	f.calls = append(f.calls, fakeCall{method: "deletePod", pod: name, uid: uid})
 	if f.deleteErr != nil {
 		return f.deleteErr
+	}
+	if uid == "" {
+		return fmt.Errorf("refusing to delete pod %q without an immutable UID", name)
+	}
+	if f.beforeDelete != nil {
+		f.beforeDelete(name)
+	}
+	if current, ok := f.pods[name]; ok && current.UID != uid {
+		return apierrors.NewConflict(
+			schema.GroupResource{Group: "", Resource: "pods"},
+			name,
+			fmt.Errorf("UID precondition failed: expected %q, got %q", uid, current.UID),
+		)
 	}
 	delete(f.pods, name)
 	return nil

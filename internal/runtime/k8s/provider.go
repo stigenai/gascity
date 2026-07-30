@@ -195,8 +195,12 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 			// Stale pod — tmux dead and past grace period, recreate.
 		}
 		// Clean up existing pod.
-		_ = p.ops.deletePod(ctx, pod.Name, 5)
-		_ = waitForDeletion(ctx, p.ops, pod.Name, 30*time.Second)
+		if delErr := p.ops.deletePod(ctx, pod.Name, pod.UID, 5); delErr != nil && !apierrors.IsNotFound(delErr) {
+			return fmt.Errorf("deleting existing pod %q for session %q: %w", pod.Name, name, delErr)
+		}
+		if waitErr := waitForDeletion(ctx, p.ops, pod.Name, 30*time.Second); waitErr != nil {
+			return fmt.Errorf("waiting for existing pod %q deletion: %w", pod.Name, waitErr)
+		}
 	}
 
 	// Build and create pod.
@@ -204,10 +208,14 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 	if err != nil {
 		return fmt.Errorf("building pod for session %q: %w", name, err)
 	}
-	_, err = p.ops.createPod(ctx, pod)
+	createdPod, err := p.ops.createPod(ctx, pod)
 	if err != nil {
 		return fmt.Errorf("creating pod for session %q: %w", name, err)
 	}
+	if createdPod == nil || createdPod.UID == "" {
+		return fmt.Errorf("creating pod for session %q returned no immutable UID", name)
+	}
+	podUID := createdPod.UID
 
 	// cleanup deletes the pod on any startup failure after creation.
 	// Uses a fresh background context so cleanup succeeds even if the
@@ -215,7 +223,7 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 	cleanup := func(_ string) {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = p.ops.deletePod(cleanupCtx, podName, 5)
+		_ = p.ops.deletePod(cleanupCtx, podName, podUID, 5)
 	}
 
 	ctrlCity := cfg.Env["GC_CITY"]
@@ -420,6 +428,8 @@ func k8sRequiresPostStartLiveness(cfg runtime.Config) bool {
 // tracking while pods and their PVCs keep running untracked, leaking the most
 // expensive runtime. Delete errors are joined for the same reason; only a
 // genuine Kubernetes NotFound (the pod raced to gone) is treated as idempotent.
+// Every delete carries the immutable UID returned by the list, so a same-name
+// replacement wins a precondition conflict instead of being cross-deleted.
 // This mirrors the ssh provider's Stop discrimination.
 func (p *Provider) Stop(name string) error {
 	ctx := context.Background()
@@ -434,7 +444,7 @@ func (p *Provider) Stop(name string) error {
 	}
 	var errs []error
 	for i := range pods {
-		if delErr := p.ops.deletePod(ctx, pods[i].Name, 5); delErr != nil && !apierrors.IsNotFound(delErr) {
+		if delErr := p.ops.deletePod(ctx, pods[i].Name, pods[i].UID, 5); delErr != nil && !apierrors.IsNotFound(delErr) {
 			errs = append(errs, fmt.Errorf("deleting pod %q: %w", pods[i].Name, delErr))
 		}
 	}
