@@ -16,11 +16,14 @@ import (
 	"github.com/gastownhall/gascity/internal/runtime"
 )
 
+const initContainerFallbackTimeout = time.Minute
+
 // stageFiles copies overlay, copy_files, and rig workdir into the pod
 // via the init container, then signals it to exit.
 func stageFiles(ctx context.Context, ops k8sOps, podName string, cfg runtime.Config, ctrlCity string, warn io.Writer) error {
-	// Wait for init container to be running (up to 60s).
-	if err := waitForInitContainer(ctx, ops, podName, 60*time.Second); err != nil {
+	// A cold image pull is part of the caller's configured startup budget.
+	// Preserve the bounded one-minute fallback for callers without a deadline.
+	if err := waitForInitContainer(ctx, ops, podName, initContainerWaitTimeout(ctx, time.Now())); err != nil {
 		return err
 	}
 
@@ -60,6 +63,16 @@ func stageFiles(ctx context.Context, ops k8sOps, podName string, cfg runtime.Con
 	_, err := ops.execInPod(ctx, podName, "stage",
 		[]string{"touch", "/workspace/.gc-ready"}, nil)
 	return err
+}
+
+func initContainerWaitTimeout(ctx context.Context, now time.Time) time.Duration {
+	timeout := initContainerFallbackTimeout
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := deadline.Sub(now); remaining > timeout {
+			timeout = remaining
+		}
+	}
+	return timeout
 }
 
 func projectedPodCopyDestination(entry runtime.CopyEntry, ctrlWorkDir, ctrlCity, podWorkDir string) string {
@@ -144,6 +157,11 @@ func stageProviderOverlay(srcDir, dstDir string, providers []string, label strin
 func waitForInitContainer(ctx context.Context, ops k8sOps, podName string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		pod, err := ops.getPod(ctx, podName)
 		if err != nil {
 			time.Sleep(time.Second)
