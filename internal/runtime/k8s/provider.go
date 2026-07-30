@@ -557,14 +557,14 @@ func (p *Provider) ProcessAlive(name string, processNames []string) bool {
 // Uses -l (literal mode) so tmux key names in the message text are not
 // interpreted as keystrokes. Content blocks are flattened to text.
 func (p *Provider) Nudge(name string, content []runtime.ContentBlock) error {
-	_ = p.carrier().Nudge(context.Background(), name, content) // best-effort
-	return nil
+	err := p.carrier().Nudge(context.Background(), name, content)
+	return interactionError("nudge", name, err)
 }
 
 // SendKeys sends bare keystrokes to the tmux session.
 func (p *Provider) SendKeys(name string, keys ...string) error {
-	_ = p.carrier().SendKeys(context.Background(), name, keys...) // best-effort
-	return nil
+	err := p.carrier().SendKeys(context.Background(), name, keys...)
+	return interactionError("send keys", name, err)
 }
 
 // RunLive re-applies session_live commands. Not yet supported for K8s.
@@ -577,11 +577,11 @@ func (p *Provider) SetMeta(name, key, value string) error {
 	ctx := context.Background()
 	podName, err := p.findPod(ctx, name)
 	if err != nil {
-		return nil // best-effort
+		return interactionError("set metadata", name, err)
 	}
-	_, _ = p.ops.execInPod(ctx, podName, "agent",
+	_, err = p.ops.execInPod(ctx, podName, "agent",
 		[]string{"tmux", "set-environment", "-t", tmuxSession, key, value}, nil)
-	return nil
+	return interactionError("set metadata", name, err)
 }
 
 // GetMeta retrieves a metadata value from the tmux environment.
@@ -589,22 +589,27 @@ func (p *Provider) GetMeta(name, key string) (string, error) {
 	ctx := context.Background()
 	podName, err := p.findPod(ctx, name)
 	if err != nil {
-		return "", nil
+		return "", interactionError("get metadata", name, err)
 	}
 	output, err := p.ops.execInPod(ctx, podName, "agent",
 		[]string{"tmux", "show-environment", "-t", tmuxSession, key}, nil)
 	if err != nil {
-		return "", nil
+		return "", interactionError("get metadata", name, err)
 	}
 	output = strings.TrimSpace(output)
 	// tmux output: "KEY=VALUE" (set), "-KEY" (unset).
-	if strings.HasPrefix(output, "-") {
+	if output == "-"+key {
 		return "", nil // explicitly unset
 	}
-	if _, val, ok := strings.Cut(output, "="); ok {
+	if gotKey, val, ok := strings.Cut(output, "="); ok && gotKey == key {
 		return val, nil
 	}
-	return "", nil
+	return "", fmt.Errorf(
+		"%w: k8s get metadata for session %q returned malformed tmux output for key %q",
+		runtime.ErrRuntimeUnavailable,
+		name,
+		key,
+	)
 }
 
 // RemoveMeta removes a metadata key from the tmux environment.
@@ -612,17 +617,17 @@ func (p *Provider) RemoveMeta(name, key string) error {
 	ctx := context.Background()
 	podName, err := p.findPod(ctx, name)
 	if err != nil {
-		return nil // best-effort
+		return interactionError("remove metadata", name, err)
 	}
-	_, _ = p.ops.execInPod(ctx, podName, "agent",
+	_, err = p.ops.execInPod(ctx, podName, "agent",
 		[]string{"tmux", "set-environment", "-t", tmuxSession, "-u", key}, nil)
-	return nil
+	return interactionError("remove metadata", name, err)
 }
 
-// Peek captures the last N lines of tmux pane output (best-effort: empty on failure).
+// Peek captures the last N lines of tmux pane output.
 func (p *Provider) Peek(name string, lines int) (string, error) {
-	out, _ := p.carrier().Peek(context.Background(), name, lines) // best-effort
-	return out, nil
+	out, err := p.carrier().Peek(context.Background(), name, lines)
+	return out, interactionError("peek", name, err)
 }
 
 // ListRunning returns names of all running sessions with the given prefix.
@@ -710,7 +715,6 @@ func (p *Provider) CopyTo(name, src, relDst string) error {
 
 // --- Internal helpers ---
 
-// findRunningPod finds a running pod by session label.
 // carrier returns the tmux carrier that drives this provider's sessions over
 // the pod exec connection ([Provider.Exec]). The in-box tmux session is always
 // tmuxSession ("main").
@@ -731,17 +735,58 @@ func (p *Provider) Exec(ctx context.Context, name string, argv []string) ([]byte
 	}
 	out, err := p.ops.execInPod(ctx, podName, "agent", argv, nil)
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return []byte(out), -1, fmt.Errorf(
+				"%w: k8s exec for session %q: %w",
+				runtime.ErrSessionNotFound,
+				name,
+				err,
+			)
+		}
 		var exitErr execerr.ExitError
 		if errors.As(err, &exitErr) && exitErr.Exited() {
 			// Ran and exited non-zero: the command's own result, not a
 			// transport failure (per the ExecProvider contract).
 			return []byte(out), exitErr.ExitStatus(), nil
 		}
-		return []byte(out), -1, err
+		return []byte(out), -1, fmt.Errorf(
+			"%w: k8s exec transport for session %q: %w",
+			runtime.ErrRuntimeUnavailable,
+			name,
+			err,
+		)
 	}
 	return []byte(out), 0, nil
 }
 
+// interactionError gives session-scoped interaction failures the shared
+// runtime error vocabulary without hiding their provider-specific cause.
+func interactionError(op, name string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if apierrors.IsNotFound(err) {
+		return fmt.Errorf(
+			"%w: k8s %s for session %q: %w",
+			runtime.ErrSessionNotFound,
+			op,
+			name,
+			err,
+		)
+	}
+	if errors.Is(err, runtime.ErrSessionNotFound) || errors.Is(err, runtime.ErrRuntimeUnavailable) {
+		return fmt.Errorf("k8s %s %q: %w", op, name, err)
+	}
+	return fmt.Errorf(
+		"%w: k8s %s for session %q: %w",
+		runtime.ErrRuntimeUnavailable,
+		op,
+		name,
+		err,
+	)
+}
+
+// findRunningPod finds a running pod by session label.
 func (p *Provider) findRunningPod(ctx context.Context, name string) (string, error) {
 	if p.runningPodCacheTTL > 0 {
 		return p.findRunningPodFromSnapshot(ctx, name)
@@ -749,10 +794,15 @@ func (p *Provider) findRunningPod(ctx context.Context, name string) (string, err
 	label := SanitizeLabel(name)
 	pods, err := p.ops.listPods(ctx, "gc-session="+label, "status.phase=Running")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf(
+			"%w: list running pod for session %q: %w",
+			runtime.ErrRuntimeUnavailable,
+			name,
+			err,
+		)
 	}
 	if len(pods) == 0 {
-		return "", fmt.Errorf("no running pod for session %q", name)
+		return "", fmt.Errorf("%w: no running pod for session %q", runtime.ErrSessionNotFound, name)
 	}
 	return pods[0].Name, nil
 }
@@ -808,10 +858,15 @@ func (p *Provider) findPod(ctx context.Context, name string) (string, error) {
 	label := SanitizeLabel(name)
 	pods, err := p.ops.listPods(ctx, "gc-session="+label, "")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf(
+			"%w: list pod for session %q: %w",
+			runtime.ErrRuntimeUnavailable,
+			name,
+			err,
+		)
 	}
 	if len(pods) == 0 {
-		return "", fmt.Errorf("no pod for session %q", name)
+		return "", fmt.Errorf("%w: no pod for session %q", runtime.ErrSessionNotFound, name)
 	}
 	return pods[0].Name, nil
 }

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 )
 
@@ -13,11 +14,11 @@ import (
 // (startup-dialog acceptance, no-wait nudge, wait-for-idle) is composed ABOVE a
 // Carrier out of Peek/SendKeys, not added to it.
 //
-// Every op returns the underlying transport error verbatim. Whether a failure
-// is fatal or best-effort is the PROVIDER facade's policy: a provider that is
-// best-effort today (e.g. Kubernetes swallows a missing pod and ignores exec
-// failures) must keep discarding the error when it delegates here — the Carrier
-// itself never swallows.
+// Every op returns the underlying transport error verbatim. A connection that
+// reports a non-zero command exit without an error is surfaced as
+// [ErrRuntimeUnavailable], because the requested interaction did not complete.
+// Whether a failure is fatal or best-effort remains the PROVIDER facade's
+// policy; the Carrier itself never swallows.
 //
 // The tmux carrier ([NewTmuxCarrier]) realizes these verbs by issuing tmux
 // commands over an [ExecProvider]. It is the shared driver for tmux-in-a-box
@@ -50,8 +51,7 @@ type Carrier interface {
 // multiplexes sessions on distinct targets. The mapping mirrors the tmux
 // commands the Kubernetes provider issues over execInPod today, so once k8s
 // exposes an [ExecProvider], delegating its driving methods here is
-// argv-for-argv behavior-preserving (the provider keeps its own best-effort
-// error swallowing; see [Carrier]).
+// argv-for-argv behavior-preserving.
 type tmuxCarrier struct {
 	conn   ExecProvider
 	target string
@@ -64,11 +64,19 @@ func NewTmuxCarrier(conn ExecProvider, target string) Carrier {
 }
 
 // tmux runs `tmux <args...>` in the box over the connection and returns its
-// standard output. A non-zero command exit is reported via err only when the
-// connection itself surfaces it; callers that are best-effort discard err.
+// standard output. ExecProvider separates a command's non-zero exit code from
+// transport errors, so the carrier turns a non-zero tmux exit into
+// ErrRuntimeUnavailable rather than falsely reporting successful delivery or
+// capture.
 func (c *tmuxCarrier) tmux(ctx context.Context, name string, args ...string) ([]byte, error) {
-	out, _, err := c.conn.Exec(ctx, name, append([]string{"tmux"}, args...))
-	return out, err
+	out, code, err := c.conn.Exec(ctx, name, append([]string{"tmux"}, args...))
+	if err != nil {
+		return out, err
+	}
+	if code != 0 {
+		return out, fmt.Errorf("%w: tmux command for session %q exited with code %d", ErrRuntimeUnavailable, name, code)
+	}
+	return out, nil
 }
 
 func (c *tmuxCarrier) Nudge(ctx context.Context, name string, content []ContentBlock) error {

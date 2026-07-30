@@ -153,8 +153,7 @@ func TestTmuxCarrier_NudgeFirstStepErrorSkipsEnter(t *testing.T) {
 }
 
 func TestTmuxCarrier_PeekPropagatesTransportError(t *testing.T) {
-	// The carrier is honest: it returns the transport error, unlike k8s which
-	// swallows a failed capture to ("", nil). The provider owns that policy.
+	// The carrier is honest: it returns the transport error to the provider.
 	rec := &recordingExec{err: errBoom}
 	c := NewTmuxCarrier(rec, "main")
 	out, err := c.Peek(context.Background(), "s", 10)
@@ -163,5 +162,16 @@ func TestTmuxCarrier_PeekPropagatesTransportError(t *testing.T) {
 	}
 	if out != "" {
 		t.Errorf("Peek output = %q, want empty on error", out)
+	}
+}
+
+func TestTmuxCarrier_NonZeroExitIsRuntimeUnavailable(t *testing.T) {
+	rec := &recordingExec{code: 1}
+	c := NewTmuxCarrier(rec, "main")
+
+	err := c.SendKeys(context.Background(), "s", "Enter")
+
+	if !errors.Is(err, ErrRuntimeUnavailable) {
+		t.Fatalf("SendKeys error = %v, want ErrRuntimeUnavailable", err)
 	}
 }
