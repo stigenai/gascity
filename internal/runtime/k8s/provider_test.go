@@ -2271,7 +2271,8 @@ func TestInitCityInPodMaterializesPacksAndImports(t *testing.T) {
 		if c.method == "execInPod" && len(c.cmd) > 0 {
 			joined := strings.Join(c.cmd, " ")
 			switch {
-			case strings.Contains(joined, "gc init --from /tmp/city-src /workspace"):
+			case strings.Contains(joined, "gc init") &&
+				strings.Contains(joined, "--from /tmp/city-src /workspace"):
 				gcInitCmd = c.cmd
 				initIndex = index
 			case strings.Contains(joined, "cp -a /tmp/city-src/packs/. /workspace/packs/"):
@@ -2289,15 +2290,21 @@ func TestInitCityInPodMaterializesPacksAndImports(t *testing.T) {
 		t.Fatal("gc init command not found in exec calls")
 	}
 
-	hasSkip := false
+	hasDoltSkip := false
+	hasProviderReadinessSkip := false
 	for _, arg := range gcInitCmd {
-		if arg == "GC_DOLT=skip" {
-			hasSkip = true
-			break
+		switch arg {
+		case "GC_DOLT=skip":
+			hasDoltSkip = true
+		case "--skip-provider-readiness":
+			hasProviderReadinessSkip = true
 		}
 	}
-	if !hasSkip {
+	if !hasDoltSkip {
 		t.Errorf("gc init should run with GC_DOLT=skip; got cmd=%v", gcInitCmd)
+	}
+	if !hasProviderReadinessSkip {
+		t.Errorf("gc init should skip provider readiness in an isolated worker pod; got cmd=%v", gcInitCmd)
 	}
 	if packCopyCmd == nil {
 		t.Fatal("local city packs were not materialized after gc init")
