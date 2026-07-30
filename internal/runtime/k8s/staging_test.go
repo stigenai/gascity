@@ -556,6 +556,56 @@ func TestCopyDirToPodDereferencesDirectorySymlinks(t *testing.T) {
 	}
 }
 
+func TestInitCityInPodExcludesMutableRuntimeState(t *testing.T) {
+	city := t.TempDir()
+	included := map[string]string{
+		"city.toml": "[workspace]\nname = \"factory\"\n",
+		"pack.toml": "schema = 2\n",
+		".managed/packs/release/rig-basic/pack.toml": "name = \"rig-basic\"\n",
+		"agents/demo/state/schema.json":              "{}\n",
+		"scripts/health.py":                          "print('ok')\n",
+	}
+	excluded := map[string]string{
+		".gc/runtime/session/pane.log": "runtime",
+		".beads/dolt/noms":             "database",
+		".dolt-backup/city/manifest":   "backup",
+		"state/route-claim-watch.json": "state",
+		"logs/order.log":               "logs",
+		"scratch-dolt/LOCK":            "scratch",
+	}
+	for name, contents := range included {
+		writeTarTestFile(t, city, name, contents)
+	}
+	for name, contents := range excluded {
+		writeTarTestFile(t, city, name, contents)
+	}
+	if err := os.Symlink(
+		filepath.Join(".managed", "packs", "release"),
+		filepath.Join(city, "packs"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	ops := newCapturingStageOps()
+	if err := initCityInPod(context.Background(), ops, "pod", city); err != nil {
+		t.Fatalf("initCityInPod: %v", err)
+	}
+	for name, want := range included {
+		got := ops.files[path.Join("/tmp/city-src", name)]
+		if got != want {
+			t.Errorf("authored city file %q = %q, want %q", name, got, want)
+		}
+	}
+	if got := ops.files["/tmp/city-src/packs/rig-basic/pack.toml"]; got != "name = \"rig-basic\"\n" {
+		t.Errorf("managed pack symlink contents = %q, want authored pack", got)
+	}
+	for name := range excluded {
+		if _, ok := ops.files[path.Join("/tmp/city-src", name)]; ok {
+			t.Errorf("mutable city runtime file %q was staged into the worker", name)
+		}
+	}
+}
+
 func TestStreamArchiveToPodReturnsProducerError(t *testing.T) {
 	want := errors.New("archive read failed")
 	ops := newCapturingStageOps()
