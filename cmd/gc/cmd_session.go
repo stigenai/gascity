@@ -270,6 +270,24 @@ func cmdSessionNew(args []string, alias, title, titleHint string, noAttach, json
 		fmt.Fprintf(stderr, "gc session new: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
 	}
+	commandContext := sessionSetupContextForAgent(
+		cityPath,
+		cityName,
+		sessionQualifiedName,
+		&found,
+		cfg.Rigs,
+	)
+	commandContext.Session = explicitName
+	commandContext.WorkDir = workDir
+	commandContext.ConfigDir = cityPath
+	if found.SourceDir != "" {
+		commandContext.ConfigDir = found.SourceDir
+	}
+	sessionCommand, err = expandSessionCommand(sessionCommand, commandContext)
+	if err != nil {
+		fmt.Fprintf(stderr, "gc session new: expanding start command for %q: %v\n", canonicalTemplate, err) //nolint:errcheck // best-effort stderr
+		return 1
+	}
 
 	// Try reconciler-first path only when this specific city is managed by a
 	// standalone controller or the machine-wide supervisor. A reachable

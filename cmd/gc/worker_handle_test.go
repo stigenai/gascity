@@ -2446,6 +2446,75 @@ func TestResolvedWorkerRuntimeStagesProviderOverlayForRigBasePiProvider(t *testi
 	}
 }
 
+func TestApplyWorkerSessionCreateEnvProjectsWorkspaceAndAgentEnv(t *testing.T) {
+	t.Setenv("WORKSPACE_RELEASE_REF", "ghcr.io/example/town@sha256:abc")
+	cityDir := t.TempDir()
+	cfg := &config.City{
+		Workspace: config.Workspace{Env: map[string]string{
+			"GASTOWN_RELEASE_IMAGE": "$WORKSPACE_RELEASE_REF",
+			"LAYER":                 "workspace",
+			"GC_CITY":               "/wrong",
+		}},
+		Agents: []config.Agent{{
+			Name: "runtime-canary",
+			Env: map[string]string{
+				"GASTOWN_CANARY_RUN_ID": "run-1",
+				"LAYER":                 "agent",
+			},
+		}},
+	}
+	resolved := &config.ResolvedProvider{
+		Name:    "custom",
+		Command: "true",
+		Env: map[string]string{
+			"PROVIDER_ONLY": "present",
+			"LAYER":         "provider",
+		},
+	}
+	sessionCfg, err := resolvedWorkerSessionConfigWithConfig(
+		cityDir,
+		resolved.Command,
+		resolved.Name,
+		cityDir,
+		"",
+		"runtime-canary",
+		"runtime-canary",
+		"",
+		"",
+		resolved,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("resolvedWorkerSessionConfigWithConfig: %v", err)
+	}
+
+	applyWorkerSessionCreateEnv(
+		&sessionCfg,
+		cfg,
+		cityDir,
+		"runtime-canary",
+		resolved,
+	)
+
+	for key, want := range map[string]string{
+		"GASTOWN_RELEASE_IMAGE": "ghcr.io/example/town@sha256:abc",
+		"GASTOWN_CANARY_RUN_ID": "run-1",
+		"PROVIDER_ONLY":         "present",
+		"LAYER":                 "agent",
+		"GC_CITY":               cityDir,
+		"GC_CITY_PATH":          cityDir,
+		"GC_CITY_RUNTIME_DIR":   cityIdentityAnchorsForCity(cityDir)["GC_CITY_RUNTIME_DIR"],
+	} {
+		if got := sessionCfg.Runtime.SessionEnv[key]; got != want {
+			t.Errorf("SessionEnv[%q] = %q, want %q", key, got, want)
+		}
+		if got := sessionCfg.Runtime.Hints.Env[key]; got != want {
+			t.Errorf("Hints.Env[%q] = %q, want %q", key, got, want)
+		}
+	}
+}
+
 // TestResolvedWorkerSessionConfigStagesProviderOverlayForRigBasePiProvider
 // covers the CLI create path for the same gc-6bw8o rig pi-vllm agent. It first
 // documents the gap (resolvedWorkerSessionConfigWithConfig, which only sees

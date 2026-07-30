@@ -219,6 +219,25 @@ type SessionSetupContext struct {
 	ConfigDir string // source directory where agent config was defined
 }
 
+// expandSessionCommand expands a launch command with the same template
+// context used by the reconciler's session setup path. Launch commands fail
+// closed: preserving an invalid template would start a short-lived pane whose
+// real error is later obscured by the runtime's generic readiness timeout.
+func expandSessionCommand(command string, ctx SessionSetupContext) (string, error) {
+	if command == "" || !strings.Contains(command, "{{") {
+		return command, nil
+	}
+	tmpl, err := template.New("session-command").Option("missingkey=error").Parse(command)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, ctx); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
 // expandSessionSetup expands Go text/template strings in session_setup commands.
 // On parse or execute error, the raw command is kept (graceful fallback).
 func expandSessionSetup(cmds []string, ctx SessionSetupContext) []string {
