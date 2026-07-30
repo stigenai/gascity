@@ -268,6 +268,57 @@ func TestStageFilesKeepsExternalRigOutsideCityWorkspace(t *testing.T) {
 	}
 }
 
+func TestStageFilesProjectsExternalRigHookCopyIntoPodWorkDir(t *testing.T) {
+	cityRoot := t.TempDir()
+	workDir := t.TempDir()
+	hookPath := filepath.Join(workDir, ".pi", "extensions", "gc-hooks.js")
+	writeTarTestFile(t, workDir, ".pi/extensions/gc-hooks.js", "export default {}")
+
+	ops := newCapturingStageOps()
+	err := stageFiles(context.Background(), ops, "gc-external-rig", runtime.Config{
+		WorkDir: workDir,
+		Env:     map[string]string{"GC_CITY": cityRoot},
+		CopyFiles: []runtime.CopyEntry{{
+			Src: hookPath,
+			RelDst: path.Join(
+				filepath.ToSlash(mustRelativePath(t, cityRoot, workDir)),
+				".pi", "extensions", "gc-hooks.js",
+			),
+		}},
+	}, cityRoot, io.Discard)
+	if err != nil {
+		t.Fatalf("stageFiles: %v", err)
+	}
+
+	if got := ops.files["/workspace/rig/.pi/extensions/gc-hooks.js"]; got != "export default {}" {
+		t.Fatalf("external rig hook = %q, want staged under projected pod workdir", got)
+	}
+	wantCopyDestination := "/workspace/rig/.pi/extensions"
+	foundCopyDestination := false
+	for _, destination := range ops.archiveDestinations {
+		if destination == wantCopyDestination {
+			foundCopyDestination = true
+		}
+		if destination != "/workspace" &&
+			destination != "/workspace/rig" &&
+			!strings.HasPrefix(destination, "/workspace/") {
+			t.Fatalf("external rig hook escaped the workspace volume: %s", destination)
+		}
+	}
+	if !foundCopyDestination {
+		t.Fatalf("copy_file destinations = %v, want %s", ops.archiveDestinations, wantCopyDestination)
+	}
+}
+
+func mustRelativePath(t *testing.T, base, target string) string {
+	t.Helper()
+	rel, err := filepath.Rel(base, target)
+	if err != nil {
+		t.Fatalf("filepath.Rel(%q, %q): %v", base, target, err)
+	}
+	return rel
+}
+
 func TestStageFilesUsesConcreteProviderOverlayName(t *testing.T) {
 	workDir := t.TempDir()
 	packOverlay := t.TempDir()
@@ -530,8 +581,9 @@ func TestStreamArchiveToPodReturnsProducerError(t *testing.T) {
 }
 
 type capturingStageOps struct {
-	files         map[string]string
-	sawPipeReader bool
+	files               map[string]string
+	archiveDestinations []string
+	sawPipeReader       bool
 }
 
 func newCapturingStageOps() *capturingStageOps {
@@ -565,6 +617,7 @@ func (o *capturingStageOps) listPods(context.Context, string, string) ([]corev1.
 func (o *capturingStageOps) execInPod(_ context.Context, _, _ string, cmd []string, stdin io.Reader) (string, error) {
 	if len(cmd) == 5 && cmd[0] == "tar" && cmd[1] == "xf" && cmd[2] == "-" && cmd[3] == "-C" && stdin != nil {
 		_, o.sawPipeReader = stdin.(*io.PipeReader)
+		o.archiveDestinations = append(o.archiveDestinations, cmd[4])
 		tr := tar.NewReader(stdin)
 		for {
 			hdr, err := tr.Next()

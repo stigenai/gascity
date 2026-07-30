@@ -2292,12 +2292,15 @@ func TestInitCityInPodMaterializesPacksAndImports(t *testing.T) {
 
 	hasDoltSkip := false
 	hasProviderReadinessSkip := false
+	hasNoStart := false
 	for _, arg := range gcInitCmd {
 		switch arg {
 		case "GC_DOLT=skip":
 			hasDoltSkip = true
 		case "--skip-provider-readiness":
 			hasProviderReadinessSkip = true
+		case "--no-start":
+			hasNoStart = true
 		}
 	}
 	if !hasDoltSkip {
@@ -2305,6 +2308,9 @@ func TestInitCityInPodMaterializesPacksAndImports(t *testing.T) {
 	}
 	if !hasProviderReadinessSkip {
 		t.Errorf("gc init should skip provider readiness in an isolated worker pod; got cmd=%v", gcInitCmd)
+	}
+	if !hasNoStart {
+		t.Errorf("gc init should not start a nested supervisor in an isolated worker pod; got cmd=%v", gcInitCmd)
 	}
 	if packCopyCmd == nil {
 		t.Fatal("local city packs were not materialized before gc init")
