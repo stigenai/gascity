@@ -2307,15 +2307,17 @@ func TestInitCityInPodMaterializesPacksAndImports(t *testing.T) {
 		t.Errorf("gc init should skip provider readiness in an isolated worker pod; got cmd=%v", gcInitCmd)
 	}
 	if packCopyCmd == nil {
-		t.Fatal("local city packs were not materialized after gc init")
+		t.Fatal("local city packs were not materialized before gc init")
 	}
 	if importInstallCmd == nil {
 		t.Fatal("locked city imports were not installed")
 	}
-	if initIndex >= packIndex || packIndex >= importIndex || importIndex >= cleanupIndex {
+	// gc init resolves every rig's local imports while it loads city.toml.
+	// The authored packs must therefore exist in /workspace before init runs.
+	if packIndex >= initIndex || initIndex >= importIndex || importIndex >= cleanupIndex {
 		t.Fatalf(
-			"city initialization order = init:%d packs:%d imports:%d cleanup:%d",
-			initIndex, packIndex, importIndex, cleanupIndex,
+			"city initialization order = packs:%d init:%d imports:%d cleanup:%d",
+			packIndex, initIndex, importIndex, cleanupIndex,
 		)
 	}
 }
