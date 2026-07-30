@@ -839,10 +839,18 @@ func initCityInPod(ctx context.Context, ops k8sOps, podName, ctrlCity string) er
 	}()
 
 	// Run gc init --from with GC_DOLT=skip so gc init does not attempt to
-	// start a local Dolt server. Pod sessions consume the projected GC_DOLT_*
-	// connection target through env; they do not rewrite canonical .beads files.
+	// start a local Dolt server. Skip provider readiness while materializing the
+	// shared city because an isolated worker pod only receives credentials for
+	// its selected provider; the provider-specific agent startup remains the
+	// authoritative readiness check. Pod sessions consume the projected
+	// GC_DOLT_* connection target through env; they do not rewrite canonical
+	// .beads files.
 	_, err := ops.execInPod(ctx, podName, "agent",
-		[]string{"env", "GC_DOLT=skip", "gc", "init", "--from", "/tmp/city-src", "/workspace"}, nil)
+		[]string{
+			"env", "GC_DOLT=skip",
+			"gc", "init", "--skip-provider-readiness",
+			"--from", "/tmp/city-src", "/workspace",
+		}, nil)
 	if err != nil {
 		return err
 	}
