@@ -11,6 +11,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/gastownhall/gascity/internal/runtime"
 )
@@ -682,6 +683,7 @@ func TestStartDetectsStalePod(t *testing.T) {
 	fake.pods["gc-test-agent"] = &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   "gc-test-agent",
+			UID:    "stale-failed-uid",
 			Labels: map[string]string{"app": "gc-agent", "gc-session": "gc-test-agent"},
 		},
 		Status: corev1.PodStatus{Phase: corev1.PodFailed},
@@ -747,6 +749,7 @@ func TestStartTreatsYoungPodWithDeadTmuxAsInitializing(t *testing.T) {
 	fake.pods["gc-test-agent"] = &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              "gc-test-agent",
+			UID:               "young-running-uid",
 			Labels:            map[string]string{"app": "gc-agent", "gc-session": "gc-test-agent"},
 			CreationTimestamp: metav1.Now(),
 		},
@@ -786,6 +789,7 @@ func TestStartDeletesOldPodWithDeadTmux(t *testing.T) {
 	fake.pods["gc-test-agent"] = &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              "gc-test-agent",
+			UID:               "old-running-uid",
 			Labels:            map[string]string{"app": "gc-agent", "gc-session": "gc-test-agent"},
 			CreationTimestamp: metav1.NewTime(time.Now().Add(-10 * time.Minute)),
 		},
@@ -2180,6 +2184,7 @@ func addRunningPod(fake *fakeK8sOps, name, sessionLabel string) { //nolint:unpar
 	fake.pods[name] = &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   name,
+			UID:    types.UID("test-uid-" + name),
 			Labels: map[string]string{"app": "gc-agent", "gc-session": sessionLabel},
 		},
 		Status: corev1.PodStatus{Phase: corev1.PodRunning},
@@ -2192,6 +2197,7 @@ func addFailedPod(fake *fakeK8sOps, name, sessionLabel string) { //nolint:unpara
 	fake.pods[name] = &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   name,
+			UID:    types.UID("test-uid-" + name),
 			Labels: map[string]string{"app": "gc-agent", "gc-session": sessionLabel},
 		},
 		Status: corev1.PodStatus{Phase: corev1.PodFailed},
@@ -2202,6 +2208,7 @@ func addRunningPodWithAnnotation(fake *fakeK8sOps, name, sessionLabel, sessionNa
 	fake.pods[name] = &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
+			UID:         types.UID("test-uid-" + name),
 			Labels:      map[string]string{"app": "gc-agent", "gc-session": sessionLabel},
 			Annotations: map[string]string{"gc-session-name": sessionName},
 		},

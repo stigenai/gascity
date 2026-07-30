@@ -15,6 +15,7 @@ import (
 
 	"github.com/gastownhall/gascity/internal/runtime"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 func TestTarDirStripsOwnership(t *testing.T) {
@@ -656,7 +657,7 @@ func (o *capturingStageOps) getPod(context.Context, string) (*corev1.Pod, error)
 	}, nil
 }
 
-func (o *capturingStageOps) deletePod(context.Context, string, int64) error {
+func (o *capturingStageOps) deletePod(context.Context, string, types.UID, int64) error {
 	return nil
 }
 
@@ -706,7 +707,7 @@ func (o *execReadyOps) getPod(context.Context, string) (*corev1.Pod, error) {
 	return nil, nil
 }
 
-func (o *execReadyOps) deletePod(context.Context, string, int64) error {
+func (o *execReadyOps) deletePod(context.Context, string, types.UID, int64) error {
 	return nil
 }
 
