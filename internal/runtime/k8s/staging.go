@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -43,10 +44,7 @@ func stageFiles(ctx context.Context, ops k8sOps, podName string, cfg runtime.Con
 
 	// Copy each copy_files entry.
 	for _, entry := range cfg.CopyFiles {
-		dst := "/workspace"
-		if entry.RelDst != "" {
-			dst = "/workspace/" + entry.RelDst
-		}
+		dst := projectedPodCopyDestination(entry, cfg.WorkDir, ctrlCity, podWorkDir)
 		if err := copyToPod(ctx, ops, podName, "stage", entry.Src, dst); err != nil {
 			fmt.Fprintf(warn, "gc: warning: staging copy_file %s → %s: %v\n", entry.Src, dst, err) //nolint:errcheck
 		}
@@ -62,6 +60,25 @@ func stageFiles(ctx context.Context, ops k8sOps, podName string, cfg runtime.Con
 	_, err := ops.execInPod(ctx, podName, "stage",
 		[]string{"touch", "/workspace/.gc-ready"}, nil)
 	return err
+}
+
+func projectedPodCopyDestination(entry runtime.CopyEntry, ctrlWorkDir, ctrlCity, podWorkDir string) string {
+	if ctrlWorkDir != "" && ctrlCity != "" && entry.Src != "" {
+		relWorkDir, workErr := filepath.Rel(ctrlWorkDir, entry.Src)
+		relCity, cityErr := filepath.Rel(ctrlCity, entry.Src)
+		relWorkDir = filepath.ToSlash(relWorkDir)
+		relCity = filepath.ToSlash(relCity)
+		if workErr == nil && cityErr == nil &&
+			relWorkDir != ".." && !strings.HasPrefix(relWorkDir, "../") &&
+			path.Clean(relCity) == path.Clean(filepath.ToSlash(entry.RelDst)) {
+			return path.Join(podWorkDir, relWorkDir)
+		}
+	}
+
+	if entry.RelDst == "" {
+		return "/workspace"
+	}
+	return path.Join("/workspace", filepath.ToSlash(entry.RelDst))
 }
 
 func stageProviderOverlaysToPod(ctx context.Context, ops k8sOps, podName string, cfg runtime.Config, podWorkDir string, warn io.Writer) error {

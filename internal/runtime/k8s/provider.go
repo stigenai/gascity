@@ -862,7 +862,7 @@ func initCityInPod(ctx context.Context, ops k8sOps, podName, ctrlCity string) er
 	_, err = ops.execInPod(ctx, podName, "agent",
 		[]string{
 			"env", "GC_DOLT=skip",
-			"gc", "init", "--skip-provider-readiness",
+			"gc", "init", "--skip-provider-readiness", "--no-start",
 			"--from", "/tmp/city-src", "/workspace",
 		}, nil)
 	if err != nil {
