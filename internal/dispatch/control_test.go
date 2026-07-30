@@ -595,9 +595,14 @@ func TestProcessRetryControlMissingOutcomeRecyclesPooledSession(t *testing.T) {
 			"gc.step_ref":     "mol-test.review.attempt.1",
 			"gc.attempt":      "1",
 			"gc.routed_to":    "polecat",
+			"gc.session_id":   "sle-polecat-2",
 		},
 	})
 	mustClose(t, store, attempt1.ID)
+	emptyAssignee := ""
+	if err := store.Update(attempt1.ID, beads.UpdateOpts{Assignee: &emptyAssignee}); err != nil {
+		t.Fatalf("clear closed attempt assignee: %v", err)
+	}
 	mustDep(t, store, control.ID, attempt1.ID, "blocks")
 
 	var recycled []string
@@ -639,8 +644,8 @@ func TestProcessRetryControlMissingOutcomeRecyclesPooledSession(t *testing.T) {
 	if result.Action != "retry" {
 		t.Fatalf("action = %q, want retry", result.Action)
 	}
-	if len(recycled) != 1 || recycled[0] != "polecat-2" {
-		t.Fatalf("recycled = %v, want [polecat-2]", recycled)
+	if len(recycled) != 1 || recycled[0] != "sle-polecat-2" {
+		t.Fatalf("recycled = %v, want [sle-polecat-2]", recycled)
 	}
 	after := mustGet(t, store, control.ID)
 	var log []map[string]string
@@ -695,7 +700,7 @@ func TestProcessRetryControlMissingOutcomeRecyclesPooledSession(t *testing.T) {
 		t.Fatalf("recyclePooledRetryAttempt(next attempt): %v", err)
 	}
 	if len(recycled) != 2 || recycled[1] != "polecat-3" {
-		t.Fatalf("recycled after next attempt = %v, want [polecat-2 polecat-3]", recycled)
+		t.Fatalf("recycled after next attempt = %v, want [sle-polecat-2 polecat-3]", recycled)
 	}
 	if got := mustGet(t, store, attempt2.ID).Metadata["gc.retry_session_recycled"]; got != "true" {
 		t.Fatalf("next attempt gc.retry_session_recycled = %q, want true", got)

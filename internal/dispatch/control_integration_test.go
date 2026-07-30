@@ -625,6 +625,9 @@ func TestSpawnNextAttemptPropagatesRoutingMetadata(t *testing.T) {
 	if attempt2.Metadata["gc.routed_to"] != "polecat" {
 		t.Errorf("attempt 2 gc.routed_to = %q, want polecat", attempt2.Metadata["gc.routed_to"])
 	}
+	if got := attempt2.Metadata[beadmeta.LogicalBeadIDMetadataKey]; got != control.ID {
+		t.Errorf("attempt 2 gc.logical_bead_id = %q, want control bead %q", got, control.ID)
+	}
 
 	for _, l := range attempt2.Labels {
 		if l == "pool:polecat" {

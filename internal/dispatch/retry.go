@@ -190,11 +190,12 @@ func processRetryEval(store beads.Store, bead beads.Bead, opts ProcessOptions) (
 			return ControlResult{}, fmt.Errorf("%s: pooled retry subject %s requires RecycleSession callback", bead.ID, subject.ID)
 		}
 		if bead.Metadata[beadmeta.RetrySessionRecycledMetadataKey] != "true" {
-			if subject.Assignee == "" {
-				return ControlResult{}, fmt.Errorf("%s: pooled retry subject %s missing assignee", bead.ID, subject.ID)
+			recycleSubject, ok := retryRecycleSubject(subject)
+			if !ok {
+				return ControlResult{}, fmt.Errorf("%s: pooled retry subject %s missing session identity", bead.ID, subject.ID)
 			}
-			if err := opts.RecycleSession(subject); err != nil {
-				return ControlResult{}, fmt.Errorf("%s: recycling pooled session %s: %w", bead.ID, subject.Assignee, err)
+			if err := opts.RecycleSession(recycleSubject); err != nil {
+				return ControlResult{}, fmt.Errorf("%s: recycling pooled session %s: %w", bead.ID, recycleSubject.Assignee, err)
 			}
 			if err := store.SetMetadata(bead.ID, beadmeta.RetrySessionRecycledMetadataKey, "true"); err != nil {
 				return ControlResult{}, fmt.Errorf("%s: recording pooled session recycle: %w", bead.ID, err)
