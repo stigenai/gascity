@@ -31,13 +31,18 @@ func (s *Server) humaHandleSessionList(_ context.Context, input *SessionListInpu
 	if err != nil {
 		return nil, err
 	}
-	mgr := s.sessionManager(store.Store)
 	cfg := s.state.Config()
 
 	listings, partialErrors, err := sessionReadModelListings(session.NewStore(store))
 	if err != nil {
 		return nil, apierr.Internal.Msg(err.Error())
 	}
+	persistedSessions := make([]session.Info, len(listings))
+	for i := range listings {
+		persistedSessions[i] = listings[i].Info
+	}
+	sp := sessionListProvider(s.state.SessionProvider(), persistedSessions)
+	mgr := s.sessionManagerWithProvider(store.Store, sp)
 	sessions, responseByID := filterEnrichReadModel(mgr, listings, input.State, input.Template)
 
 	// Unified page contract (S4): default 100 like every other keyset list.
@@ -81,8 +86,12 @@ func (s *Server) humaHandleSessionList(_ context.Context, input *SessionListInpu
 	keyedTranscriptPaths := session.ResolveKeyedTranscriptPaths(sessionTranscriptLookupCandidates(pageSessions), s.sessionLogPaths(), sessionTranscriptProviderFallback(cfg))
 	page := make([]sessionResponse, len(pageSessions))
 	for j, sess := range pageSessions {
-		page[j] = sessionResponseWithReason(sess, responseByID[sess.ID], cfg, s.state.SessionProvider(), hasDeferredQueue)
-		s.enrichSessionResponseWithKeyedPaths(&page[j], sess, cfg, s.runtimeSessionResponseHandle(sess), wantPeek, false, false, 0, keyedTranscriptPaths)
+		page[j] = sessionResponseWithReason(sess, responseByID[sess.ID], cfg, sp, hasDeferredQueue)
+		handle := sessionResponseHandle(nil)
+		if sess.State == session.StateActive {
+			handle = newProviderSessionResponseHandle(sp, sess.SessionName, sess.Provider)
+		}
+		s.enrichSessionResponseWithKeyedPaths(&page[j], sess, cfg, handle, wantPeek, false, false, 0, keyedTranscriptPaths)
 	}
 	return &ListOutput[sessionResponse]{
 		Index:     s.latestIndex(),

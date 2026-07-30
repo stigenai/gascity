@@ -5,17 +5,22 @@ import (
 
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/runtime"
 	"github.com/gastownhall/gascity/internal/session"
 )
 
 func (s *Server) sessionManager(store beads.Store) *session.Manager {
+	return s.sessionManagerWithProvider(store, s.state.SessionProvider())
+}
+
+func (s *Server) sessionManagerWithProvider(store beads.Store, sp runtime.Provider) *session.Manager {
 	cfg := s.state.Config()
 	if cfg == nil {
-		return session.NewManagerWithOptions(store, s.state.SessionProvider(), session.WithCityPath(s.state.CityPath()))
+		return session.NewManagerWithOptions(store, sp, session.WithCityPath(s.state.CityPath()))
 	}
 	return session.NewManagerWithOptions(
 		store,
-		s.state.SessionProvider(),
+		sp,
 		session.WithCityPath(s.state.CityPath()),
 		session.WithTransportPolicyResolver(func(template, provider string) (string, bool) {
 			return configuredSessionTransportResolution(cfg, template, provider)

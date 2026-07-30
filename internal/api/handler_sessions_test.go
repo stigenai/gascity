@@ -744,6 +744,80 @@ func TestHandleSessionList(t *testing.T) {
 	}
 }
 
+func TestHandleSessionListUsesOneRuntimeSnapshot(t *testing.T) {
+	fs := newSessionFakeState(t)
+	createTestSession(t, fs.cityBeadStore, fs.sp, "Session A")
+	createTestSession(t, fs.cityBeadStore, fs.sp, "Session B")
+	provider := &countingIsRunningProvider{Provider: fs.sp}
+	fs.sessionProvider = provider
+	h := newTestCityHandler(t, fs)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", cityURL(fs, "/sessions"), nil)
+	h.ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Items []sessionResponse `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Items) != 2 || !resp.Items[0].Running || !resp.Items[1].Running {
+		t.Fatalf("items = %+v, want two running sessions", resp.Items)
+	}
+	if provider.listRunningCalls != 1 {
+		t.Fatalf("ListRunning calls = %d, want one request snapshot", provider.listRunningCalls)
+	}
+	if provider.isRunningCalls != 0 {
+		t.Fatalf("IsRunning calls = %d, want zero per-session probes", provider.isRunningCalls)
+	}
+}
+
+type failingSessionListProvider struct {
+	runtime.Provider
+	listRunningCalls int
+}
+
+func (p *failingSessionListProvider) ListRunning(string) ([]string, error) {
+	p.listRunningCalls++
+	return nil, errors.New("runtime inventory unavailable")
+}
+
+func TestHandleSessionListFallsBackWhenRuntimeSnapshotFails(t *testing.T) {
+	fs := newSessionFakeState(t)
+	createTestSession(t, fs.cityBeadStore, fs.sp, "Session A")
+	counting := &countingIsRunningProvider{Provider: fs.sp}
+	provider := &failingSessionListProvider{Provider: counting}
+	fs.sessionProvider = provider
+	h := newTestCityHandler(t, fs)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("GET", cityURL(fs, "/sessions"), nil)
+	h.ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Items []sessionResponse `json:"items"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Items) != 1 || !resp.Items[0].Running {
+		t.Fatalf("items = %+v, want running session from fallback probes", resp.Items)
+	}
+	if provider.listRunningCalls != 1 {
+		t.Fatalf("ListRunning calls = %d, want one failed snapshot attempt", provider.listRunningCalls)
+	}
+	if counting.isRunningCalls == 0 {
+		t.Fatal("IsRunning calls = 0, want per-session fallback probes")
+	}
+}
+
 func TestHandleSessionListFilterByState(t *testing.T) {
 	fs := newSessionFakeState(t)
 	srv := New(fs)

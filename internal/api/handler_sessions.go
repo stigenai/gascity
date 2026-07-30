@@ -81,11 +81,43 @@ type sessionResponseHandle interface {
 	worker.PeekHandle
 }
 
-func (s *Server) runtimeSessionResponseHandle(info session.Info) sessionResponseHandle {
-	if info.State != session.StateActive {
+type sessionListRuntimeSnapshot struct {
+	runtime.Provider
+	running map[string]struct{}
+}
+
+func (p sessionListRuntimeSnapshot) IsRunning(name string) bool {
+	_, ok := p.running[name]
+	return ok
+}
+
+// snapshotSessionListProvider replaces repeated per-session liveness RPCs with
+// one provider inventory request for the duration of a session-list response.
+// If inventory is unavailable, retain the original provider so callers keep
+// the existing per-session fallback semantics instead of reporting false
+// negatives from an incomplete snapshot.
+func snapshotSessionListProvider(sp runtime.Provider) runtime.Provider {
+	if sp == nil {
 		return nil
 	}
-	return newProviderSessionResponseHandle(s.state.SessionProvider(), info.SessionName, info.Provider)
+	names, err := sp.ListRunning("")
+	if err != nil {
+		return sp
+	}
+	running := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		running[name] = struct{}{}
+	}
+	return sessionListRuntimeSnapshot{Provider: sp, running: running}
+}
+
+func sessionListProvider(sp runtime.Provider, sessions []session.Info) runtime.Provider {
+	for _, info := range sessions {
+		if info.State == session.StateActive {
+			return snapshotSessionListProvider(sp)
+		}
+	}
+	return sp
 }
 
 func sessionToResponse(info session.Info, cfg *config.City) sessionResponse {
@@ -238,7 +270,6 @@ func (s *Server) handleSessionList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "no bead store configured")
 		return
 	}
-	mgr := s.sessionManager(store.Store)
 	cfg := s.state.Config()
 
 	q := r.URL.Query()
@@ -251,6 +282,12 @@ func (s *Server) handleSessionList(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
+	persistedSessions := make([]session.Info, len(listings))
+	for i := range listings {
+		persistedSessions[i] = listings[i].Info
+	}
+	sp := sessionListProvider(s.state.SessionProvider(), persistedSessions)
+	mgr := s.sessionManagerWithProvider(store.Store, sp)
 	sessions, responseByID := filterEnrichReadModel(mgr, listings, stateFilter, templateFilter)
 
 	// Resolve the legacy offset page before runtime/transcript enrichment so
@@ -283,8 +320,12 @@ func (s *Server) handleSessionList(w http.ResponseWriter, r *http.Request) {
 	items := make([]sessionResponse, len(pageSessions))
 	hasDeferredQueue := strings.TrimSpace(s.state.CityPath()) != ""
 	for i, sess := range pageSessions {
-		items[i] = sessionResponseWithReason(sess, responseByID[sess.ID], cfg, s.state.SessionProvider(), hasDeferredQueue)
-		s.enrichSessionResponseWithKeyedPaths(&items[i], sess, cfg, s.runtimeSessionResponseHandle(sess), wantPeek, false, false, 0, keyedTranscriptPaths)
+		items[i] = sessionResponseWithReason(sess, responseByID[sess.ID], cfg, sp, hasDeferredQueue)
+		handle := sessionResponseHandle(nil)
+		if sess.State == session.StateActive {
+			handle = newProviderSessionResponseHandle(sp, sess.SessionName, sess.Provider)
+		}
+		s.enrichSessionResponseWithKeyedPaths(&items[i], sess, cfg, handle, wantPeek, false, false, 0, keyedTranscriptPaths)
 	}
 
 	if !pp.IsPaging {
