@@ -256,19 +256,41 @@ func recyclePooledRetryAttempt(store beads.Store, attempt beads.Bead, opts Proce
 	if opts.RecycleSession == nil {
 		return fmt.Errorf("pooled retry attempt %s requires RecycleSession callback", attempt.ID)
 	}
-	if strings.TrimSpace(attempt.Assignee) == "" {
-		return fmt.Errorf("pooled retry attempt %s missing assignee", attempt.ID)
+	recycleSubject, ok := retryRecycleSubject(attempt)
+	if !ok {
+		return fmt.Errorf("pooled retry attempt %s missing session identity", attempt.ID)
 	}
-	if err := opts.RecycleSession(attempt); err != nil {
+	if err := opts.RecycleSession(recycleSubject); err != nil {
 		// Killing a runtime process crosses an operational boundary. A failed
 		// stop is not evidence that the workflow graph is malformed, so leave
 		// the control open and re-enter without consuming another attempt.
-		return markTransientControllerBoundaryError(fmt.Errorf("recycling pooled session %s: %w", attempt.Assignee, err))
+		return markTransientControllerBoundaryError(fmt.Errorf("recycling pooled session %s: %w", recycleSubject.Assignee, err))
 	}
 	if err := store.SetMetadata(attempt.ID, beadmeta.RetrySessionRecycledMetadataKey, "true"); err != nil {
 		return markTransientControllerBoundaryError(fmt.Errorf("recording pooled session recycle: %w", err))
 	}
 	return nil
+}
+
+// retryRecycleSubject resolves the runtime identity retained by a claimed
+// attempt. Some stores clear Assignee when the attempt closes, but the claim
+// hook durably stamps gc.session_id/gc.session_name before that transition.
+// RecycleSession historically consumes Assignee, so return a copy with the
+// best retained identity projected there.
+func retryRecycleSubject(attempt beads.Bead) (beads.Bead, bool) {
+	for _, candidate := range []string{
+		attempt.Assignee,
+		attempt.Metadata[beadmeta.SessionIDMetadataKey],
+		attempt.Metadata[beadmeta.SessionIDCamelMetadataKey],
+		attempt.Metadata[beadmeta.SessionNameMetadataKey],
+		attempt.Metadata[beadmeta.SessionNameCamelMetadataKey],
+	} {
+		if target := strings.TrimSpace(candidate); target != "" {
+			attempt.Assignee = target
+			return attempt, true
+		}
+	}
+	return beads.Bead{}, false
 }
 
 // ensurePendingAttemptConverges drives a not-yet-closed attempt toward
@@ -595,6 +617,16 @@ func spawnNextAttempt(ctx context.Context, store beads.Store, control beads.Bead
 	}
 
 	recipe := buildAttemptRecipe(&step, control, attemptNum)
+	// buildAttemptRecipe is also used to construct nested pre-materialization
+	// seeds whose synthetic control IDs must be remapped by molecule.Attach.
+	// At this boundary control.ID is a durable store bead, so stamp only the
+	// dynamically spawned root with the stable logical lineage identity.
+	if root := recipe.RootStep(); root != nil {
+		if root.Metadata == nil {
+			root.Metadata = make(map[string]string)
+		}
+		root.Metadata[beadmeta.LogicalBeadIDMetadataKey] = control.ID
+	}
 
 	// Attach bypasses graph compile routing, so spawned attempts need their
 	// execution lane restored manually. Prefer each step's explicit target when
