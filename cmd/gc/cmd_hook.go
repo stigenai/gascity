@@ -285,6 +285,10 @@ func cmdHookWithOptions(args []string, opts hookCommandOptions, stdout, stderr i
 	// Other CLI entry points (cmd_sling, cmd_start, cmd_rig, cmd_supervisor)
 	// do the same immediately after loadCityConfig.
 	resolveRigPaths(cityPath, cfg.Rigs)
+	if err := bindProjectedRuntimeRig(cityPath, cfg); err != nil {
+		fmt.Fprintf(stderr, "gc hook: %v\n", err) //nolint:errcheck // best-effort stderr
+		return 1
+	}
 
 	// Fence a stale/superseded runtime session BEFORE the city-suspension,
 	// agent-resolution, and agent-suspension early returns below. A stale
