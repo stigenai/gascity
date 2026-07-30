@@ -289,7 +289,7 @@ func TestAdoptPRFormulaSoftFailsGeminiAfterTransientRetries(t *testing.T) {
 
 func TestRetryManagedPooledWorkerRecoversClaimedAttemptAfterCrash(t *testing.T) {
 	cityDir := setupReviewFormulaCity(t, "success", map[string]string{
-		"GC_GRAPH_TRANSIENT_ONCE_SUFFIXES":        "review.attempt.1",
+		"GC_GRAPH_MISSING_OUTCOME_ONCE_SUFFIXES":  "review.attempt.1",
 		"GC_GRAPH_EXIT_AFTER_CLAIM_ONCE_SUFFIXES": "review.attempt.2",
 	})
 	writeLocalFormula(t, cityDir, "mol-retry-recovery-smoke", `description = """
@@ -324,16 +324,49 @@ on_exhausted = "hard_fail"
 	if !hasStepWithSuffix(steps, "review.attempt.2") {
 		t.Fatalf("missing retry attempt after transient failure; got: %v", steps)
 	}
+	attempt1 := mustFindWorkflowBeadByRefSuffix(t, cityDir, workflowID, "review.attempt.1")
 	attempt2 := mustFindWorkflowBeadByRefSuffix(t, cityDir, workflowID, "review.attempt.2")
 
 	logical := mustFindWorkflowBeadByRefSuffix(t, cityDir, workflowID, ".review")
 	if got := metaValue(logical, "gc.outcome"); got != "pass" {
 		t.Fatalf("logical review outcome = %q, want pass", got)
 	}
+	if got := metaValue(attempt1, "gc.outcome"); got != "" {
+		t.Fatalf("attempt 1 gc.outcome = %q, want empty to exercise missing_outcome", got)
+	}
+	if got := metaValue(attempt1, "gc.retry_session_recycled"); got != "true" {
+		t.Fatalf("attempt 1 gc.retry_session_recycled = %q, want true", got)
+	}
+	if got := metaValue(logical, "gc.attempt_log"); !strings.Contains(got, `"reason":"missing_outcome"`) {
+		t.Fatalf("logical gc.attempt_log = %q, want missing_outcome reason", got)
+	}
 
 	trace := readOptionalFile(filepath.Join(cityDir, "graph-workflow-trace.log"))
-	if !traceHasLineWithAll(trace, "exit-after-claim bead="+attempt2.ID, "ref="+attempt2.Ref) {
-		t.Fatalf("worker trace missing forced crash evidence:\n%s", trace)
+	if !traceHasLineWithAll(trace,
+		"run bead="+attempt1.ID,
+		"ref="+attempt1.Ref,
+		"trigger_bead="+attempt1.ID,
+	) {
+		t.Fatalf("attempt-1 process did not receive its trigger identity:\n%s", trace)
+	}
+	if !traceHasLineWithAll(trace,
+		"exit-after-claim bead="+attempt2.ID,
+		"ref="+attempt2.Ref,
+		"trigger_bead="+attempt2.ID,
+	) {
+		t.Fatalf("first attempt-2 process did not receive fresh trigger identity:\n%s", trace)
+	}
+	attempt1Token := traceFieldForLineWithAll(trace, "instance_token",
+		"run bead="+attempt1.ID,
+		"ref="+attempt1.Ref,
+	)
+	attempt2Token := traceFieldForLineWithAll(trace, "instance_token",
+		"exit-after-claim bead="+attempt2.ID,
+		"ref="+attempt2.Ref,
+	)
+	if attempt1Token == "" || attempt2Token == "" || attempt1Token == attempt2Token {
+		t.Fatalf("pool process instance tokens = (%q, %q), want two distinct non-empty starts:\n%s",
+			attempt1Token, attempt2Token, trace)
 	}
 	if countTraceLinesWithAll(trace, "claim bead="+attempt2.ID)+countTraceLinesWithAll(trace, "resume bead="+attempt2.ID) < 2 {
 		t.Fatalf("worker trace missing reclaim evidence for %s:\n%s", attempt2.ID, trace)
@@ -456,6 +489,31 @@ func countTraceLinesWithAll(trace string, tokens ...string) int {
 		}
 	}
 	return count
+}
+
+func traceFieldForLineWithAll(trace, field string, tokens ...string) string {
+	for _, line := range strings.Split(trace, "\n") {
+		if line == "" {
+			continue
+		}
+		matches := true
+		for _, token := range tokens {
+			if !strings.Contains(line, token) {
+				matches = false
+				break
+			}
+		}
+		if !matches {
+			continue
+		}
+		prefix := field + "="
+		for _, word := range strings.Fields(line) {
+			if value, ok := strings.CutPrefix(word, prefix); ok {
+				return value
+			}
+		}
+	}
+	return ""
 }
 
 func startReviewWorkflow(t *testing.T, cityDir, formula string, vars map[string]string) (string, string) {

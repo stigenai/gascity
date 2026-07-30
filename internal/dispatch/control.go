@@ -52,12 +52,13 @@ type attemptEvaluation struct {
 // attempt is disposed. kind/subjectNoun/missingNoun carry the control-kind
 // trace and error wording (control kinds, not role names).
 type controlAttemptStrategy struct {
-	kind        string // "retry" | "ralph" — trace text only
-	subjectNoun string // "attempt" | "iteration" — error/trace text
-	missingNoun string // "no attempt found" | "no iteration found"
-	evaluate    func(store beads.Store, bead, attempt beads.Bead, attemptNum int, opts ProcessOptions) (attemptEvaluation, error)
-	onPass      func(closeMetadata map[string]string, attempt beads.Bead)
-	exhaust     func(store beads.Store, beadID string, attemptNum int, reason, attemptLog string) (ControlResult, error)
+	kind           string // "retry" | "ralph" — trace text only
+	subjectNoun    string // "attempt" | "iteration" — error/trace text
+	missingNoun    string // "no attempt found" | "no iteration found"
+	evaluate       func(store beads.Store, bead, attempt beads.Bead, attemptNum int, opts ProcessOptions) (attemptEvaluation, error)
+	onPass         func(closeMetadata map[string]string, attempt beads.Bead)
+	beforeContinue func(store beads.Store, attempt beads.Bead, opts ProcessOptions) error
+	exhaust        func(store beads.Store, beadID string, attemptNum int, reason, attemptLog string) (ControlResult, error)
 }
 
 // processRetryControl handles a retry control bead when it becomes ready
@@ -75,6 +76,7 @@ func processRetryControl(store beads.Store, bead beads.Bead, opts ProcessOptions
 		onPass: func(closeMetadata map[string]string, attempt beads.Bead) {
 			copyNonGCMetadata(closeMetadata, attempt.Metadata)
 		},
+		beforeContinue: recyclePooledRetryAttempt,
 		exhaust: func(store beads.Store, beadID string, attemptNum int, reason, attemptLog string) (ControlResult, error) {
 			return handleRetryExhaustion(store, beadID, attemptNum, reason, onExhausted, attemptLog)
 		},
@@ -209,6 +211,16 @@ func processAttemptControl(store beads.Store, bead beads.Bead, opts ProcessOptio
 			}
 			return ControlResult{}, fmt.Errorf("%s: recording attempt log: %w", bead.ID, err)
 		}
+		if strategy.beforeContinue != nil {
+			if err := strategy.beforeContinue(store, attempt, opts); err != nil {
+				retryErr := fmt.Errorf("%s: preparing %s retry: %w", bead.ID, strategy.subjectNoun, err)
+				if IsTransientControllerError(retryErr) {
+					markControllerSpawnError(store, bead.ID, retryErr, opts)
+					return ControlResult{}, ErrControlPending
+				}
+				return ControlResult{}, retryErr
+			}
+		}
 		nextAttempt := attemptNum + 1
 		if err := spawnNextAttempt(context.Background(), store, bead, nextAttempt, opts); err != nil {
 			if markControllerSpawnError(store, bead.ID, err, opts) {
@@ -222,6 +234,41 @@ func processAttemptControl(store beads.Store, bead beads.Bead, opts ProcessOptio
 	default:
 		return ControlResult{}, fmt.Errorf("%s: unsupported attempt disposition", bead.ID)
 	}
+}
+
+// recyclePooledRetryAttempt gives graph-v2 retry controls the same
+// fresh-session boundary as the legacy retry-eval path. A live pool process
+// cannot have its launch-time GC_TRIGGER_BEAD_ID environment rewritten when a
+// later attempt is attached, so reusing it would expose the prior attempt ID
+// while the session bead points at the new one.
+//
+// The marker lives on the closed attempt, not the stable retry control, so a
+// completed evaluation is idempotent on replay without suppressing recycling
+// for later attempts.
+func recyclePooledRetryAttempt(store beads.Store, attempt beads.Bead, opts ProcessOptions) error {
+	routeCfg, _ := opts.routeConfig()
+	if !beadUsesMetadataPoolRouteWithConfig(attempt, routeCfg) {
+		return nil
+	}
+	if attempt.Metadata[beadmeta.RetrySessionRecycledMetadataKey] == "true" {
+		return nil
+	}
+	if opts.RecycleSession == nil {
+		return fmt.Errorf("pooled retry attempt %s requires RecycleSession callback", attempt.ID)
+	}
+	if strings.TrimSpace(attempt.Assignee) == "" {
+		return fmt.Errorf("pooled retry attempt %s missing assignee", attempt.ID)
+	}
+	if err := opts.RecycleSession(attempt); err != nil {
+		// Killing a runtime process crosses an operational boundary. A failed
+		// stop is not evidence that the workflow graph is malformed, so leave
+		// the control open and re-enter without consuming another attempt.
+		return markTransientControllerBoundaryError(fmt.Errorf("recycling pooled session %s: %w", attempt.Assignee, err))
+	}
+	if err := store.SetMetadata(attempt.ID, beadmeta.RetrySessionRecycledMetadataKey, "true"); err != nil {
+		return markTransientControllerBoundaryError(fmt.Errorf("recording pooled session recycle: %w", err))
+	}
+	return nil
 }
 
 // ensurePendingAttemptConverges drives a not-yet-closed attempt toward

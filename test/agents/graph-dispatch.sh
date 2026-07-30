@@ -142,6 +142,20 @@ should_fail_transient_once() {
     return 0
 }
 
+should_close_missing_outcome_once() {
+    local ref="$1"
+    local marker=""
+    if ! ref_matches_suffix_list "$ref" "${GC_GRAPH_MISSING_OUTCOME_ONCE_SUFFIXES:-}"; then
+        return 1
+    fi
+    marker="$HARNESS_STATE_DIR/missing-outcome-once.$(sanitize_key "$ref")"
+    if [ -f "$marker" ]; then
+        return 1
+    fi
+    : > "$marker"
+    return 0
+}
+
 should_fail_transient_always() {
     local ref="$1"
     ref_matches_suffix_list "$ref" "${GC_GRAPH_ALWAYS_TRANSIENT_SUFFIXES:-}"
@@ -239,7 +253,7 @@ should_use_hook_fallback() {
     [ -n "${GC_TEMPLATE:-}" ] && [ "${GC_TEMPLATE:-}" != "${GC_AGENT:-}" ]
 }
 
-trace "startup pid=$$ assignee=${ASSIGNEE:-}"
+trace "startup pid=$$ assignee=${ASSIGNEE:-} trigger_bead=${GC_TRIGGER_BEAD_ID:-} instance_token=${GC_INSTANCE_TOKEN:-}"
 trace_store
 cleanup() {
     local rc=$?
@@ -522,7 +536,7 @@ while true; do
     fi
 
     if should_exit_after_claim_once "$ref"; then
-        trace "exit-after-claim bead=$bead_id ref=$ref assignee=$ASSIGNEE"
+        trace "exit-after-claim bead=$bead_id ref=$ref assignee=$ASSIGNEE pid=$$ trigger_bead=${GC_TRIGGER_BEAD_ID:-} instance_token=${GC_INSTANCE_TOKEN:-}"
         exit 1
     fi
 
@@ -532,7 +546,7 @@ while true; do
     # does not appear in the report. Writing here would violate
     # TestGraphWorkflowFailureRunsCleanup's "report should not include
     # .implement after abort" invariant.
-    trace "run bead=$bead_id ref=$ref kind=$kind target=$target_id work_dir=$work_dir"
+    trace "run bead=$bead_id ref=$ref kind=$kind target=$target_id work_dir=$work_dir pid=$$ trigger_bead=${GC_TRIGGER_BEAD_ID:-} instance_token=${GC_INSTANCE_TOKEN:-}"
     trace_store
 
     # Abort-propagation defense for TestGraphWorkflowFailureRunsCleanup.
@@ -619,6 +633,18 @@ while true; do
     esac
 
     set_formula_verdict "$bead_id" "$ref"
+
+    if should_close_missing_outcome_once "$ref"; then
+        printf '%s\n' "$ref" >> "$REPORT_FILE"
+        trace "close-missing-outcome bead=$bead_id ref=$ref"
+        if ! bd update "$bead_id" --status closed 2>/dev/null; then
+            trace "close-rejected bead=$bead_id outcome=missing (likely already closed by controller)"
+        fi
+        status_after=$(show_status "$bead_id" 2>/dev/null || true)
+        outcome_after=$(show_outcome "$bead_id" 2>/dev/null || true)
+        trace "closed bead=$bead_id status=$status_after outcome=$outcome_after"
+        continue
+    fi
 
     if should_fail_transient_once "$ref"; then
         reason=$(transient_reason_for_ref "$ref")

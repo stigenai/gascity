@@ -13,6 +13,7 @@ import (
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/formula"
 	"github.com/gastownhall/gascity/internal/molecule"
 )
@@ -554,6 +555,150 @@ func TestProcessRetryControlTransientRetry(t *testing.T) {
 	}
 	if len(log) != 1 || log[0]["outcome"] != "transient" {
 		t.Fatalf("attempt_log = %v, want [{attempt:1 outcome:transient}]", log)
+	}
+}
+
+func TestProcessRetryControlMissingOutcomeRecyclesPooledSession(t *testing.T) {
+	t.Parallel()
+	store := beads.NewMemStore()
+	maxActive := 2
+	routeCfg := &routeConfigCache{
+		cfg: &config.City{Agents: []config.Agent{{
+			Name:              "polecat",
+			MaxActiveSessions: &maxActive,
+		}}},
+	}
+	routeCfg.once.Do(func() {})
+
+	root := mustCreate(t, store, beads.Bead{
+		Title:    "workflow",
+		Metadata: map[string]string{"gc.kind": "workflow"},
+	})
+	control := mustCreate(t, store, beads.Bead{
+		Title: "review",
+		Metadata: map[string]string{
+			"gc.kind":             "retry",
+			"gc.root_bead_id":     root.ID,
+			"gc.step_ref":         "mol-test.review",
+			"gc.step_id":          "review",
+			"gc.max_attempts":     "3",
+			"gc.on_exhausted":     "hard_fail",
+			"gc.source_step_spec": `{"id":"review","title":"Review","type":"task","metadata":{"gc.run_target":"polecat"},"retry":{"max_attempts":3}}`,
+			"gc.control_epoch":    "1",
+		},
+	})
+	attempt1 := mustCreate(t, store, beads.Bead{
+		Title:    "review attempt 1",
+		Assignee: "polecat-2",
+		Metadata: map[string]string{
+			"gc.root_bead_id": root.ID,
+			"gc.step_ref":     "mol-test.review.attempt.1",
+			"gc.attempt":      "1",
+			"gc.routed_to":    "polecat",
+		},
+	})
+	mustClose(t, store, attempt1.ID)
+	mustDep(t, store, control.ID, attempt1.ID, "blocks")
+
+	var recycled []string
+	recycleCalls := 0
+	opts := ProcessOptions{
+		routeCfg: routeCfg,
+		RecycleSession: func(subject beads.Bead) error {
+			recycleCalls++
+			if recycleCalls == 1 {
+				return errors.New("temporary runtime stop failure")
+			}
+			recycled = append(recycled, subject.Assignee)
+			return nil
+		},
+	}
+	result, err := processRetryControl(store, mustGet(t, store, control.ID), opts)
+	if !errors.Is(err, ErrControlPending) {
+		t.Fatalf("processRetryControl recycle failure error = %v, want ErrControlPending", err)
+	}
+	if result.Processed {
+		t.Fatalf("processRetryControl recycle failure result = %+v, want pending", result)
+	}
+	afterFailure := mustGet(t, store, control.ID)
+	if afterFailure.Status != "open" {
+		t.Fatalf("control status after recycle failure = %q, want open", afterFailure.Status)
+	}
+	if afterFailure.Metadata["gc.controller_error_class"] != "transient" ||
+		afterFailure.Metadata["gc.controller_retryable"] != "true" {
+		t.Fatalf("controller retry metadata after recycle failure = %v, want transient retryable", afterFailure.Metadata)
+	}
+	if got := mustGet(t, store, attempt1.ID).Metadata["gc.retry_session_recycled"]; got != "" {
+		t.Fatalf("attempt marker after failed recycle = %q, want empty", got)
+	}
+
+	result, err = processRetryControl(store, mustGet(t, store, control.ID), opts)
+	if err != nil {
+		t.Fatalf("processRetryControl after recycle recovery: %v", err)
+	}
+	if result.Action != "retry" {
+		t.Fatalf("action = %q, want retry", result.Action)
+	}
+	if len(recycled) != 1 || recycled[0] != "polecat-2" {
+		t.Fatalf("recycled = %v, want [polecat-2]", recycled)
+	}
+	after := mustGet(t, store, control.ID)
+	var log []map[string]string
+	if err := json.Unmarshal([]byte(after.Metadata["gc.attempt_log"]), &log); err != nil {
+		t.Fatalf("unmarshal attempt_log: %v", err)
+	}
+	if len(log) != 1 || log[0]["reason"] != "missing_outcome" {
+		t.Fatalf("attempt_log = %v, want missing_outcome detail", log)
+	}
+
+	attemptAfter := mustGet(t, store, attempt1.ID)
+	if attemptAfter.Metadata["gc.retry_session_recycled"] != "true" {
+		t.Fatalf("attempt gc.retry_session_recycled = %q, want true", attemptAfter.Metadata["gc.retry_session_recycled"])
+	}
+
+	// Re-processing the same closed attempt after its recycle marker was
+	// persisted must not kill the replacement session again. The marker is
+	// deliberately per-attempt so a later transient attempt still gets its own
+	// recycle.
+	if err := recyclePooledRetryAttempt(store, attemptAfter, ProcessOptions{
+		routeCfg: routeCfg,
+		RecycleSession: func(subject beads.Bead) error {
+			recycled = append(recycled, subject.Assignee)
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("recyclePooledRetryAttempt(replay): %v", err)
+	}
+	if len(recycled) != 1 {
+		t.Fatalf("recycled after replay = %v, want exactly one recycle", recycled)
+	}
+
+	attempt2 := mustCreate(t, store, beads.Bead{
+		Title:    "review attempt 2",
+		Assignee: "polecat-3",
+		Metadata: map[string]string{
+			"gc.root_bead_id": root.ID,
+			"gc.step_ref":     "mol-test.review.attempt.2",
+			"gc.attempt":      "2",
+			"gc.routed_to":    "polecat",
+		},
+	})
+	mustClose(t, store, attempt2.ID)
+	attempt2 = mustGet(t, store, attempt2.ID)
+	if err := recyclePooledRetryAttempt(store, attempt2, ProcessOptions{
+		routeCfg: routeCfg,
+		RecycleSession: func(subject beads.Bead) error {
+			recycled = append(recycled, subject.Assignee)
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("recyclePooledRetryAttempt(next attempt): %v", err)
+	}
+	if len(recycled) != 2 || recycled[1] != "polecat-3" {
+		t.Fatalf("recycled after next attempt = %v, want [polecat-2 polecat-3]", recycled)
+	}
+	if got := mustGet(t, store, attempt2.ID).Metadata["gc.retry_session_recycled"]; got != "true" {
+		t.Fatalf("next attempt gc.retry_session_recycled = %q, want true", got)
 	}
 }
 
