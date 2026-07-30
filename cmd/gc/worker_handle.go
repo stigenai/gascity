@@ -289,12 +289,52 @@ func newWorkerSessionHandleForResolvedRuntimeWithConfig(
 	if err != nil {
 		return nil, err
 	}
+	applyWorkerSessionCreateEnv(
+		&sessionCfg,
+		cfg,
+		cityPath,
+		template,
+		resolved,
+	)
 	// Stage provider-overlay hooks on the CLI create path the same way the
 	// reconciler create path does; resolvedWorkerSessionConfigWithConfig builds
 	// runtime.Config directly and never routes through resolveTemplate
 	// (gc-6bw8o).
 	applyWorkerOverlayHints(&sessionCfg.Runtime.Hints, cfg, cityPath, template, resolved)
 	return factory.SessionForResolvedRuntime(sessionCfg)
+}
+
+// applyWorkerSessionCreateEnv closes the direct-create configuration gap with
+// template_resolve. `gc session new` can start a session without a reconciler;
+// that path must still project workspace and agent environment values before
+// the runtime is constructed. Otherwise a session created from the same
+// template behaves differently depending on whether a controller happens to
+// be reachable.
+func applyWorkerSessionCreateEnv(
+	sessionCfg *worker.ResolvedSessionConfig,
+	cfg *config.City,
+	cityPath string,
+	template string,
+	resolved *config.ResolvedProvider,
+) {
+	if sessionCfg == nil || resolved == nil {
+		return
+	}
+	env := providerProcessPassthroughEnv()
+	if cfg != nil {
+		env = mergeEnv(env, expandEnvMap(cfg.Workspace.Env))
+	}
+	env = mergeEnv(env, expandEnvMap(resolved.Env))
+	if cfg != nil {
+		if agentCfg := findAgentByTemplate(cfg, template); agentCfg != nil {
+			env = mergeEnv(env, expandEnvMap(agentCfg.Env))
+		}
+	}
+	if strings.TrimSpace(cityPath) != "" {
+		env = mergeEnv(env, cityIdentityAnchorsForCity(cityPath))
+	}
+	sessionCfg.Runtime.SessionEnv = env
+	sessionCfg.Runtime.Hints.Env = env
 }
 
 func resolvedWorkerSessionConfigWithConfig(

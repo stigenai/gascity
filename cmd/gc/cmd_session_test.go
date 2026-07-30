@@ -2464,6 +2464,59 @@ func TestCmdSessionNew_AllowsReservedNamedAliasWithoutController(t *testing.T) {
 	}
 }
 
+func TestCmdSessionNew_ExpandsStartCommandTemplatesBeforeDirectStart(t *testing.T) {
+	t.Setenv("GC_BEADS", "file")
+	t.Setenv("GC_SESSION", "fake")
+
+	cityDir := t.TempDir()
+	t.Setenv("GC_CITY", cityDir)
+	writeNamedSessionCityTOML(t, cityDir)
+	writeCatalogFile(
+		t,
+		cityDir,
+		"agents/mayor/agent.toml",
+		"provider = \"codex\"\n"+
+			"start_command = \"python3 {{.CityRoot}}/worker.py\"\n",
+	)
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdSessionNew([]string{"mayor"}, "mayor", "", "", true, false, 0, &stdout, &stderr); code != 0 {
+		t.Fatalf("cmdSessionNew = %d, want 0; stderr=%s", code, stderr.String())
+	}
+
+	b := onlySessionBead(t, cityDir)
+	if got, want := b.Metadata["command"], "python3 "+cityDir+"/worker.py"; got != want {
+		t.Fatalf("metadata command = %q, want %q", got, want)
+	}
+}
+
+func TestCmdSessionNew_InvalidStartCommandTemplateFailsBeforeCreate(t *testing.T) {
+	t.Setenv("GC_BEADS", "file")
+	t.Setenv("GC_SESSION", "fake")
+
+	cityDir := t.TempDir()
+	t.Setenv("GC_CITY", cityDir)
+	writeNamedSessionCityTOML(t, cityDir)
+	writeCatalogFile(
+		t,
+		cityDir,
+		"agents/mayor/agent.toml",
+		"provider = \"codex\"\n"+
+			"start_command = \"python3 {{.UnknownRoot}}/worker.py\"\n",
+	)
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdSessionNew([]string{"mayor"}, "mayor", "", "", true, false, 0, &stdout, &stderr); code == 0 {
+		t.Fatal("cmdSessionNew = 0, want invalid template failure")
+	}
+	if !strings.Contains(stderr.String(), "expanding start command") {
+		t.Fatalf("stderr = %q, want start command expansion context", stderr.String())
+	}
+	if got := sessionBeads(t, cityDir); len(got) != 0 {
+		t.Fatalf("session beads = %d, want none after expansion failure", len(got))
+	}
+}
+
 func TestCmdSessionNew_IgnoresUnmanagedSupervisorSocket(t *testing.T) {
 	t.Setenv("GC_BEADS", "file")
 	t.Setenv("GC_SESSION", "fake")
