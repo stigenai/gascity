@@ -220,6 +220,23 @@ func copyDirToPod(ctx context.Context, ops k8sOps, podName, container, srcDir, d
 	})
 }
 
+// copyCitySourceToPod streams the authored city definition without mutable
+// controller state. A live city can hold multi-gigabyte Dolt data, backups,
+// event logs, and runtime panes; none of those are inputs to gc init --from.
+func copyCitySourceToPod(ctx context.Context, ops k8sOps, podName, container, srcDir, dstDir string) error {
+	info, err := os.Stat(srcDir)
+	if err != nil || !info.IsDir() {
+		return nil // skip silently if not a directory
+	}
+
+	_, _ = ops.execInPod(ctx, podName, container,
+		[]string{"mkdir", "-p", dstDir}, nil)
+
+	return streamArchiveToPod(ctx, ops, podName, container, srcDir, dstDir, func(w io.Writer) error {
+		return tarDirWithSkip(srcDir, w, skipCitySourceRuntimeState)
+	})
+}
+
 // copyToPod copies a single file or directory to the pod.
 func copyToPod(ctx context.Context, ops k8sOps, podName, container, src, dst string) error {
 	info, err := os.Stat(src)
@@ -276,16 +293,24 @@ func streamArchiveToPod(
 
 // tarDir creates a tar archive of a directory's contents.
 func tarDir(dir string, w io.Writer) error {
+	return tarDirWithSkip(dir, w, nil)
+}
+
+func tarDirWithSkip(dir string, w io.Writer, skip func(string) bool) error {
 	tw := tar.NewWriter(w)
 	defer func() { _ = tw.Close() }()
 
-	return writeTarTree(tw, dir, ".", make(map[string]bool))
+	return writeTarTree(tw, dir, ".", make(map[string]bool), skip)
 }
 
-func writeTarTree(tw *tar.Writer, path, rel string, activeDirs map[string]bool) error {
+func writeTarTree(tw *tar.Writer, path, rel string, activeDirs map[string]bool, skip func(string) bool) error {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return err
+	}
+
+	if rel != "." && skip != nil && skip(rel) {
+		return nil
 	}
 
 	// Dereference symlinks: use the resolved path for both stat and open to
@@ -367,11 +392,26 @@ func writeTarTree(tw *tar.Writer, path, rel string, activeDirs map[string]bool) 
 			filepath.Join(path, entry.Name()),
 			childRel,
 			activeDirs,
+			skip,
 		); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// skipCitySourceRuntimeState excludes mutable, installation-local top-level
+// state from the source tree passed to gc init --from in an isolated worker.
+// Nested directories with the same names remain authored pack content.
+func skipCitySourceRuntimeState(rel string) bool {
+	clean := filepath.ToSlash(filepath.Clean(rel))
+	top, _, _ := strings.Cut(clean, "/")
+	switch top {
+	case ".gc", ".beads", ".dolt-backup", "state", "logs", "scratch-dolt":
+		return true
+	default:
+		return false
+	}
 }
 
 // skipStagingCacheDir omits local, reproducible caches that must not be copied

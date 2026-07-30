@@ -829,8 +829,10 @@ func waitForTmux(ctx context.Context, ops k8sOps, name string, timeout time.Dura
 // gc init --from, and installs locked remote imports before releasing the
 // worker. A partially initialized city cannot run gc hook reliably.
 func initCityInPod(ctx context.Context, ops k8sOps, podName, ctrlCity string) error {
-	// Copy city dir (excluding .gc/) into the pod.
-	if err := copyDirToPod(ctx, ops, podName, "agent", ctrlCity, "/tmp/city-src"); err != nil {
+	// Copy only the authored city definition. The live city also contains
+	// mutable runtime, Dolt, backup, state, and log trees that are neither
+	// needed nor safe to clone into an isolated worker.
+	if err := copyCitySourceToPod(ctx, ops, podName, "agent", ctrlCity, "/tmp/city-src"); err != nil {
 		return err
 	}
 	defer func() {
