@@ -838,27 +838,10 @@ func initCityInPod(ctx context.Context, ops k8sOps, podName, ctrlCity string) er
 			[]string{"rm", "-rf", "/tmp/city-src"}, nil)
 	}()
 
-	// Run gc init --from with GC_DOLT=skip so gc init does not attempt to
-	// start a local Dolt server. Skip provider readiness while materializing the
-	// shared city because an isolated worker pod only receives credentials for
-	// its selected provider; the provider-specific agent startup remains the
-	// authoritative readiness check. Pod sessions consume the projected
-	// GC_DOLT_* connection target through env; they do not rewrite canonical
-	// .beads files.
-	_, err := ops.execInPod(ctx, podName, "agent",
-		[]string{
-			"env", "GC_DOLT=skip",
-			"gc", "init", "--skip-provider-readiness",
-			"--from", "/tmp/city-src", "/workspace",
-		}, nil)
-	if err != nil {
-		return err
-	}
-
-	// gc init --from scaffolds the city but intentionally omits local pack
-	// directories. Rig imports such as ./packs/rig-basic therefore fail during
-	// expansion unless the provider materializes those authored packs.
-	_, err = ops.execInPod(ctx, podName, "agent", []string{
+	// gc init resolves rig imports while loading the source city, before it
+	// scaffolds the destination. Preseed authored local packs so imports such
+	// as ./packs/rig-basic are available during that resolution.
+	_, err := ops.execInPod(ctx, podName, "agent", []string{
 		"sh", "-c",
 		"if [ -d /tmp/city-src/packs ]; then " +
 			"mkdir -p /workspace/packs && " +
@@ -867,6 +850,23 @@ func initCityInPod(ctx context.Context, ops k8sOps, podName, ctrlCity string) er
 	}, nil)
 	if err != nil {
 		return fmt.Errorf("materializing local city packs: %w", err)
+	}
+
+	// Run gc init --from with GC_DOLT=skip so gc init does not attempt to
+	// start a local Dolt server. Skip provider readiness while materializing the
+	// shared city because an isolated worker pod only receives credentials for
+	// its selected provider; the provider-specific agent startup remains the
+	// authoritative readiness check. Pod sessions consume the projected
+	// GC_DOLT_* connection target through env; they do not rewrite canonical
+	// .beads files.
+	_, err = ops.execInPod(ctx, podName, "agent",
+		[]string{
+			"env", "GC_DOLT=skip",
+			"gc", "init", "--skip-provider-readiness",
+			"--from", "/tmp/city-src", "/workspace",
+		}, nil)
+	if err != nil {
+		return err
 	}
 
 	// Locked remote imports are stored outside the city tree under the worker

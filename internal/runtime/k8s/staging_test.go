@@ -479,6 +479,32 @@ func TestCopyDirToPodStreamsArchive(t *testing.T) {
 	}
 }
 
+func TestCopyDirToPodDereferencesDirectorySymlinks(t *testing.T) {
+	dir := t.TempDir()
+	releaseDir := filepath.Join(dir, ".managed", "packs", "release")
+	if err := os.MkdirAll(filepath.Join(releaseDir, "rig-basic"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(releaseDir, "rig-basic", "pack.toml"),
+		[]byte("name = \"rig-basic\"\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(".managed", "packs", "release"), filepath.Join(dir, "packs")); err != nil {
+		t.Fatal(err)
+	}
+
+	ops := newCapturingStageOps()
+	if err := copyDirToPod(context.Background(), ops, "pod", "agent", dir, "/tmp/city-src"); err != nil {
+		t.Fatalf("copyDirToPod: %v", err)
+	}
+	if got := ops.files["/tmp/city-src/packs/rig-basic/pack.toml"]; got != "name = \"rig-basic\"\n" {
+		t.Fatalf("staged managed pack = %q, want authored pack contents", got)
+	}
+}
+
 func TestStreamArchiveToPodReturnsProducerError(t *testing.T) {
 	want := errors.New("archive read failed")
 	ops := newCapturingStageOps()

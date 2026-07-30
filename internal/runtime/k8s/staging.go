@@ -262,41 +262,40 @@ func tarDir(dir string, w io.Writer) error {
 	tw := tar.NewWriter(w)
 	defer func() { _ = tw.Close() }()
 
-	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
+	return writeTarTree(tw, dir, ".", make(map[string]bool))
+}
 
-		rel, err := filepath.Rel(dir, path)
+func writeTarTree(tw *tar.Writer, path, rel string, activeDirs map[string]bool) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+
+	// Dereference symlinks: use the resolved path for both stat and open to
+	// avoid TOCTOU issues if the symlink target changes. Directory symlinks
+	// require explicit traversal because filepath.Walk does not follow them.
+	if info.Mode()&os.ModeSymlink != 0 {
+		resolved, err := filepath.EvalSymlinks(path)
 		if err != nil {
-			return err
+			return nil // skip broken symlinks
 		}
-		if rel == "." {
+		info, err = os.Stat(resolved)
+		if err != nil {
 			return nil
 		}
-		if info.IsDir() && skipStagingCacheDir(rel) {
-			return filepath.SkipDir
-		}
+		path = resolved
+	}
 
-		// Dereference symlinks: use the resolved path for both stat and open
-		// to avoid TOCTOU issues if the symlink target changes.
-		if info.Mode()&os.ModeSymlink != 0 {
-			resolved, err := filepath.EvalSymlinks(path)
-			if err != nil {
-				return nil // skip broken symlinks
-			}
-			info, err = os.Stat(resolved)
-			if err != nil {
-				return nil
-			}
-			path = resolved
-		}
+	if info.IsDir() && rel != "." && skipStagingCacheDir(rel) {
+		return nil
+	}
 
-		// Skip sockets and other special file types unsupported by tar.
-		if info.Mode()&(os.ModeSocket|os.ModeNamedPipe|os.ModeDevice) != 0 {
-			return nil
-		}
+	// Skip sockets and other special file types unsupported by tar.
+	if info.Mode()&(os.ModeSocket|os.ModeNamedPipe|os.ModeDevice) != 0 {
+		return nil
+	}
 
+	if rel != "." {
 		header, err := tar.FileInfoHeader(info, "")
 		if err != nil {
 			return err
@@ -311,20 +310,51 @@ func tarDir(dir string, w io.Writer) error {
 			return err
 		}
 
-		if info.IsDir() {
-			return nil
+		if !info.IsDir() {
+			f, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			// Limit copy to declared header size to avoid "write too long" if
+			// the file grew between stat and read (e.g., events.jsonl).
+			_, copyErr := io.CopyN(tw, f, header.Size)
+			closeErr := f.Close()
+			if copyErr != nil {
+				return copyErr
+			}
+			return closeErr
 		}
+	}
 
-		f, err := os.Open(path)
-		if err != nil {
+	resolvedDir, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return err
+	}
+	if activeDirs[resolvedDir] {
+		return nil
+	}
+	activeDirs[resolvedDir] = true
+	defer delete(activeDirs, resolvedDir)
+
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		childRel := entry.Name()
+		if rel != "." {
+			childRel = filepath.Join(rel, entry.Name())
+		}
+		if err := writeTarTree(
+			tw,
+			filepath.Join(path, entry.Name()),
+			childRel,
+			activeDirs,
+		); err != nil {
 			return err
 		}
-		defer func() { _ = f.Close() }()
-		// Limit copy to declared header size to avoid "write too long" if
-		// the file grew between stat and read (e.g., events.jsonl).
-		_, err = io.CopyN(tw, f, header.Size)
-		return err
-	})
+	}
+	return nil
 }
 
 // skipStagingCacheDir omits local, reproducible caches that must not be copied
