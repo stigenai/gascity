@@ -34,15 +34,17 @@ func TestResolveTemplateUsesWorkDirWithoutChangingRigIdentity(t *testing.T) {
 	if err := os.MkdirAll(rigRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	rig := config.Rig{Name: "demo", Path: rigRoot, Prefix: "dm"}
 
 	params := &agentBuildParams{
+		city:       &config.City{Workspace: config.Workspace{Name: "city"}, Rigs: []config.Rig{rig}},
 		cityName:   "city",
 		cityPath:   cityPath,
 		workspace:  &config.Workspace{Provider: "test"},
 		providers:  map[string]config.ProviderSpec{"test": {Command: "echo", PromptMode: "none"}},
 		lookPath:   func(string) (string, error) { return "/bin/echo", nil },
 		fs:         fsys.OSFS{},
-		rigs:       []config.Rig{{Name: "demo", Path: rigRoot}},
+		rigs:       []config.Rig{rig},
 		beaconTime: time.Unix(0, 0),
 		beadNames:  make(map[string]string),
 		stderr:     io.Discard,
@@ -77,6 +79,15 @@ func TestResolveTemplateUsesWorkDirWithoutChangingRigIdentity(t *testing.T) {
 	if tp.Env["BEADS_DIR"] != filepath.Join(rigRoot, ".beads") {
 		t.Fatalf("BEADS_DIR = %q, want %q", tp.Env["BEADS_DIR"], filepath.Join(rigRoot, ".beads"))
 	}
+	if tp.Env["GC_STORE_ROOT"] != rigRoot {
+		t.Fatalf("GC_STORE_ROOT = %q, want %q", tp.Env["GC_STORE_ROOT"], rigRoot)
+	}
+	if tp.Env["GC_STORE_SCOPE"] != "rig" {
+		t.Fatalf("GC_STORE_SCOPE = %q, want rig", tp.Env["GC_STORE_SCOPE"])
+	}
+	if tp.Env["GC_BEADS_PREFIX"] != "dm" {
+		t.Fatalf("GC_BEADS_PREFIX = %q, want dm", tp.Env["GC_BEADS_PREFIX"])
+	}
 	if tp.Env["GT_ROOT"] != cityPath {
 		t.Fatalf("GT_ROOT = %q, want city root %q", tp.Env["GT_ROOT"], cityPath)
 	}
@@ -87,6 +98,7 @@ func TestResolveTemplateUsesWorkDirForCityScopedAgents(t *testing.T) {
 	writeTemplateResolveCityConfig(t, cityPath, "file")
 
 	params := &agentBuildParams{
+		city:       &config.City{Workspace: config.Workspace{Name: "city", Prefix: "hq"}},
 		cityName:   "city",
 		cityPath:   cityPath,
 		workspace:  &config.Workspace{Provider: "test"},
@@ -122,6 +134,15 @@ func TestResolveTemplateUsesWorkDirForCityScopedAgents(t *testing.T) {
 	}
 	if got, ok := tp.Env["BEADS_DIR"]; !ok || got != "" {
 		t.Fatalf("BEADS_DIR = %q present=%v, want explicit empty", got, ok)
+	}
+	if tp.Env["GC_STORE_ROOT"] != cityPath {
+		t.Fatalf("GC_STORE_ROOT = %q, want %q", tp.Env["GC_STORE_ROOT"], cityPath)
+	}
+	if tp.Env["GC_STORE_SCOPE"] != "city" {
+		t.Fatalf("GC_STORE_SCOPE = %q, want city", tp.Env["GC_STORE_SCOPE"])
+	}
+	if tp.Env["GC_BEADS_PREFIX"] != "hq" {
+		t.Fatalf("GC_BEADS_PREFIX = %q, want hq", tp.Env["GC_BEADS_PREFIX"])
 	}
 	if tp.Env["GT_ROOT"] != cityPath {
 		t.Fatalf("GT_ROOT = %q, want %q", tp.Env["GT_ROOT"], cityPath)

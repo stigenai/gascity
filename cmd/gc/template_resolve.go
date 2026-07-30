@@ -274,6 +274,10 @@ func resolveTemplate(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName 
 	}
 
 	// Step 8: Build agent environment.
+	storePrefix := config.EffectiveHQPrefix(p.city)
+	if storePrefix == "" {
+		storePrefix = config.DeriveBeadsPrefix(p.cityName)
+	}
 	agentEnv := map[string]string{
 		"GC_SESSION_NAME":     sessName,
 		"GC_SESSION_ID":       sessionBeadID,
@@ -284,6 +288,9 @@ func resolveTemplate(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName 
 		"BEADS_ACTOR":         sessName,
 		"GC_DIR":              workDir,
 		"GC_BEADS_SCOPE_ROOT": p.cityPath,
+		"GC_STORE_ROOT":       p.cityPath,
+		"GC_STORE_SCOPE":      "city",
+		"GC_BEADS_PREFIX":     storePrefix,
 		// Explicit empty values matter here. tmux session creation uses `env -u`
 		// only for keys present with empty strings, which prevents stale rig
 		// scope from leaking out of the tmux server's inherited environment.
@@ -323,10 +330,20 @@ func resolveTemplate(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName 
 		agentEnv[key] = value
 	}
 	if rigName != "" {
+		rigPrefix := config.DeriveBeadsPrefix(rigName)
+		for i := range p.rigs {
+			if p.rigs[i].Name == rigName {
+				rigPrefix = p.rigs[i].EffectivePrefix()
+				break
+			}
+		}
 		agentEnv["GC_RIG"] = rigName
 		agentEnv["GC_RIG_ROOT"] = rigRoot
 		agentEnv["BEADS_DIR"] = filepath.Join(rigRoot, ".beads")
 		agentEnv["GC_BEADS_SCOPE_ROOT"] = rigRoot
+		agentEnv["GC_STORE_ROOT"] = rigRoot
+		agentEnv["GC_STORE_SCOPE"] = "rig"
+		agentEnv["GC_BEADS_PREFIX"] = rigPrefix
 	}
 
 	// Step 9: Render prompt with beacon.
