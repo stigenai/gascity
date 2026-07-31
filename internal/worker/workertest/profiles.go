@@ -198,6 +198,13 @@ func Phase1Profiles() []Profile {
 				ContinuationRoot: "testdata/fixtures/pi/continuation",
 				ResetRoot:        "testdata/fixtures/pi/reset",
 			},
+			Usage: UsageExpectation{
+				Supported:    true,
+				Invocations:  1,
+				InputTokens:  1,
+				OutputTokens: 1,
+				Model:        "gpt-oss:20b",
+			},
 			Continuation: ContinuationOracle{
 				AnchorText:             "Pi phase 1 validates the tmux CLI transcript contract.",
 				RecallPromptContains:   "Repeat the exact Pi phase-1 summary from earlier before answering.",

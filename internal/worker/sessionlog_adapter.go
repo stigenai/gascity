@@ -107,6 +107,12 @@ func (a SessionLogAdapter) CodexTailUsage(path string) ([]sessionlog.TailUsage, 
 	return sessionlog.ExtractCodexTailUsageFromSearchPaths(a.SearchPaths, path)
 }
 
+// PiTailUsage reads per-invocation token usage from Pi's native JSONL
+// transcript, validating the path against the configured search roots.
+func (a SessionLogAdapter) PiTailUsage(path string) ([]sessionlog.TailUsage, error) {
+	return sessionlog.ExtractPiTailUsageFromSearchPaths(a.SearchPaths, path)
+}
+
 // InvocationUsage reads per-invocation token usage from a discovered
 // transcript using the SAME extractor the prompt-op telemetry gate uses for
 // the provider's invocation-usage family (invocationUsageSpecs). It returns

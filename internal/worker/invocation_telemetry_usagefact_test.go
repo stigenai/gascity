@@ -320,6 +320,16 @@ func TestInvocationUsageFamilyFromInfoResolvesWrappedCodex(t *testing.T) {
 	if got := invocationUsageFamilyFromInfo(sessionpkg.Info{Provider: "claude-eco"}); got != "claude" {
 		t.Fatalf("claude-eco must still resolve to claude, got %q", got)
 	}
+	// A named provider alias does not carry "pi" in a position recognized by
+	// ProviderFamily. The persisted family marker must still reach the Pi usage
+	// extractor used by the controller sweep.
+	piInfo := sessionpkg.Info{Provider: "pi-litellm", ProviderKind: "pi"}
+	if got := invocationUsageFamilyFromInfo(piInfo); got != "pi" {
+		t.Fatalf("pi-litellm must resolve through provider_kind to pi, got %q", got)
+	}
+	if _, ok := invocationUsageSpecs["pi"]; !ok {
+		t.Fatal("pi spec missing from invocationUsageSpecs")
+	}
 }
 
 // TestFactorySweepSessionModelUsageClaude covers the claude-family branch of the

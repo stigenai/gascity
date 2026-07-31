@@ -172,14 +172,14 @@ func TestTranscriptUsageResultDetectsMismatchAndDrift(t *testing.T) {
 	})
 
 	t.Run("unsupported family is reported out of scope", func(t *testing.T) {
-		var pi Profile
+		var gemini Profile
 		for _, profile := range Phase1Profiles() {
-			if profile.ID == ProfilePiTmuxCLI {
-				pi = profile
+			if profile.ID == ProfileGeminiTmuxCLI {
+				gemini = profile
 				break
 			}
 		}
-		result := TranscriptUsageResult(pi, &Snapshot{})
+		result := TranscriptUsageResult(gemini, &Snapshot{})
 		if result.Status != ResultUnsupported {
 			t.Fatalf("status = %q, want unsupported for a family with no invocation-usage extractor", result.Status)
 		}
