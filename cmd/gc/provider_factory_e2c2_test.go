@@ -215,14 +215,39 @@ func runE2c2ProviderFailureHelper(t *testing.T, cityPath, sessionID, markerPath 
 	assertE2c2ProviderBuilds(t, providerBuilds, 10, "mail notify JSON command")
 	assertE2c2NoQueuedNudges(t, target, "mail notify command provider failures")
 
+	var slingStdout, slingStderr bytes.Buffer
+	if code := run([]string{"--city", cityPath, "sling", "frontend/worker", "provider-independent task", "--force"}, &slingStdout, &slingStderr); code != 0 {
+		t.Fatalf("plain sling = %d, want 0 without constructing the broken runtime provider; stdout=%q stderr=%q", code, slingStdout.String(), slingStderr.String())
+	}
+	if !strings.Contains(slingStdout.String(), "Slung ") || slingStderr.Len() != 0 {
+		t.Fatalf("plain sling output = stdout %q stderr %q, want successful route", slingStdout.String(), slingStderr.String())
+	}
+	assertE2c2ProviderBuilds(t, providerBuilds, 10, "plain sling text")
+	assertE2c2OpenBeadCount(t, cityPath, "task", 1, "plain sling text")
+
+	slingStdout.Reset()
+	slingStderr.Reset()
+	if code := run([]string{"--city", cityPath, "sling", "frontend/worker", "provider-independent json task", "--force", "--json"}, &slingStdout, &slingStderr); code != 0 {
+		t.Fatalf("plain sling JSON = %d, want 0 without constructing the broken runtime provider; stdout=%q stderr=%q", code, slingStdout.String(), slingStderr.String())
+	}
+	var slingSuccess slingJSONResult
+	if err := json.Unmarshal(slingStdout.Bytes(), &slingSuccess); err != nil {
+		t.Fatalf("plain sling JSON result: %v; stdout=%q", err, slingStdout.String())
+	}
+	if !slingSuccess.Success || !slingSuccess.Routed || slingSuccess.Queued || slingStderr.Len() != 0 {
+		t.Fatalf("plain sling JSON result = %#v; stderr=%q, want routed without nudge", slingSuccess, slingStderr.String())
+	}
+	assertE2c2ProviderBuilds(t, providerBuilds, 10, "plain sling JSON")
+	assertE2c2OpenBeadCount(t, cityPath, "task", 2, "plain sling JSON")
+
 	const slingFailureMessage = "gc sling: " + e2c2ProviderConstructionFailure
-	assertE2c2RunResult(t, []string{"--city", cityPath, "sling", "frontend/worker", "provider failure task"}, 1, "", slingFailureMessage+"\n")
-	assertE2c2ProviderBuilds(t, providerBuilds, 11, "sling text")
+	assertE2c2RunResult(t, []string{"--city", cityPath, "sling", "frontend/worker", "provider failure task", "--force", "--nudge"}, 1, "", slingFailureMessage+"\n")
+	assertE2c2ProviderBuilds(t, providerBuilds, 11, "sling nudge text")
 	const slingJSONFailure = "{\n  \"schema_version\": \"1\",\n  \"ok\": false,\n  \"error\": {\n    \"code\": \"session_provider_failed\",\n    \"message\": \"" + slingFailureMessage + "\",\n    \"exit_code\": 1\n  }\n}\n"
 	const slingJSONDiagnostic = "{\"schema_version\":\"1\",\"level\":\"error\",\"code\":\"session_provider_failed\",\"message\":\"" + slingFailureMessage + "\",\"exit_code\":1}\n"
-	assertE2c2RunResult(t, []string{"--city", cityPath, "sling", "frontend/worker", "provider failure task", "--json"}, 1, slingJSONFailure, slingJSONDiagnostic)
-	assertE2c2ProviderBuilds(t, providerBuilds, 12, "sling JSON")
-	assertE2c2NoBeadsOfType(t, cityPath, "task", "sling provider failures")
+	assertE2c2RunResult(t, []string{"--city", cityPath, "sling", "frontend/worker", "provider failure JSON task", "--force", "--nudge", "--json"}, 1, slingJSONFailure, slingJSONDiagnostic)
+	assertE2c2ProviderBuilds(t, providerBuilds, 12, "sling nudge JSON")
+	assertE2c2OpenBeadCount(t, cityPath, "task", 2, "sling nudge provider failures")
 }
 
 func assertE2c2RunResult(t *testing.T, args []string, wantCode int, wantStdout, wantStderr string) {
@@ -279,6 +304,21 @@ func assertE2c2NoBeadsOfType(t *testing.T, cityPath, beadType, operation string)
 	}
 	if len(items) != 0 {
 		t.Fatalf("%s created %d %s bead(s), want 0", operation, len(items), beadType)
+	}
+}
+
+func assertE2c2OpenBeadCount(t *testing.T, cityPath, beadType string, want int, operation string) {
+	t.Helper()
+	store, err := openScopeLocalFileStore(cityPath)
+	if err != nil {
+		t.Fatalf("open city store after %s: %v", operation, err)
+	}
+	items, err := store.List(beads.ListQuery{Type: beadType, Status: "open", TierMode: beads.TierBoth})
+	if err != nil {
+		t.Fatalf("list %s beads after %s: %v", beadType, operation, err)
+	}
+	if len(items) != want {
+		t.Fatalf("%s left %d open %s bead(s), want %d", operation, len(items), beadType, want)
 	}
 }
 
