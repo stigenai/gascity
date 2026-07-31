@@ -43,6 +43,81 @@ func TestRigList(t *testing.T) {
 	}
 }
 
+func TestRigListUsesOneRuntimeSnapshot(t *testing.T) {
+	state := newFakeState(t)
+	state.cfg.Agents = []config.Agent{
+		{Name: "worker", Dir: "myrig", MaxActiveSessions: intPtr(1)},
+		{Name: "coder", Dir: "myrig", MaxActiveSessions: intPtr(1)},
+	}
+	if err := state.sp.Start(context.Background(), "myrig--worker", runtime.Config{}); err != nil {
+		t.Fatalf("start worker: %v", err)
+	}
+	if err := state.sp.Start(context.Background(), "myrig--coder", runtime.Config{}); err != nil {
+		t.Fatalf("start coder: %v", err)
+	}
+	provider := &countingIsRunningProvider{Provider: state.sp}
+	state.sessionProvider = provider
+	h := newTestCityHandler(t, state)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", cityURL(state, "/rigs"), nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Items []rigResponse `json:"items"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].RunningCount != 2 {
+		t.Fatalf("items = %+v, want one rig with two running sessions", resp.Items)
+	}
+	if provider.listRunningCalls != 1 {
+		t.Fatalf("ListRunning calls = %d, want one request snapshot", provider.listRunningCalls)
+	}
+	if provider.isRunningCalls != 0 {
+		t.Fatalf("IsRunning calls = %d, want zero per-agent probes", provider.isRunningCalls)
+	}
+}
+
+func TestRigListFallsBackWhenRuntimeSnapshotFails(t *testing.T) {
+	state := newFakeState(t)
+	state.cfg.Agents = []config.Agent{
+		{Name: "worker", Dir: "myrig", MaxActiveSessions: intPtr(1)},
+	}
+	if err := state.sp.Start(context.Background(), "myrig--worker", runtime.Config{}); err != nil {
+		t.Fatalf("start worker: %v", err)
+	}
+	counting := &countingIsRunningProvider{Provider: state.sp}
+	provider := &failingSessionListProvider{Provider: counting}
+	state.sessionProvider = provider
+	h := newTestCityHandler(t, state)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", cityURL(state, "/rigs"), nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Items []rigResponse `json:"items"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Items) != 1 || resp.Items[0].RunningCount != 1 {
+		t.Fatalf("items = %+v, want running session from fallback probes", resp.Items)
+	}
+	if provider.listRunningCalls != 1 {
+		t.Fatalf("ListRunning calls = %d, want one failed snapshot attempt", provider.listRunningCalls)
+	}
+	if counting.isRunningCalls == 0 {
+		t.Fatal("IsRunning calls = 0, want per-agent fallback probes")
+	}
+}
+
 func TestRigGet(t *testing.T) {
 	state := newFakeState(t)
 	h := newTestCityHandler(t, state)
