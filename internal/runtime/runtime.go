@@ -48,15 +48,16 @@ var ErrSessionNotFound = errors.New("session not found")
 // exit 2). Carriers treat this as "fall back to the legacy driving op".
 var ErrExecUnsupported = errors.New("runtime does not implement the exec op")
 
-// ErrRuntimeUnavailable reports that a runtime-liveness query could not observe
-// the underlying runtime at all — the tmux server was unreachable, the process
-// table could not be scanned, etc. It is the runtime-side analog of a partial
-// bead-store read: an observation FAILURE, not the fact "no sessions exist". A
-// destructive reconciler arm (close-as-orphaned, heal-to-asleep, sweep) must
-// treat it as "I could not tell" and defer, exactly as it defers on a partial
-// store read (storeQueryPartial) — never as ground truth that every session is
-// gone. Providers wrap it (with errors.Is-visible provider-specific causes) so
-// callers can dispatch on it with errors.Is.
+// ErrRuntimeUnavailable reports that an operation could not observe or reach
+// the underlying runtime at all — the Kubernetes API or tmux server was
+// unreachable, the process table could not be scanned, etc. It is the
+// runtime-side analog of a partial bead-store read: an operation FAILURE, not
+// the fact "no sessions exist". A destructive reconciler arm
+// (close-as-orphaned, heal-to-asleep, sweep) must treat it as "I could not tell"
+// and defer, exactly as it defers on a partial store read (storeQueryPartial) —
+// never as ground truth that every session is gone. Providers wrap it (with
+// errors.Is-visible provider-specific causes) so callers can dispatch on it
+// with errors.Is.
 //
 // This is distinct from [PartialListError]. ErrRuntimeUnavailable is the
 // single-observation-total-failure signal: zero usable data, used to preserve
@@ -175,22 +176,32 @@ type Provider interface {
 	// Providers that can observe a live session without owning the
 	// delivery channel return [ErrSessionNotFound] so callers do not
 	// mistake a no-op for delivery. Use [TextContent] to wrap a plain
-	// string.
+	// string. A delivery failure whose state cannot be determined may return
+	// [ErrRuntimeUnavailable].
 	Nudge(name string, content []ContentBlock) error
 
 	// SetMeta stores a key-value pair associated with the named session.
-	// Used for drain signaling and config fingerprint storage.
+	// Used for drain signaling and config fingerprint storage. A provider whose
+	// metadata is session-scoped may return [ErrSessionNotFound] when the
+	// session is absent or [ErrRuntimeUnavailable] when the write cannot be
+	// observed.
 	SetMeta(name, key, value string) error
 
 	// GetMeta retrieves a previously stored metadata value.
 	// Returns ("", nil) if the key is not set.
+	// A provider whose metadata is session-scoped may instead return
+	// [ErrSessionNotFound] when the session is absent or
+	// [ErrRuntimeUnavailable] when the read cannot be observed.
 	GetMeta(name, key string) (string, error)
 
 	// RemoveMeta removes a metadata key from the named session.
+	// Session-scoped providers use the same typed errors as SetMeta.
 	RemoveMeta(name, key string) error
 
 	// Peek captures the last N lines of output from the named session.
 	// If lines <= 0, captures all available scrollback.
+	// Providers may return [ErrSessionNotFound] when the session is absent or
+	// [ErrRuntimeUnavailable] when capture cannot be observed.
 	Peek(name string, lines int) (string, error)
 
 	// ListRunning returns the names of all running sessions whose names
@@ -216,7 +227,9 @@ type Provider interface {
 	// sends raw key events without appending Enter. Used for dialog
 	// dismissal and other non-text input.
 	// Best-effort: returns nil if the session doesn't exist or the
-	// provider doesn't support interactive input.
+	// provider doesn't support interactive input. Providers that can
+	// distinguish absence from failed delivery may return
+	// [ErrSessionNotFound] or [ErrRuntimeUnavailable], respectively.
 	SendKeys(name string, keys ...string) error
 
 	// RunLive re-applies session_live commands to a running session.

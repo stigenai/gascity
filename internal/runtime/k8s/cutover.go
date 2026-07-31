@@ -29,8 +29,14 @@ func NewSeamBacked() (runtime.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	return newSeamBacked(raw), nil
+}
+
+// newSeamBacked composes the production provider while keeping construction
+// injectable for contract tests.
+func newSeamBacked(raw *Provider) runtime.Provider {
 	rt, tp := raw.Seams()
-	return &seamBackedProvider{Provider: runtime.NewProviderFromSeams(rt, tp), raw: raw}, nil
+	return &seamBackedProvider{Provider: runtime.NewProviderFromSeams(rt, tp), raw: raw}
 }
 
 // SleepCapability passes through to the underlying provider (non-seam).
@@ -42,4 +48,32 @@ func (s *seamBackedProvider) SleepCapability(name string) runtime.SessionSleepCa
 // (respawn-pane via execInPod; B2, RelaunchProvider).
 func (s *seamBackedProvider) Relaunch(ctx context.Context, name string, cfg runtime.Config) error {
 	return s.raw.Relaunch(ctx, name, cfg)
+}
+
+// The generic seam adapter preserves legacy best-effort behavior when
+// attachment lookup fails. Kubernetes can distinguish an absent pod from an
+// unavailable API, so route these session-scoped reads and writes through the
+// raw provider to preserve its typed errors.
+func (s *seamBackedProvider) Nudge(name string, content []runtime.ContentBlock) error {
+	return s.raw.Nudge(name, content)
+}
+
+func (s *seamBackedProvider) SendKeys(name string, keys ...string) error {
+	return s.raw.SendKeys(name, keys...)
+}
+
+func (s *seamBackedProvider) SetMeta(name, key, value string) error {
+	return s.raw.SetMeta(name, key, value)
+}
+
+func (s *seamBackedProvider) GetMeta(name, key string) (string, error) {
+	return s.raw.GetMeta(name, key)
+}
+
+func (s *seamBackedProvider) RemoveMeta(name, key string) error {
+	return s.raw.RemoveMeta(name, key)
+}
+
+func (s *seamBackedProvider) Peek(name string, lines int) (string, error) {
+	return s.raw.Peek(name, lines)
 }
