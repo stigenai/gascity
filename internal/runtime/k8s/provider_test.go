@@ -530,6 +530,44 @@ func TestMetaOps(t *testing.T) {
 	}
 }
 
+func TestGetMetaFallsBackToInheritedGlobalEnvironment(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+	addRunningPod(fake, "gc-test-agent", "gc-test-agent")
+
+	sessionCmd := []string{"tmux", "show-environment", "-t", "main", "GC_SESSION_ID"}
+	globalCmd := []string{"tmux", "show-environment", "-g", "GC_SESSION_ID"}
+	fake.setExecResult("gc-test-agent", sessionCmd, "", errors.New("unknown variable: GC_SESSION_ID"))
+	fake.setExecResult("gc-test-agent", globalCmd, "GC_SESSION_ID=st-123\n", nil)
+
+	got, err := p.GetMeta("gc-test-agent", "GC_SESSION_ID")
+	if err != nil {
+		t.Fatalf("GetMeta: %v", err)
+	}
+	if got != "st-123" {
+		t.Fatalf("GetMeta = %q, want st-123", got)
+	}
+}
+
+func TestGetMetaInheritedVariableAbsent(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+	addRunningPod(fake, "gc-test-agent", "gc-test-agent")
+
+	sessionCmd := []string{"tmux", "show-environment", "-t", "main", "MISSING"}
+	globalCmd := []string{"tmux", "show-environment", "-g", "MISSING"}
+	fake.setExecResult("gc-test-agent", sessionCmd, "", errors.New("unknown variable: MISSING"))
+	fake.setExecResult("gc-test-agent", globalCmd, "", errors.New("unknown variable: MISSING"))
+
+	got, err := p.GetMeta("gc-test-agent", "MISSING")
+	if err != nil {
+		t.Fatalf("GetMeta: %v", err)
+	}
+	if got != "" {
+		t.Fatalf("GetMeta = %q, want empty", got)
+	}
+}
+
 func TestPeek(t *testing.T) {
 	fake := newFakeK8sOps()
 	p := newProviderWithOps(fake)

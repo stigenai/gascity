@@ -594,7 +594,24 @@ func (p *Provider) GetMeta(name, key string) (string, error) {
 	output, err := p.ops.execInPod(ctx, podName, "agent",
 		[]string{"tmux", "show-environment", "-t", tmuxSession, key}, nil)
 	if err != nil {
-		return "", interactionError("get metadata", name, err)
+		// A new tmux session inherits the pod environment into the server's
+		// global environment, but it does not copy every inherited variable
+		// into the session-specific override table. In that normal case
+		// `show-environment -t` exits non-zero with "unknown variable" even
+		// though the pane and agent process have the value. Fall back only for
+		// that exact absence signal; every real exec/runtime failure remains a
+		// typed interaction error.
+		if !isTmuxUnknownVariable(err, key) {
+			return "", interactionError("get metadata", name, err)
+		}
+		output, err = p.ops.execInPod(ctx, podName, "agent",
+			[]string{"tmux", "show-environment", "-g", key}, nil)
+		if err != nil {
+			if isTmuxUnknownVariable(err, key) {
+				return "", nil
+			}
+			return "", interactionError("get metadata", name, err)
+		}
 	}
 	output = strings.TrimSpace(output)
 	// tmux output: "KEY=VALUE" (set), "-KEY" (unset).
@@ -610,6 +627,13 @@ func (p *Provider) GetMeta(name, key string) (string, error) {
 		name,
 		key,
 	)
+}
+
+func isTmuxUnknownVariable(err error, key string) bool {
+	if err == nil || strings.TrimSpace(key) == "" {
+		return false
+	}
+	return strings.Contains(err.Error(), "unknown variable: "+key)
 }
 
 // RemoveMeta removes a metadata key from the tmux environment.
