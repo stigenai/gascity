@@ -931,11 +931,11 @@ func initBeadsInPod(ctx context.Context, ops k8sOps, podName string, cfg runtime
 			`if [ -f .beads/metadata.json ]; then `+
 			`python3 -c "import json,sys; `+
 			`m=json.load(open('.beads/metadata.json')); `+
-			`p=json.loads(sys.argv[1]); m.update(p); m.pop('project_id', None); `+
+			`p=json.loads(sys.argv[1]); m.update(p); `+
 			`json.dump(m,open('.beads/metadata.json','w'),indent=2)" "$PATCH" 2>/dev/null || `+
 			`printf '%%s' "$PATCH" | python3 -c "import json,sys; `+
 			`m=json.load(open('.beads/metadata.json')); `+
-			`p=json.loads(sys.stdin.read()); m.update(p); m.pop('project_id', None); `+
+			`p=json.loads(sys.stdin.read()); m.update(p); `+
 			`json.dump(m,open('.beads/metadata.json','w'),indent=2)"; `+
 			`else PREFIX=$(echo '%s' | base64 -d) && `+
 			`DOLT_HOST=$(echo '%s' | base64 -d) && `+

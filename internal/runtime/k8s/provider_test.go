@@ -1509,8 +1509,8 @@ func TestInitBeadsInPodUsesProjectedStoreRootAndPrefix(t *testing.T) {
 		if strings.Contains(script, wrongWorkDirB64) {
 			t.Fatalf("repair script used pod workdir instead of projected store root: %s", script)
 		}
-		if !strings.Contains(script, "m.pop('project_id'") {
-			t.Fatalf("repair script did not strip project_id: %s", script)
+		if strings.Contains(script, "m.pop('project_id'") {
+			t.Fatalf("repair script stripped canonical project_id: %s", script)
 		}
 		found = true
 	}
@@ -1635,7 +1635,7 @@ func TestStartUsesPodBeadsRepairScript(t *testing.T) {
 			continue
 		}
 		script := c.cmd[2]
-		if containsStr(script, "bd init --server") && containsStr(script, "m.pop('project_id'") {
+		if containsStr(script, "bd init --server") && containsStr(script, "m.update(p)") {
 			foundRepair = true
 			break
 		}
@@ -1705,12 +1705,10 @@ func TestInitBeadsInPodBdInitSetsBEADSDIR(t *testing.T) {
 	}
 }
 
-// TestInitBeadsInPodStripsProjectIDFromMetadata verifies that the metadata
-// patch removes the controller's project_id so the agent pod's bd does not
-// fail with PROJECT IDENTITY MISMATCH against the in-cluster Dolt server.
-// The staged .beads/metadata.json carries the controller's project_id, which
-// is wrong for the pod and must be dropped so bd rediscovers it.
-func TestInitBeadsInPodStripsProjectIDFromMetadata(t *testing.T) {
+// TestInitBeadsInPodPreservesCanonicalProjectID verifies that endpoint
+// projection does not discard the database identity already validated by the
+// controller. Native store preflight requires this L1 identity in the pod.
+func TestInitBeadsInPodPreservesCanonicalProjectID(t *testing.T) {
 	fake := newFakeK8sOps()
 	cfg := runtime.Config{
 		Env: map[string]string{
@@ -1735,12 +1733,8 @@ func TestInitBeadsInPodStripsProjectIDFromMetadata(t *testing.T) {
 		t.Fatal("no sh -c exec call found")
 	}
 
-	// Both the argv and stdin python3 fallback paths must drop project_id
-	// after merging the patch into the staged metadata.
-	want := "m.pop('project_id', None)"
-	count := strings.Count(script, want)
-	if count < 2 {
-		t.Errorf("expected %q to appear in both python3 patch invocations (>=2 times), got %d\nscript:\n%s", want, count, script)
+	if strings.Contains(script, "m.pop('project_id'") {
+		t.Errorf("metadata patch must preserve canonical project_id:\n%s", script)
 	}
 	if strings.Contains(script, "<<<") {
 		t.Errorf("metadata patch script must be POSIX sh compatible; found bash here-string in:\n%s", script)
