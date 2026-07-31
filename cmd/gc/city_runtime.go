@@ -2203,9 +2203,12 @@ func (cr *CityRuntime) beadReconcileTick(ctx context.Context, result DesiredStat
 		recordPhase(TraceSiteSessionSnapshot, "bead_reconcile.load_session_snapshot", phaseStart, traceSessionSnapshotFields(sessionBeads))
 		result.SessionQueryPartial = result.SessionQueryPartial || sessionQueryPartial
 	}
-	// Emit any due compute usage facts by reusing the open-session snapshot this
-	// tick already loaded, rather than issuing a second redundant store scan.
-	cr.emitDueComputeFacts(ctx, sessionBeads.OpenInfos())
+	// Keep the tick-entry IDs across any mid-tick snapshot reload. The undesired
+	// pool sweep can close a session and then reload the open-only snapshot,
+	// while the main reconciler retains its same-tick closes in the carrier.
+	// The post-reconcile usage lane unions both shapes without scanning closed
+	// history or adding steady-state store reads.
+	usageInfosAtTickStart := sessionBeads.OpenInfos()
 	rigStores := cr.rigBeadStores()
 	assignedWorkBeads := result.AssignedWorkBeads
 	assignedWorkStoreRefs := result.AssignedWorkStoreRefs
@@ -2370,6 +2373,14 @@ func (cr *CityRuntime) beadReconcileTick(ctx context.Context, result DesiredStat
 		"awake_assigned_work_bead_count": len(awakeAssignedWorkBeads),
 	})
 	cr.requestDeferredDrainFollowUpTick()
+	// Account for completed awake intervals from the post-reconcile carrier. The
+	// reconciler folds same-tick terminal transitions, including status=closed,
+	// back onto this snapshot before returning. Reading it here is therefore the
+	// only bounded opportunity to account for a short-lived session that is
+	// closed during this tick: the next store snapshot intentionally excludes
+	// closed history. This reuses the tick's existing snapshot and performs no
+	// additional list.
+	cr.emitDueComputeFactsAfterReconcile(ctx, usageInfosAtTickStart, sessionBeads.OpenInfos())
 	// The RESULTS trace reads the post-tick carrier: the reconciler's
 	// WriteBackReconcileInfos folded its post-tick Info snapshot onto sessionBeads,
 	// so sessionBeads.OpenInfos() now carries the tick's in-memory heals/retires/

@@ -30,12 +30,11 @@ const usageModelSweptAtKey = "usage_model_swept_at"
 
 // isComputeTerminalState reports whether a session state marks the end of an
 // awake interval, at which a compute fact should be emitted. It covers every
-// non-running lifecycle endpoint the controller's open-bead scan can observe:
+// non-running lifecycle endpoint the controller's post-reconcile carrier can observe:
 // idle-sleep (asleep), controller drain (drained), retirement (archived),
-// operator suspend (suspended), and crash-loop quarantine (quarantined). A
-// session closed directly from active without first passing through one of
-// these open states is the known v0 scan limitation (see
-// engdocs/design/usage-facts-v0.md).
+// operator suspend (suspended), and crash-loop quarantine (quarantined). The
+// carrier retains a session closed during the current tick long enough for the
+// usage lane even though the next store snapshot excludes closed history.
 func isComputeTerminalState(state string) bool {
 	switch session.State(strings.TrimSpace(state)) {
 	case session.StateAsleep, session.StateDrained, session.StateArchived,
@@ -166,16 +165,61 @@ func computeFactGetCandidate(info session.Info) bool {
 	return strings.TrimSpace(info.UsageComputeEmittedAt) != start
 }
 
-// emitDueComputeFacts emits a compute Fact for any of the given open sessions whose
-// awake interval has ended (terminal state) and has not yet been recorded. It reuses the
-// reconcile tick's already-loaded Info snapshot for the cheap candidate filter
+// emitDueComputeFactsAfterReconcile accounts terminal rows retained in the
+// post-reconcile carrier and the small delta of tick-entry rows that disappeared
+// because an earlier close path reloaded the open-only snapshot. The latter are
+// fetched by ID and re-checked from fresh metadata by emitDueComputeFactsForIDs;
+// a steady tick with no closes adds no reads.
+func (cr *CityRuntime) emitDueComputeFactsAfterReconcile(ctx context.Context, before, after []session.Info) {
+	ids := make([]string, 0)
+	seen := make(map[string]struct{}, len(after))
+	for _, info := range after {
+		if id := strings.TrimSpace(info.ID); id != "" {
+			seen[id] = struct{}{}
+		}
+		if computeFactGetCandidate(info) {
+			ids = append(ids, info.ID)
+		}
+	}
+	for _, info := range before {
+		id := strings.TrimSpace(info.ID)
+		if id == "" {
+			continue
+		}
+		if _, stillPresent := seen[id]; stillPresent {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	cr.emitDueComputeFactsForIDs(ctx, ids)
+}
+
+// emitDueComputeFacts emits a compute Fact for any of the given session projections
+// whose awake interval has ended (terminal state) and has not yet been recorded. It
+// reuses the reconcile tick's post-reconcile Info carrier for the cheap candidate filter
 // (computeFactGetCandidate), then fetches the raw bead ONLY for the few sessions that
 // pass it: the usage lane genuinely needs the whole bead (ResolveRunID walks the
 // run-chain keys, and slept_at is not projected onto session.Info), so this is the usage
-// lane's OWN edge read rather than a snapshot raw-half read. A steady fleet of parked
+// lane's OWN edge read rather than a snapshot raw-half read. The carrier may include a
+// session closed during this tick; that is intentional because closed history is absent
+// from the next snapshot. A steady fleet of parked
 // sessions whose intervals are already accounted issues zero Gets. Best-effort: it never
 // blocks or fails the reconcile tick.
 func (cr *CityRuntime) emitDueComputeFacts(ctx context.Context, sessions []session.Info) {
+	ids := make([]string, 0)
+	for _, info := range sessions {
+		if computeFactGetCandidate(info) {
+			ids = append(ids, info.ID)
+		}
+	}
+	cr.emitDueComputeFactsForIDs(ctx, ids)
+}
+
+// emitDueComputeFactsForIDs performs the fresh-bead accounting fold for a
+// prefiltered set of session IDs. Callers may include a same-tick disappeared
+// row whose entry projection was active: the fresh terminal-state and interval
+// checks below make that safe while preserving one Get per actual close.
+func (cr *CityRuntime) emitDueComputeFactsForIDs(ctx context.Context, ids []string) {
 	if cr.cs == nil {
 		return
 	}
@@ -227,13 +271,19 @@ func (cr *CityRuntime) emitDueComputeFacts(ctx context.Context, sessions []sessi
 		return sweepFactory
 	}
 	now := time.Now().UTC()
-	for _, info := range sessions {
-		if !computeFactGetCandidate(info) {
+	seenIDs := make(map[string]struct{}, len(ids))
+	for _, rawID := range ids {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
 			continue
 		}
-		b, err := store.Get(info.ID)
+		if _, duplicate := seenIDs[id]; duplicate {
+			continue
+		}
+		seenIDs[id] = struct{}{}
+		b, err := store.Get(id)
 		if err != nil {
-			logf("usage: loading session %s for compute fact failed: %v", info.ID, err)
+			logf("usage: loading session %s for compute fact failed: %v", id, err)
 			continue
 		}
 		// Re-check the terminal state from the FRESH bead: a session that re-awoke in
@@ -244,6 +294,9 @@ func (cr *CityRuntime) emitDueComputeFacts(ctx context.Context, sessions []sessi
 			continue
 		}
 		awakeStart := strings.TrimSpace(b.Metadata["awake_started_at"])
+		if awakeStart == "" || strings.TrimSpace(b.Metadata[usageComputeEmittedAtKey]) == awakeStart {
+			continue
+		}
 		// Model-usage lane FIRST, symmetric to and beside the compute fact: recover the
 		// terminal interval's trailing model-token usage that the prompt-op seam never
 		// recorded (pool-routed, hook-self-driven agents self-drive after the claim

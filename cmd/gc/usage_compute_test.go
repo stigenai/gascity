@@ -50,6 +50,59 @@ func TestComputeFactGetCandidate(t *testing.T) {
 	}
 }
 
+// TestEmitDueComputeFactsAfterReconcileAccountsDisappearedClose pins the
+// pool-sweep shape that originally lost all accounting: the session is active
+// in the tick-entry snapshot, closes before the main reconciler, and therefore
+// disappears from the reloaded open-only snapshot. The bounded before/after
+// delta must still fetch that one terminal bead and account its interval.
+func TestEmitDueComputeFactsAfterReconcileAccountsDisappearedClose(t *testing.T) {
+	store := beads.NewMemStore()
+	start := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano)
+	b, err := store.Create(beads.Bead{
+		Type:   session.BeadType,
+		Status: "open",
+		Title:  "short-lived pool session",
+		Labels: []string{session.LabelSession},
+		Metadata: map[string]string{
+			"state":            "active",
+			"session_name":     "worker-1",
+			"awake_started_at": start,
+			"provider":         "unknown",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := []session.Info{{ID: b.ID, MetadataState: "active", AwakeStartedAt: start}}
+	if err := store.SetMetadata(b.ID, "state", "drained"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(b.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	sink := &captureSink{}
+	cr := &CityRuntime{
+		cs:       &controllerState{cityBeadStore: store, usageSink: sink},
+		cfg:      &config.City{},
+		sp:       runtime.NewFake(),
+		cityName: "demo",
+		stderr:   io.Discard,
+	}
+	cr.emitDueComputeFactsAfterReconcile(context.Background(), before, nil)
+
+	if got := kindCount(sink.facts, usage.KindCompute); got != 1 {
+		t.Fatalf("compute facts = %d, want 1 for a same-tick disappeared close", got)
+	}
+	refreshed, err := store.Get(b.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := refreshed.Metadata[usageComputeEmittedAtKey]; got != start {
+		t.Fatalf("usage_compute_emitted_at = %q, want %q", got, start)
+	}
+}
+
 type captureSink struct{ facts []usage.Fact }
 
 func (c *captureSink) Record(_ context.Context, f usage.Fact) error {

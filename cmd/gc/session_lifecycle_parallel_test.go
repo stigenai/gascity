@@ -4538,6 +4538,9 @@ func TestRecoverRunningPendingCreate_StampsCreationCompleteAtForAlreadyActive(t 
 		t.Fatalf("creation_complete_at = %q, want %q — sweep guard would treat healed bead as stale without this stamp",
 			got.Metadata["creation_complete_at"], clkTime.Format(time.RFC3339))
 	}
+	if got.Metadata["awake_started_at"] == "" {
+		t.Fatal("recovering a live start with no prior epoch must stamp awake_started_at")
+	}
 }
 
 // recoverRunningPendingCreate's buildPreparedStart mints a fresh instance_token
@@ -7372,6 +7375,49 @@ func TestCommitStartResult_TransitionsCreatingToActive(t *testing.T) {
 	}
 	if got.Metadata["opt_permission_mode"] != "plan" {
 		t.Fatalf("opt_permission_mode = %q, want plan", got.Metadata["opt_permission_mode"])
+	}
+}
+
+// A fast activity hook can advance a freshly spawned bead to awake before the
+// async provider start result commits. That ordering must still open the
+// interval; otherwise teardown has no stable epoch for compute/model usage.
+func TestCommitStartResult_AwakeHookRaceStampsMissingAwakeInterval(t *testing.T) {
+	store := beads.NewMemStore()
+	bead, err := store.Create(beads.Bead{
+		Title:  "worker-session",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: map[string]string{
+			"template":     "worker",
+			"session_name": "worker-1",
+			"state":        "awake",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := startResult{
+		prepared: preparedStart{
+			candidate: startCandidate{
+				info: sessiontest.SeedBead(t, bead),
+				tp:   TemplateParams{TemplateName: "worker", InstanceName: "worker-1"},
+			},
+			coreHash: "core-abc",
+		},
+		outcome:  "success",
+		started:  time.Unix(100, 0),
+		finished: time.Unix(101, 0),
+	}
+	commitAt := time.Unix(102, 0).UTC()
+	if !commitStartResult(result, sessionFrontDoor(store), &clock.Fake{Time: commitAt}, events.Discard, 0, ioDiscard{}, ioDiscard{}) {
+		t.Fatal("commitStartResult returned false for successful start")
+	}
+	got, err := store.Get(bead.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Metadata["awake_started_at"] == "" {
+		t.Fatal("awake hook race left awake_started_at empty; interval would be unaccountable")
 	}
 }
 
