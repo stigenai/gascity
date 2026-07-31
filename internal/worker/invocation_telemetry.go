@@ -289,6 +289,10 @@ var invocationUsageSpecs = map[string]invocationUsageSpec{
 		discover: discoverCodexInvocationTranscript,
 		extract:  SessionLogAdapter.CodexTailUsage,
 	},
+	"pi": {
+		discover: discoverInvocationTranscriptViaManager,
+		extract:  SessionLogAdapter.PiTailUsage,
+	},
 }
 
 // invocationUsageFamily resolves a provider string to its registered
@@ -299,8 +303,11 @@ func invocationUsageFamily(provider string) string {
 	if strings.Contains(strings.ToLower(provider), "claude") {
 		return "claude"
 	}
-	if sessionlog.ProviderFamily(provider) == "codex" {
+	switch sessionlog.ProviderFamily(provider) {
+	case "codex":
 		return "codex"
+	case "pi":
+		return "pi"
 	}
 	return ""
 }
