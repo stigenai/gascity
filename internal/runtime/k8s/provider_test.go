@@ -295,6 +295,48 @@ func TestIsRunning(t *testing.T) {
 	}
 }
 
+func TestRunningPodLookupSharesOneNamespaceSnapshotAcrossSessions(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+	p.runningPodCacheTTL = time.Hour
+
+	addRunningPod(fake, "agent-a", "session-a")
+	addRunningPod(fake, "agent-b", "session-b")
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	for _, name := range []string{"session-a", "session-b"} {
+		go func() {
+			<-start
+			_, err := p.findRunningPod(context.Background(), name)
+			results <- err
+		}()
+	}
+	close(start)
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatalf("findRunningPod() error = %v", err)
+		}
+	}
+	if p.IsRunning("missing") {
+		t.Fatal("missing session reported running")
+	}
+
+	var listCalls int
+	for _, call := range fake.calls {
+		if call.method != "listPods" {
+			continue
+		}
+		listCalls++
+		if call.selector != "" {
+			t.Fatalf("listPods selector = %q, want one namespace-wide snapshot", call.selector)
+		}
+	}
+	if listCalls != 1 {
+		t.Fatalf("listPods calls = %d, want 1 shared snapshot", listCalls)
+	}
+}
+
 func TestStop(t *testing.T) {
 	fake := newFakeK8sOps()
 	p := newProviderWithOps(fake)

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -52,6 +53,10 @@ type Provider struct {
 	priorityClassName  string              // GC_K8S_PRIORITY_CLASS_NAME
 	postStartSettle    time.Duration       // settle time before post-start liveness check
 	stderr             io.Writer           // warning output (default os.Stderr)
+	runningPodCacheMu  sync.Mutex
+	runningPodCache    map[string]string
+	runningPodCacheAt  time.Time
+	runningPodCacheTTL time.Duration
 }
 
 type schedulingFields struct {
@@ -128,6 +133,10 @@ func NewProvider() (*Provider, error) {
 		tolerations:        scheduling.tolerations,
 		affinity:           scheduling.affinity,
 		priorityClassName:  scheduling.priorityClassName,
+		// Long enough to cover one bounded concurrent EnrichInfos page and the
+		// session-stream precheck that follows it; short enough that external pod
+		// state changes remain visible on the next controller tick.
+		runningPodCacheTTL: 2 * time.Second,
 	}, nil
 }
 
@@ -734,6 +743,9 @@ func (p *Provider) Exec(ctx context.Context, name string, argv []string) ([]byte
 }
 
 func (p *Provider) findRunningPod(ctx context.Context, name string) (string, error) {
+	if p.runningPodCacheTTL > 0 {
+		return p.findRunningPodFromSnapshot(ctx, name)
+	}
 	label := SanitizeLabel(name)
 	pods, err := p.ops.listPods(ctx, "gc-session="+label, "status.phase=Running")
 	if err != nil {
@@ -743,6 +755,52 @@ func (p *Provider) findRunningPod(ctx context.Context, name string) (string, err
 		return "", fmt.Errorf("no running pod for session %q", name)
 	}
 	return pods[0].Name, nil
+}
+
+// findRunningPodFromSnapshot amortizes live-state reads across a whole
+// reconciliation/dashboard burst. Enriching one session asks for running,
+// attachment, and activity independently, and list pages repeat that for every
+// session. A per-name Kubernetes LIST turns that into enough client-go
+// throttling to delay an SSE response before it has even written headers. One
+// short-lived namespace snapshot preserves current state while reducing the
+// hot path to a single LIST shared by all session names.
+func (p *Provider) findRunningPodFromSnapshot(ctx context.Context, name string) (string, error) {
+	p.runningPodCacheMu.Lock()
+	defer p.runningPodCacheMu.Unlock()
+
+	now := time.Now()
+	if p.runningPodCache == nil || now.Sub(p.runningPodCacheAt) >= p.runningPodCacheTTL {
+		pods, err := p.ops.listPods(ctx, "", "status.phase=Running")
+		if err != nil {
+			return "", err
+		}
+		cache := make(map[string]string, len(pods))
+		for i := range pods {
+			sessionName := strings.TrimSpace(pods[i].Annotations["gc-session-name"])
+			if sessionName == "" {
+				sessionName = strings.TrimSpace(pods[i].Labels["gc-session"])
+			}
+			if sessionName == "" {
+				continue
+			}
+			if _, exists := cache[sessionName]; !exists {
+				cache[sessionName] = pods[i].Name
+			}
+		}
+		p.runningPodCache = cache
+		p.runningPodCacheAt = now
+	}
+
+	podName := p.runningPodCache[name]
+	if podName == "" {
+		// Labels are sanitized for Kubernetes, while annotations preserve the
+		// original runtime name. Legacy pods may have only the label.
+		podName = p.runningPodCache[SanitizeLabel(name)]
+	}
+	if podName == "" {
+		return "", fmt.Errorf("no running pod for session %q", name)
+	}
+	return podName, nil
 }
 
 // findPod finds a pod by session label (any phase).
