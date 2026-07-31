@@ -83,12 +83,32 @@ type sessionResponseHandle interface {
 
 type sessionListRuntimeSnapshot struct {
 	runtime.Provider
-	running map[string]struct{}
+	running      map[string]struct{}
+	runningNames []string
 }
 
 func (p sessionListRuntimeSnapshot) IsRunning(name string) bool {
 	_, ok := p.running[name]
 	return ok
+}
+
+func (p sessionListRuntimeSnapshot) ListRunning(prefix string) ([]string, error) {
+	names := make([]string, 0, len(p.runningNames))
+	for _, name := range p.runningNames {
+		if prefix == "" || strings.HasPrefix(name, prefix) {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
+func (p sessionListRuntimeSnapshot) ProcessAlive(name string, _ []string) bool {
+	return p.IsRunning(name)
+}
+
+func (p sessionListRuntimeSnapshot) ObserveLiveness(name string, _ []string) runtime.Liveness {
+	running := p.IsRunning(name)
+	return runtime.Liveness{Running: running, Alive: running}
 }
 
 // snapshotRuntimeProvider replaces repeated liveness RPCs with one provider
@@ -108,7 +128,11 @@ func snapshotRuntimeProvider(sp runtime.Provider) runtime.Provider {
 	for _, name := range names {
 		running[name] = struct{}{}
 	}
-	return sessionListRuntimeSnapshot{Provider: sp, running: running}
+	return sessionListRuntimeSnapshot{
+		Provider:     sp,
+		running:      running,
+		runningNames: append([]string(nil), names...),
+	}
 }
 
 func sessionListProvider(sp runtime.Provider, sessions []session.Info) runtime.Provider {
