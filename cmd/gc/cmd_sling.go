@@ -439,9 +439,12 @@ func cmdSlingWithJSON(args []string, isFormula, doNudge, force bool, title strin
 		return 1
 	}
 
-	sp, err := newSessionProvider()
-	if err != nil {
-		return fail("session_provider_failed", fmt.Sprintf("gc sling: %v", err))
+	var sp runtime.Provider
+	if doNudge {
+		sp, err = newSessionProvider()
+		if err != nil {
+			return fail("session_provider_failed", fmt.Sprintf("gc sling: %v", err))
+		}
 	}
 
 	storeDir, store, errCode, errMsg := openSlingStore(cfg, cityPath, beadOrFormula, sourceBead, a)
