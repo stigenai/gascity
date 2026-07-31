@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -888,6 +889,45 @@ func initCityInPod(ctx context.Context, ops k8sOps, podName, ctrlCity string) er
 		[]string{"gc", "--city", "/workspace", "import", "install"}, nil)
 	if err != nil {
 		return fmt.Errorf("installing locked city imports: %w", err)
+	}
+	return projectCityIdentityInPod(ctx, ops, podName, ctrlCity)
+}
+
+// projectCityIdentityInPod restores the controller-validated database identity
+// after gc init materializes the isolated city. Authored city staging excludes
+// .beads by design, so without this narrow projection the generated
+// /workspace/.beads/metadata.json has no project_id and native-store preflight
+// falls back even though the controller already established canonical L1
+// identity. Endpoint and credential fields remain pod-local.
+func projectCityIdentityInPod(ctx context.Context, ops k8sOps, podName, ctrlCity string) error {
+	raw, err := os.ReadFile(filepath.Join(ctrlCity, ".beads", "metadata.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading canonical city metadata: %w", err)
+	}
+	var metadata struct {
+		ProjectID string `json:"project_id"`
+	}
+	if err := json.Unmarshal(raw, &metadata); err != nil {
+		return fmt.Errorf("parsing canonical city metadata: %w", err)
+	}
+	projectID := strings.TrimSpace(metadata.ProjectID)
+	if projectID == "" {
+		return nil
+	}
+	projectIDB64 := base64.StdEncoding.EncodeToString([]byte(projectID))
+	script := fmt.Sprintf(
+		`PROJECT_ID=$(echo '%s' | base64 -d) && `+
+			`python3 -c "import json,sys; p=sys.argv[1]; `+
+			`m=json.load(open(p)); m['project_id']=sys.argv[2]; `+
+			`json.dump(m,open(p,'w'),indent=2)" `+
+			`/workspace/.beads/metadata.json "$PROJECT_ID"`,
+		projectIDB64,
+	)
+	if _, err := ops.execInPod(ctx, podName, "agent", []string{"sh", "-c", script}, nil); err != nil {
+		return fmt.Errorf("projecting canonical city identity: %w", err)
 	}
 	return nil
 }

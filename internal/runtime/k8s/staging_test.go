@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"os"
@@ -634,6 +635,36 @@ func TestInitCityInPodExcludesMutableRuntimeState(t *testing.T) {
 	}
 }
 
+func TestInitCityInPodProjectsCanonicalCityProjectID(t *testing.T) {
+	city := t.TempDir()
+	writeTarTestFile(t, city, "city.toml", "[workspace]\nprovider = \"pi\"\n")
+	writeTarTestFile(t, city, ".beads/metadata.json", `{"project_id":"city-project-123","dolt_server_host":"controller-only"}`)
+
+	ops := newCapturingStageOps()
+	if err := initCityInPod(context.Background(), ops, "pod", city); err != nil {
+		t.Fatalf("initCityInPod: %v", err)
+	}
+
+	projectIDB64 := base64.StdEncoding.EncodeToString([]byte("city-project-123"))
+	identityIndex, importIndex := -1, -1
+	for index, command := range ops.commands {
+		joined := strings.Join(command, " ")
+		if strings.Contains(joined, projectIDB64) &&
+			strings.Contains(joined, "/workspace/.beads/metadata.json") {
+			identityIndex = index
+		}
+		if strings.Contains(joined, "gc --city /workspace import install") {
+			importIndex = index
+		}
+	}
+	if identityIndex < 0 {
+		t.Fatal("canonical city project_id was not projected after gc init")
+	}
+	if importIndex < 0 || identityIndex <= importIndex {
+		t.Fatalf("city identity projection index = %d, want after import install index %d", identityIndex, importIndex)
+	}
+}
+
 func TestStreamArchiveToPodReturnsProducerError(t *testing.T) {
 	want := errors.New("archive read failed")
 	ops := newCapturingStageOps()
@@ -661,6 +692,7 @@ func TestStreamArchiveToPodReturnsProducerError(t *testing.T) {
 type capturingStageOps struct {
 	files               map[string]string
 	archiveDestinations []string
+	commands            [][]string
 	sawPipeReader       bool
 }
 
@@ -693,6 +725,7 @@ func (o *capturingStageOps) listPods(context.Context, string, string) ([]corev1.
 }
 
 func (o *capturingStageOps) execInPod(_ context.Context, _, _ string, cmd []string, stdin io.Reader) (string, error) {
+	o.commands = append(o.commands, append([]string(nil), cmd...))
 	if len(cmd) == 5 && cmd[0] == "tar" && cmd[1] == "xf" && cmd[2] == "-" && cmd[3] == "-C" && stdin != nil {
 		_, o.sawPipeReader = stdin.(*io.PipeReader)
 		o.archiveDestinations = append(o.archiveDestinations, cmd[4])
