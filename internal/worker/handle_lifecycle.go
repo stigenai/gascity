@@ -492,13 +492,11 @@ func (h *SessionHandle) providerLabel() string {
 }
 
 func (h *SessionHandle) historyProvider(info sessionpkg.Info) string {
+	fallback := h.session.Provider
 	if h.session.Profile != "" {
-		return string(h.session.Profile)
+		fallback = string(h.session.Profile)
 	}
-	if strings.TrimSpace(info.Provider) != "" {
-		return info.Provider
-	}
-	return h.session.Provider
+	return sessionpkg.ProviderFamilyFromInfo(info, fallback)
 }
 
 func (h *SessionHandle) runtimeHints() runtime.Config {
