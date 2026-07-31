@@ -2101,10 +2101,15 @@ func commitStartResultTraced(
 		ClearPendingCreateClaim: shouldRollbackPendingCreateInfo(info),
 		// A confirmed transition out of a dormant/creating state opens a new
 		// awake interval — stamp a fresh compute-usage epoch for it.
-		StartsAwakeInterval: confirmPendingStart(info.MetadataState),
-		Now:                 clk.Now(),
-		PrimedAt:            primedAt,
-		PromptHash:          promptHash,
+		// A hook can report activity and move a freshly-spawned session to
+		// active/awake before this async start result commits. In that race the
+		// state alone no longer identifies a new interval, but an absent epoch
+		// does: stamp it exactly once so teardown can account the run.
+		StartsAwakeInterval: confirmPendingStart(info.MetadataState) ||
+			strings.TrimSpace(info.AwakeStartedAt) == "",
+		Now:        clk.Now(),
+		PrimedAt:   primedAt,
+		PromptHash: promptHash,
 	})
 	storedMCPSnapshot, err := sessionpkg.EncodeMCPServersSnapshot(result.prepared.cfg.MCPServers)
 	if err != nil {
@@ -2361,10 +2366,11 @@ func recoverRunningPendingCreate(
 		// Recovering an already-awake runtime must not reset the in-flight
 		// awake interval, so key the fresh epoch on a genuine dormant/creating
 		// start only — not the StateAwake re-confirmation above.
-		StartsAwakeInterval: confirmPendingStart(info.MetadataState),
-		Now:                 now,
-		PrimedAt:            primedAt,
-		PromptHash:          promptHash,
+		StartsAwakeInterval: confirmPendingStart(info.MetadataState) ||
+			strings.TrimSpace(info.AwakeStartedAt) == "",
+		Now:        now,
+		PrimedAt:   primedAt,
+		PromptHash: promptHash,
 	})
 	if err := sessionFrontDoor(store).ApplyPatch(info.ID, metadata); err != nil {
 		if trace != nil {

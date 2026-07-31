@@ -200,23 +200,25 @@ yet settled.
   yet read `gc.current_run_id`, so cost facts still roll up per-session until a
   reader that consumes the recorded value lands (tracked as follow-up ga-2m8abf;
   see open question 1).
-- **Compute facts emit from a reconcile scan, not a transactional outbox.** The
-  reconcile tick scans the open session-bead snapshot it already loaded, emits a
-  fact for any bead in a terminal state lacking its
+- **Compute facts emit from the reconcile carrier, not a transactional outbox.**
+  After reconciliation, the tick examines terminal rows retained in its loaded
+  session carrier plus the bounded ID delta for rows closed by an earlier pool
+  sweep. It emits a fact for any completed interval lacking its
   `usage_compute_emitted_at:<epoch>` marker, then writes the marker. This is
   at-least-once: a crash between the durable sink append and the marker write
   re-emits next tick, and `IdempotencyKey` collapses the duplicate at read time
-  (fix double-count, not under-count). The scan only sees the open set, so a
-  session closed directly from active without first reaching an open terminal
-  state (asleep/drained/archived/suspended/quarantined) is a known under-count.
-  The single-key marker sidesteps open question 3 (`beads.Tx` validation across
-  store impls).
+  (fix double-count, not under-count). The post-reconcile placement is
+  load-bearing: closed history is intentionally absent from the next tick's
+  open-only snapshot. The single-key marker sidesteps open question 3
+  (`beads.Tx` validation across store impls).
 - **The awake epoch is `awake_started_at` at nanosecond precision**, stamped
   fresh on every confirmed start/wake — both create-time `ConfirmStartedPatch`
   and the controller's `CommitStartedPatch` wake path — rather than a separate
-  UUID. Refreshing it on every interval is what lets later intervals on a reused
-  session bill; nanosecond precision keeps two intervals that begin within the
-  same wall-clock second distinct.
+  UUID. If an activity hook advances a new runtime to active/awake before the
+  async start commit, the missing epoch itself identifies the new interval and
+  is stamped by that commit. Refreshing it on every interval is what lets later
+  intervals on a reused session bill; nanosecond precision keeps two intervals
+  that begin within the same wall-clock second distinct.
 - **Model facts emit from the transcript-tail watcher, as proposed.** The single
   per-invocation tail extraction that drives the `gc.agent.*` token instruments
   (`recordInvocationTelemetry`) also builds one model `usage.Fact` per pending
