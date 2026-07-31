@@ -466,8 +466,13 @@ func cmdSessionNew(args []string, alias, title, titleHint string, noAttach, json
 		if err := session.EnsureSessionNameAvailableWithConfig(sessStore, cfg, explicitName, ""); err != nil {
 			return err
 		}
+		startCtx, cancelStart := context.WithTimeout(
+			context.Background(),
+			cfg.Session.StartupTimeoutDuration(),
+		)
+		defer cancelStart()
 		var createErr error
-		info, createErr = handle.Create(context.Background(), worker.CreateModeStarted)
+		info, createErr = handle.Create(startCtx, worker.CreateModeStarted)
 		return createErr
 	})
 	if err != nil {

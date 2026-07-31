@@ -75,6 +75,17 @@ func (p *routedRejectingSessionProvider) SupportsTransport(string) bool {
 
 func (p *routedRejectingSessionProvider) RouteACP(string) {}
 
+type startupDeadlineProvider struct {
+	*runtime.Fake
+	deadline    time.Time
+	hasDeadline bool
+}
+
+func (p *startupDeadlineProvider) Start(ctx context.Context, _ string, _ runtime.Config) error {
+	p.deadline, p.hasDeadline = ctx.Deadline()
+	return errors.New("stop after startup deadline capture")
+}
+
 func TestFormatDuration(t *testing.T) {
 	tests := []struct {
 		d    time.Duration
@@ -2461,6 +2472,47 @@ func TestCmdSessionNew_AllowsReservedNamedAliasWithoutController(t *testing.T) {
 	}
 	if got := b.Metadata["session_name"]; got == "" {
 		t.Fatal("session_name should be populated on fallback create")
+	}
+}
+
+func TestCmdSessionNewDirectStartUsesConfiguredStartupDeadline(t *testing.T) {
+	t.Setenv("GC_BEADS", "file")
+	t.Setenv("GC_SESSION", "fake")
+
+	cityDir := t.TempDir()
+	t.Setenv("GC_CITY", cityDir)
+	writeNamedSessionCityTOML(t, cityDir)
+	if err := os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte(`[workspace]
+
+[session]
+startup_timeout = "2m"
+
+[beads]
+provider = "file"
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(city.toml): %v", err)
+	}
+
+	provider := &startupDeadlineProvider{Fake: runtime.NewFake()}
+	oldBuild := buildSessionProviderByName
+	buildSessionProviderByName = func(*config.City, string, config.SessionConfig, string, string) (runtime.Provider, error) {
+		return provider, nil
+	}
+	t.Cleanup(func() { buildSessionProviderByName = oldBuild })
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdSessionNew([]string{"mayor"}, "mayor", "", "", true, false, 0, &stdout, &stderr); code == 0 {
+		t.Fatal("cmdSessionNew(direct) = 0, want injected start failure")
+	}
+	if !provider.hasDeadline {
+		t.Fatal("provider Start context has no deadline")
+	}
+	remaining := time.Until(provider.deadline)
+	if remaining < 90*time.Second || remaining > 2*time.Minute {
+		t.Fatalf("provider Start deadline remaining = %v, want configured 2m budget", remaining)
+	}
+	if !strings.Contains(stderr.String(), "stop after startup deadline capture") {
+		t.Fatalf("stderr = %q, want injected start failure", stderr.String())
 	}
 }
 
