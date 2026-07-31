@@ -42,6 +42,7 @@ type countingIsRunningProvider struct {
 	getMetaCalls         int
 	getLastActivityCalls int
 	isAttachedCalls      int
+	processAliveCalls    int
 	peekCalls            int
 }
 
@@ -68,6 +69,11 @@ func (p *countingIsRunningProvider) GetLastActivity(name string) (time.Time, err
 func (p *countingIsRunningProvider) IsAttached(name string) bool {
 	p.isAttachedCalls++
 	return p.Provider.IsAttached(name)
+}
+
+func (p *countingIsRunningProvider) ProcessAlive(name string, processNames []string) bool {
+	p.processAliveCalls++
+	return p.Provider.ProcessAlive(name, processNames)
 }
 
 func (p *countingIsRunningProvider) Peek(name string, lines int) (string, error) {

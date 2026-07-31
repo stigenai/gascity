@@ -46,13 +46,13 @@ func TestRigList(t *testing.T) {
 func TestRigListUsesOneRuntimeSnapshot(t *testing.T) {
 	state := newFakeState(t)
 	state.cfg.Agents = []config.Agent{
-		{Name: "worker", Dir: "myrig", MaxActiveSessions: intPtr(1)},
-		{Name: "coder", Dir: "myrig", MaxActiveSessions: intPtr(1)},
+		{Name: "worker", Dir: "myrig", MaxActiveSessions: intPtr(-1), ProcessNames: []string{"agent-cli"}},
+		{Name: "coder", Dir: "myrig", MaxActiveSessions: intPtr(1), ProcessNames: []string{"agent-cli"}},
 	}
-	if err := state.sp.Start(context.Background(), "myrig--worker", runtime.Config{}); err != nil {
+	if err := state.sp.Start(context.Background(), "myrig--worker-1", runtime.Config{ProcessNames: []string{"agent-cli"}}); err != nil {
 		t.Fatalf("start worker: %v", err)
 	}
-	if err := state.sp.Start(context.Background(), "myrig--coder", runtime.Config{}); err != nil {
+	if err := state.sp.Start(context.Background(), "myrig--coder", runtime.Config{ProcessNames: []string{"agent-cli"}}); err != nil {
 		t.Fatalf("start coder: %v", err)
 	}
 	provider := &countingIsRunningProvider{Provider: state.sp}
@@ -79,6 +79,18 @@ func TestRigListUsesOneRuntimeSnapshot(t *testing.T) {
 	}
 	if provider.isRunningCalls != 0 {
 		t.Fatalf("IsRunning calls = %d, want zero per-agent probes", provider.isRunningCalls)
+	}
+	if provider.processAliveCalls != 0 {
+		t.Fatalf("ProcessAlive calls = %d, want zero per-agent probes", provider.processAliveCalls)
+	}
+	if provider.getMetaCalls != 2 {
+		t.Fatalf("GetMeta calls = %d, want one suspended-state probe per running agent", provider.getMetaCalls)
+	}
+	if provider.getLastActivityCalls != 2 {
+		t.Fatalf("GetLastActivity calls = %d, want one activity probe per running agent", provider.getLastActivityCalls)
+	}
+	if provider.isAttachedCalls != 0 {
+		t.Fatalf("IsAttached calls = %d, want zero unused rig-list probes", provider.isAttachedCalls)
 	}
 }
 

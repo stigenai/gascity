@@ -17,11 +17,13 @@ import (
 	"github.com/gastownhall/gascity/internal/configedit"
 	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/extmsg"
+	"github.com/gastownhall/gascity/internal/fsys"
 	"github.com/gastownhall/gascity/internal/mail"
 	"github.com/gastownhall/gascity/internal/mail/beadmail"
 	"github.com/gastownhall/gascity/internal/orderdispatch"
 	"github.com/gastownhall/gascity/internal/orders"
 	"github.com/gastownhall/gascity/internal/runtime"
+	"github.com/gastownhall/gascity/internal/suspensionstate"
 	"github.com/gastownhall/gascity/internal/usage"
 	"github.com/gastownhall/gascity/internal/workspacesvc"
 )
@@ -275,6 +277,10 @@ func (f *fakeMutatorState) SuspendRig(name string) error {
 	if !found {
 		return fmt.Errorf("%w: rig %q", configedit.ErrNotFound, name)
 	}
+	suspended := true
+	if err := suspensionstate.SetRigSuspended(fsys.OSFS{}, f.cityPath, name, &suspended); err != nil {
+		return err
+	}
 	tmpl := cfg.Workspace.SessionTemplate
 	for _, a := range cfg.Agents {
 		if a.Dir != name {
@@ -300,6 +306,10 @@ func (f *fakeMutatorState) ResumeRig(name string) error {
 	}
 	if !found {
 		return fmt.Errorf("%w: rig %q", configedit.ErrNotFound, name)
+	}
+	suspended := false
+	if err := suspensionstate.SetRigSuspended(fsys.OSFS{}, f.cityPath, name, &suspended); err != nil {
+		return err
 	}
 	tmpl := cfg.Workspace.SessionTemplate
 	for _, a := range cfg.Agents {
