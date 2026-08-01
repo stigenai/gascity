@@ -27,6 +27,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gastownhall/gascity/internal/runtime"
 )
 
 // client runs `herdr` CLI verbs against a named herdr session and decodes the
@@ -63,9 +65,42 @@ func herdrErrorCode(err error) string {
 	return ""
 }
 
+// runtimeUnavailableError marks failures that prevent Herdr from returning a
+// usable observation. Keep the provider-specific cause in the chain so callers
+// can still inspect typed Herdr errors while destructive controllers can fence
+// on runtime.ErrRuntimeUnavailable.
+func runtimeUnavailableError(operation string, err error) error {
+	if errors.Is(err, runtime.ErrRuntimeUnavailable) {
+		return fmt.Errorf("%s: %w", operation, err)
+	}
+	return fmt.Errorf("%s: %w: %w", operation, runtime.ErrRuntimeUnavailable, err)
+}
+
 type envelope struct {
 	Result json.RawMessage `json:"result"`
 	Error  *herdrError     `json:"error"`
+}
+
+// herdrExitError decodes Herdr's nonzero-exit error contract. Herdr 0.7.5
+// writes a JSON error envelope to stderr and exits 1 for domain failures such
+// as agent_not_found. Only a complete typed error object is accepted here;
+// prose, malformed JSON, result-only envelopes, and missing/null errors remain
+// transport/protocol failures and must fail closed as ErrRuntimeUnavailable.
+func herdrExitError(err error) *herdrError {
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) {
+		return nil
+	}
+	stderr := strings.TrimSpace(string(ee.Stderr))
+	if stderr == "" {
+		return nil
+	}
+	var env envelope
+	if json.Unmarshal([]byte(stderr), &env) != nil || env.Error == nil || len(env.Result) != 0 ||
+		strings.TrimSpace(env.Error.Code) == "" || strings.TrimSpace(env.Error.Message) == "" {
+		return nil
+	}
+	return env.Error
 }
 
 // run executes `herdr --session <session> <args…>` and returns the result
@@ -74,21 +109,28 @@ func (c *client) run(ctx context.Context, args ...string) (json.RawMessage, erro
 	full := append([]string{"--session", c.session}, args...)
 	out, err := exec.CommandContext(ctx, c.bin, full...).Output()
 	if err != nil {
+		if he := herdrExitError(err); he != nil {
+			return nil, fmt.Errorf("herdr %v: %w", args, he)
+		}
 		var ee *exec.ExitError
 		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
-			return nil, fmt.Errorf("herdr %v: %s", args, ee.Stderr)
+			cause := fmt.Errorf("%w: %s", err, strings.TrimSpace(string(ee.Stderr)))
+			return nil, runtimeUnavailableError(fmt.Sprintf("herdr %v", args), cause)
 		}
-		return nil, fmt.Errorf("herdr %v: %w", args, err)
+		return nil, runtimeUnavailableError(fmt.Sprintf("herdr %v", args), err)
 	}
 	if len(strings.TrimSpace(string(out))) == 0 {
 		return nil, nil // success with no payload (e.g. pane send-keys / pane run)
 	}
 	var env envelope
 	if err := json.Unmarshal(out, &env); err != nil {
-		return nil, fmt.Errorf("herdr %v: decode response: %w", args, err)
+		return nil, runtimeUnavailableError(fmt.Sprintf("herdr %v: decode response", args), err)
 	}
 	if env.Error != nil {
 		return nil, fmt.Errorf("herdr %v: %w", args, env.Error)
+	}
+	if len(env.Result) == 0 {
+		return nil, runtimeUnavailableError(fmt.Sprintf("herdr %v: decode response", args), errors.New("missing result or error"))
 	}
 	return env.Result, nil
 }
@@ -135,12 +177,15 @@ func (c *client) startAgentKind(ctx context.Context, name, kind, paneID string, 
 		return agentInfo{}, err
 	}
 	var wrap struct {
-		Agent agentInfo `json:"agent"`
+		Agent *agentInfo `json:"agent"`
 	}
 	if err := json.Unmarshal(res, &wrap); err != nil {
-		return agentInfo{}, fmt.Errorf("herdr agent start: decode: %w", err)
+		return agentInfo{}, runtimeUnavailableError("herdr agent start: decode", err)
 	}
-	return wrap.Agent, nil
+	if wrap.Agent == nil || strings.TrimSpace(wrap.Agent.Name) == "" || strings.TrimSpace(wrap.Agent.PaneID) == "" {
+		return agentInfo{}, runtimeUnavailableError("herdr agent start: decode", errors.New("missing agent name or pane_id"))
+	}
+	return *wrap.Agent, nil
 }
 
 // agentPrompt → `herdr agent prompt <target> <text>` (herdr ≥0.7.5): types
@@ -159,12 +204,20 @@ func (c *client) listAgents(ctx context.Context) ([]agentInfo, error) {
 		return nil, err
 	}
 	var wrap struct {
-		Agents []agentInfo `json:"agents"`
+		Agents *[]agentInfo `json:"agents"`
 	}
 	if err := json.Unmarshal(res, &wrap); err != nil {
-		return nil, fmt.Errorf("herdr agent list: decode: %w", err)
+		return nil, runtimeUnavailableError("herdr agent list: decode", err)
 	}
-	return wrap.Agents, nil
+	if wrap.Agents == nil {
+		return nil, runtimeUnavailableError("herdr agent list: decode", errors.New("missing agents"))
+	}
+	for i, agent := range *wrap.Agents {
+		if strings.TrimSpace(agent.Name) == "" || strings.TrimSpace(agent.PaneID) == "" {
+			return nil, runtimeUnavailableError("herdr agent list: decode", fmt.Errorf("agents[%d]: missing name or pane_id", i))
+		}
+	}
+	return *wrap.Agents, nil
 }
 
 // paneRead → `herdr pane read <paneID> --source <source> [--lines n]`
@@ -193,11 +246,15 @@ func (c *client) runRaw(ctx context.Context, args ...string) (string, error) {
 	full := append([]string{"--session", c.session}, args...)
 	out, err := exec.CommandContext(ctx, c.bin, full...).Output()
 	if err != nil {
+		if he := herdrExitError(err); he != nil {
+			return "", fmt.Errorf("herdr %v: %w", args, he)
+		}
 		var ee *exec.ExitError
 		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
-			return "", fmt.Errorf("herdr %v: %s", args, ee.Stderr)
+			cause := fmt.Errorf("%w: %s", err, strings.TrimSpace(string(ee.Stderr)))
+			return "", runtimeUnavailableError(fmt.Sprintf("herdr %v", args), cause)
 		}
-		return "", fmt.Errorf("herdr %v: %w", args, err)
+		return "", runtimeUnavailableError(fmt.Sprintf("herdr %v", args), err)
 	}
 	trimmed := strings.TrimSpace(string(out))
 	if strings.HasPrefix(trimmed, "{") {
@@ -225,15 +282,48 @@ func (c *client) processInfo(ctx context.Context, paneID string) (shellPID int, 
 		return 0, nil, e
 	}
 	var wrap struct {
-		ProcessInfo struct {
-			ShellPID            int    `json:"shell_pid"`
-			ForegroundProcesses []proc `json:"foreground_processes"`
+		ProcessInfo *struct {
+			ShellPID            *int `json:"shell_pid"`
+			ForegroundProcesses *[]struct {
+				PID  *int     `json:"pid"`
+				Name *string  `json:"name"`
+				Argv []string `json:"argv"`
+				Cwd  string   `json:"cwd"`
+			} `json:"foreground_processes"`
 		} `json:"process_info"`
 	}
 	if err := json.Unmarshal(res, &wrap); err != nil {
-		return 0, nil, fmt.Errorf("herdr pane process-info: decode: %w", err)
+		return 0, nil, runtimeUnavailableError("herdr pane process-info: decode", err)
 	}
-	return wrap.ProcessInfo.ShellPID, wrap.ProcessInfo.ForegroundProcesses, nil
+	if wrap.ProcessInfo == nil {
+		return 0, nil, runtimeUnavailableError("herdr pane process-info: decode", errors.New("missing process_info"))
+	}
+	if wrap.ProcessInfo.ShellPID == nil {
+		return 0, nil, runtimeUnavailableError("herdr pane process-info: decode", errors.New("missing shell_pid"))
+	}
+	if *wrap.ProcessInfo.ShellPID < 0 {
+		return 0, nil, runtimeUnavailableError("herdr pane process-info: decode", errors.New("invalid shell_pid"))
+	}
+	if wrap.ProcessInfo.ForegroundProcesses == nil {
+		return 0, nil, runtimeUnavailableError("herdr pane process-info: decode", errors.New("missing foreground_processes"))
+	}
+	// An explicit empty list is a valid bare/initializing-shell observation.
+	// Missing/null is not: treating malformed process data as an empty list can
+	// classify a live pane as idle and trigger destructive stale-pane cleanup.
+	fg = make([]proc, 0, len(*wrap.ProcessInfo.ForegroundProcesses))
+	for i, raw := range *wrap.ProcessInfo.ForegroundProcesses {
+		if raw.PID == nil || *raw.PID <= 0 {
+			return 0, nil, runtimeUnavailableError("herdr pane process-info: decode", fmt.Errorf("foreground_processes[%d]: missing or invalid pid", i))
+		}
+		if raw.Name == nil || strings.TrimSpace(*raw.Name) == "" {
+			return 0, nil, runtimeUnavailableError("herdr pane process-info: decode", fmt.Errorf("foreground_processes[%d]: missing name", i))
+		}
+		fg = append(fg, proc{PID: *raw.PID, Name: *raw.Name, Argv: raw.Argv, Cwd: raw.Cwd})
+	}
+	if *wrap.ProcessInfo.ShellPID == 0 && len(fg) != 0 {
+		return 0, nil, runtimeUnavailableError("herdr pane process-info: decode", errors.New("shell_pid is zero with non-empty foreground_processes"))
+	}
+	return *wrap.ProcessInfo.ShellPID, fg, nil
 }
 
 // sendKeys → `herdr pane send-keys <paneID> <key…>` (raw keys, e.g. ctrl+c, enter).
@@ -262,7 +352,7 @@ func (c *client) deliverNudge(ctx context.Context, paneID, text string) error {
 	if err == nil {
 		return nil
 	}
-	if !strings.Contains(err.Error(), "not_found") && !strings.Contains(err.Error(), "not found") {
+	if herdrErrorCode(err) != "agent_not_found" {
 		return err
 	}
 	// No registered agent on this pane: paste, settle, submit.
@@ -289,18 +379,21 @@ func (c *client) closePane(ctx context.Context, paneID string) error {
 func (c *client) getAgent(ctx context.Context, name string) (agentInfo, bool, error) {
 	res, err := c.run(ctx, "agent", "get", name)
 	if err != nil {
-		if strings.Contains(err.Error(), "not_found") || strings.Contains(err.Error(), "not found") {
+		if herdrErrorCode(err) == "agent_not_found" {
 			return agentInfo{}, false, nil
 		}
-		return agentInfo{}, false, err
+		return agentInfo{}, false, runtimeUnavailableError("herdr agent get", err)
 	}
 	var wrap struct {
-		Agent agentInfo `json:"agent"`
+		Agent *agentInfo `json:"agent"`
 	}
 	if err := json.Unmarshal(res, &wrap); err != nil {
-		return agentInfo{}, false, fmt.Errorf("herdr agent get: decode: %w", err)
+		return agentInfo{}, false, runtimeUnavailableError("herdr agent get: decode", err)
 	}
-	return wrap.Agent, true, nil
+	if wrap.Agent == nil || strings.TrimSpace(wrap.Agent.Name) == "" || strings.TrimSpace(wrap.Agent.PaneID) == "" {
+		return agentInfo{}, false, runtimeUnavailableError("herdr agent get: decode", errors.New("missing agent name or pane_id"))
+	}
+	return *wrap.Agent, true, nil
 }
 
 // ── workspace / tab placement ────────────────────────────────────────────────
@@ -312,11 +405,6 @@ func (c *client) getAgent(ctx context.Context, name string) (agentInfo, bool, er
 // agents launch into an existing shell pane, and cwd/env are set here at pane
 // creation (there is no longer a stray pane to close, which is what leaked one
 // shell per wrongful Start in the spawn storm).
-
-type workspaceInfo struct {
-	WorkspaceID string `json:"workspace_id"`
-	Label       string `json:"label"`
-}
 
 type tabInfo struct {
 	TabID string `json:"tab_id"`
@@ -330,13 +418,25 @@ func (c *client) findWorkspace(ctx context.Context, label string) (string, error
 		return "", err
 	}
 	var wrap struct {
-		Workspaces []workspaceInfo `json:"workspaces"`
+		Workspaces *[]struct {
+			WorkspaceID string  `json:"workspace_id"`
+			Label       *string `json:"label"`
+		} `json:"workspaces"`
 	}
 	if err := json.Unmarshal(res, &wrap); err != nil {
-		return "", fmt.Errorf("herdr workspace list: decode: %w", err)
+		return "", runtimeUnavailableError("herdr workspace list: decode", err)
 	}
-	for _, w := range wrap.Workspaces {
-		if w.Label == label {
+	if wrap.Workspaces == nil {
+		return "", runtimeUnavailableError("herdr workspace list: decode", errors.New("missing workspaces"))
+	}
+	for i, w := range *wrap.Workspaces {
+		if strings.TrimSpace(w.WorkspaceID) == "" {
+			return "", runtimeUnavailableError("herdr workspace list: decode", fmt.Errorf("workspaces[%d]: missing workspace_id", i))
+		}
+		if w.Label == nil {
+			return "", runtimeUnavailableError("herdr workspace list: decode", fmt.Errorf("workspaces[%d]: missing label", i))
+		}
+		if *w.Label == label {
 			return w.WorkspaceID, nil
 		}
 	}
@@ -359,18 +459,22 @@ func (c *client) workspaceCreate(ctx context.Context, label, cwd string, env map
 		return "", "", "", err
 	}
 	var wrap struct {
-		Workspace struct {
+		Workspace *struct {
 			WorkspaceID string `json:"workspace_id"`
 		} `json:"workspace"`
-		Tab struct {
+		Tab *struct {
 			TabID string `json:"tab_id"`
 		} `json:"tab"`
-		RootPane struct {
+		RootPane *struct {
 			PaneID string `json:"pane_id"`
 		} `json:"root_pane"`
 	}
 	if err := json.Unmarshal(res, &wrap); err != nil {
-		return "", "", "", fmt.Errorf("herdr workspace create: decode: %w", err)
+		return "", "", "", runtimeUnavailableError("herdr workspace create: decode", err)
+	}
+	if wrap.Workspace == nil || wrap.Tab == nil || wrap.RootPane == nil ||
+		strings.TrimSpace(wrap.Workspace.WorkspaceID) == "" || strings.TrimSpace(wrap.Tab.TabID) == "" || strings.TrimSpace(wrap.RootPane.PaneID) == "" {
+		return "", "", "", runtimeUnavailableError("herdr workspace create: decode", errors.New("missing workspace_id, tab_id, or pane_id"))
 	}
 	return wrap.Workspace.WorkspaceID, wrap.Tab.TabID, wrap.RootPane.PaneID, nil
 }
@@ -382,12 +486,28 @@ func (c *client) listTabs(ctx context.Context, wsID string) ([]tabInfo, error) {
 		return nil, err
 	}
 	var wrap struct {
-		Tabs []tabInfo `json:"tabs"`
+		Tabs *[]struct {
+			TabID string  `json:"tab_id"`
+			Label *string `json:"label"`
+		} `json:"tabs"`
 	}
 	if err := json.Unmarshal(res, &wrap); err != nil {
-		return nil, fmt.Errorf("herdr tab list: decode: %w", err)
+		return nil, runtimeUnavailableError("herdr tab list: decode", err)
 	}
-	return wrap.Tabs, nil
+	if wrap.Tabs == nil {
+		return nil, runtimeUnavailableError("herdr tab list: decode", errors.New("missing tabs"))
+	}
+	tabs := make([]tabInfo, 0, len(*wrap.Tabs))
+	for i, tab := range *wrap.Tabs {
+		if strings.TrimSpace(tab.TabID) == "" {
+			return nil, runtimeUnavailableError("herdr tab list: decode", fmt.Errorf("tabs[%d]: missing tab_id", i))
+		}
+		if tab.Label == nil {
+			return nil, runtimeUnavailableError("herdr tab list: decode", fmt.Errorf("tabs[%d]: missing label", i))
+		}
+		tabs = append(tabs, tabInfo{TabID: tab.TabID, Label: *tab.Label})
+	}
+	return tabs, nil
 }
 
 // tabCreate makes a tab labeled label in wsID whose root shell pane is created
@@ -406,15 +526,18 @@ func (c *client) tabCreate(ctx context.Context, wsID, label, cwd string, env map
 		return "", "", err
 	}
 	var wrap struct {
-		Tab struct {
+		Tab *struct {
 			TabID string `json:"tab_id"`
 		} `json:"tab"`
-		RootPane struct {
+		RootPane *struct {
 			PaneID string `json:"pane_id"`
 		} `json:"root_pane"`
 	}
 	if err := json.Unmarshal(res, &wrap); err != nil {
-		return "", "", fmt.Errorf("herdr tab create: decode: %w", err)
+		return "", "", runtimeUnavailableError("herdr tab create: decode", err)
+	}
+	if wrap.Tab == nil || wrap.RootPane == nil || strings.TrimSpace(wrap.Tab.TabID) == "" || strings.TrimSpace(wrap.RootPane.PaneID) == "" {
+		return "", "", runtimeUnavailableError("herdr tab create: decode", errors.New("missing tab_id or pane_id"))
 	}
 	return wrap.Tab.TabID, wrap.RootPane.PaneID, nil
 }

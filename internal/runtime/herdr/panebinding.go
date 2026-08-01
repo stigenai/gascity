@@ -79,8 +79,9 @@ type paneLookupOps struct {
 	// boundAge reports how long ago the binding was persisted (a very large
 	// value when unknown, so pre-upgrade bindings are still reapable).
 	boundAge func() time.Duration
-	// reapPane closes an exited agent's leftover pane (best-effort).
-	reapPane func(paneID string)
+	// reapPane closes an exited agent's leftover pane. A close failure surfaces
+	// so the binding remains available for a later retry.
+	reapPane func(paneID string) error
 	// probePane inspects the bound pane. A zero probe with nil error means
 	// herdr confirmed the pane gone; a non-nil error means the probe itself
 	// failed (transport), which proves nothing either way.
@@ -127,7 +128,9 @@ func resolveBinding(ops paneLookupOps) (paneID string, running bool, err error) 
 		return pane, true, nil
 	}
 	if ops.boundAge() > bindingLaunchGrace {
-		ops.reapPane(pane)
+		if err := ops.reapPane(pane); err != nil {
+			return "", false, err
+		}
 		ops.clearBinding()
 		return "", false, nil
 	}
@@ -211,10 +214,10 @@ func readMetaFile(path string) (string, error) {
 func (p *Provider) probePane(ctx context.Context, paneID string) (paneProbe, error) {
 	shellPID, fg, err := p.c.processInfo(ctx, paneID)
 	if err != nil {
-		if strings.Contains(err.Error(), "not_found") || strings.Contains(err.Error(), "not found") {
+		if herdrErrorCode(err) == "pane_not_found" {
 			return paneProbe{}, nil
 		}
-		return paneProbe{}, err
+		return paneProbe{}, runtimeUnavailableError("herdr pane probe", err)
 	}
 	return paneProbeFrom(shellPID, fg), nil
 }
@@ -295,8 +298,14 @@ func (p *Provider) lookupOps(ctx context.Context, name string) paneLookupOps {
 			}
 			return time.Since(time.Unix(ts, 0))
 		},
-		probePane:    func(paneID string) (paneProbe, error) { return p.probePane(ctx, paneID) },
-		reapPane:     func(paneID string) { _ = p.c.closePane(ctx, paneID) },
+		probePane: func(paneID string) (paneProbe, error) { return p.probePane(ctx, paneID) },
+		reapPane: func(paneID string) error {
+			err := p.c.closePane(ctx, paneID)
+			if herdrErrorCode(err) == "pane_not_found" {
+				return nil
+			}
+			return err
+		},
 		clearBinding: func() { p.clearPaneBinding(name) },
 	}
 }
