@@ -47,6 +47,70 @@ func (s *asyncCleanupCASStore) CompareAndSetMetadataKey(id, key, expected, value
 	return s.MemStore.CompareAndSetMetadataKey(id, key, expected, value)
 }
 
+func (s *asyncCleanupCASStore) CompareAndSetMetadataKeyContext(ctx context.Context, id, key, expected, value string) (bool, error) {
+	s.mu.Lock()
+	if key == sessionpkg.AsyncStartCleanupObligationMetadataKey && s.failArm && expected != "" && value != "" {
+		err := s.armErr
+		s.mu.Unlock()
+		if err != nil {
+			return false, err
+		}
+		return false, errors.New("injected durable arm failure")
+	}
+	s.mu.Unlock()
+	return s.MemStore.CompareAndSetMetadataKeyContext(ctx, id, key, expected, value)
+}
+
+// synchronousOnlyBlockingCASStore deliberately offers only the legacy,
+// synchronous conditional-writer seam. Its admitted-to-cleanup CAS blocks so
+// shutdown tests prove that a bounded handoff never invokes a writer that can
+// outlive its deadline. The embedded Store interface intentionally hides the
+// MemStore's optional context-aware capability.
+type synchronousOnlyBlockingCASStore struct {
+	beads.Store
+	writer     beads.ConditionalWriter
+	armStarted chan struct{}
+	armRelease chan struct{}
+	armOnce    sync.Once
+	armCalls   atomic.Int32
+}
+
+func newSynchronousOnlyBlockingCASStore(t *testing.T) *synchronousOnlyBlockingCASStore {
+	t.Helper()
+	backing := beads.NewMemStore()
+	writer, ok := beads.ConditionalWriterFor(backing)
+	if !ok {
+		t.Fatal("MemStore conditional writer unavailable")
+	}
+	return &synchronousOnlyBlockingCASStore{
+		Store:      backing,
+		writer:     writer,
+		armStarted: make(chan struct{}),
+		armRelease: make(chan struct{}),
+	}
+}
+
+func (s *synchronousOnlyBlockingCASStore) UpdateIfMatch(id string, revision int64, opts beads.UpdateOpts) error {
+	return s.writer.UpdateIfMatch(id, revision, opts)
+}
+
+func (s *synchronousOnlyBlockingCASStore) CloseIfMatch(id string, revision int64) error {
+	return s.writer.CloseIfMatch(id, revision)
+}
+
+func (s *synchronousOnlyBlockingCASStore) DeleteIfMatch(id string, revision int64) error {
+	return s.writer.DeleteIfMatch(id, revision)
+}
+
+func (s *synchronousOnlyBlockingCASStore) CompareAndSetMetadataKey(id, key, expected, value string) (bool, error) {
+	if key == sessionpkg.AsyncStartCleanupObligationMetadataKey && expected != "" && value != "" {
+		s.armCalls.Add(1)
+		s.armOnce.Do(func() { close(s.armStarted) })
+		<-s.armRelease
+	}
+	return s.writer.CompareAndSetMetadataKey(id, key, expected, value)
+}
+
 type asyncCleanupProbeProvider struct {
 	runtime.Provider
 	token       string
@@ -249,6 +313,9 @@ func TestSweepAsyncStartCleanupObligationsRefusesNameStopWithoutAtomicFence(t *t
 func TestAsyncStartTrackerWaitsForBlockedProviderStopAndMarkerSettlement(t *testing.T) {
 	store := beads.NewMemStore()
 	item, raw := seedAsyncStartCleanupObligation(t, store)
+	if _, armed, err := armAsyncStartCleanupObligation(sessionFrontDoor(store), item.candidate.info.ID, raw); err != nil || !armed {
+		t.Fatalf("pre-shutdown arm = (%t,%v), want true,nil", armed, err)
+	}
 	provider := &asyncCleanupProbeProvider{
 		Provider:    runtime.NewFake(),
 		token:       "tok-worker",
@@ -358,7 +425,7 @@ func TestAsyncStartAdmissionRegistrationLinearizesBeforeShutdownArm(t *testing.T
 	if got := tracker.startJournalSnapshot()[item.candidate.info.ID]; got != raw || got == "" {
 		t.Fatalf("tracked journal = %q, want %q", got, raw)
 	}
-	if failures := armAsyncStartCleanupObligations(store, tracker.startJournalSnapshot(), io.Discard); len(failures) != 0 {
+	if failures := armAsyncStartCleanupObligations(context.Background(), runtime.NewFake(), store, tracker.startJournalSnapshot(), io.Discard); len(failures) != 0 {
 		t.Fatalf("arm failures = %+v", failures)
 	}
 	info, err := sessionFrontDoor(store).Get(item.candidate.info.ID)
@@ -466,6 +533,140 @@ func TestCityRuntimeShutdownBoundsArmFailureAndPreservesUnarmedRuntime(t *testin
 		t.Fatalf("successor adoption sweep = (%d,%d,%v), want (1,0,nil)", resolved, pending, err)
 	}
 	if successor.stopCalls.Load() != 0 || !provider.IsRunning("worker") {
+		t.Fatal("successor treated preserved admitted work as destructive shutdown intent")
+	}
+}
+
+func TestCityRuntimeShutdownDoesNotInvokeBlockingSynchronousJournalWriter(t *testing.T) {
+	store := newSynchronousOnlyBlockingCASStore(t)
+	item, raw := seedAsyncStartCleanupObligation(t, store)
+	provider := runtime.NewFake()
+	if err := provider.Start(context.Background(), "worker", runtime.Config{Command: "agent", Env: map[string]string{"GC_INSTANCE_TOKEN": "tok-worker"}}); err != nil {
+		t.Fatal(err)
+	}
+	recorder := events.NewFake()
+	cr := &CityRuntime{
+		cfg:                 &config.City{Daemon: config.DaemonConfig{ShutdownTimeout: "25ms"}},
+		sp:                  provider,
+		rec:                 recorder,
+		standaloneCityStore: store,
+		logPrefix:           "gc test",
+		stdout:              io.Discard,
+		stderr:              io.Discard,
+	}
+	finish, tracking, err := cr.asyncStarts.startWithCompletionCleanupRegistered(item.candidate.info.ID, func() (string, error) { return raw, nil })
+	if err != nil || !tracking {
+		t.Fatalf("tracker registration = (%t,%v), want true,nil", tracking, err)
+	}
+
+	shutdownDone := make(chan struct{})
+	go func() {
+		cr.shutdown()
+		close(shutdownDone)
+	}()
+	select {
+	case <-shutdownDone:
+	case <-store.armStarted:
+		close(store.armRelease)
+		<-shutdownDone
+		t.Fatal("shutdown invoked the unbounded synchronous admitted-to-cleanup CAS")
+	case <-time.After(250 * time.Millisecond):
+		close(store.armRelease)
+		t.Fatal("shutdown exceeded its bounded journal handoff budget")
+	}
+	if got := store.armCalls.Load(); got != 0 {
+		t.Fatalf("blocking synchronous arm calls = %d, want 0", got)
+	}
+	if !provider.IsRunning("worker") {
+		t.Fatal("runtime was stopped after the bounded writer capability was unavailable")
+	}
+	info, err := sessionFrontDoor(store).Get(item.candidate.info.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obligation, err := decodeAsyncStartCleanupObligation(info.AsyncStartCleanupObligation)
+	if err != nil || obligation.Mode != "admitted" {
+		t.Fatalf("preserved obligation = mode:%q err:%v, want admitted", obligation.Mode, err)
+	}
+	eventsFound, err := recorder.List(events.Filter{Type: events.ShutdownCleanupIncomplete})
+	if err != nil || len(eventsFound) != 1 {
+		t.Fatalf("shutdown_cleanup_incomplete events = %d, err=%v", len(eventsFound), err)
+	}
+	finish(nil, func() bool { return stopAsyncStartAfterShutdown(item, raw, provider, store, io.Discard) })
+	if got := cr.asyncStarts.startJournalSnapshot()[item.candidate.info.ID]; got != raw {
+		t.Fatalf("completion discarded preserved admitted journal = %q, want original", got)
+	}
+}
+
+func TestCityRuntimeShutdownPreservesAdmittedStartWithoutAtomicFencedStop(t *testing.T) {
+	store := beads.NewMemStore()
+	item, raw := seedAsyncStartCleanupObligation(t, store)
+	base := runtime.NewFake()
+	if err := base.Start(context.Background(), "worker", runtime.Config{Command: "agent", Env: map[string]string{"GC_INSTANCE_TOKEN": "tok-worker"}}); err != nil {
+		t.Fatal(err)
+	}
+	provider := &unsafeNameStopProbeProvider{Provider: base}
+	recorder := events.NewFake()
+	var stderr strings.Builder
+	cr := &CityRuntime{
+		cfg:                 &config.City{Daemon: config.DaemonConfig{ShutdownTimeout: "25ms"}},
+		sp:                  provider,
+		rec:                 recorder,
+		standaloneCityStore: store,
+		logPrefix:           "gc test",
+		stdout:              io.Discard,
+		stderr:              &stderr,
+	}
+	finish, tracking, err := cr.asyncStarts.startWithCompletionCleanupRegistered(item.candidate.info.ID, func() (string, error) { return raw, nil })
+	if err != nil || !tracking {
+		t.Fatalf("tracker registration = (%t,%v), want true,nil", tracking, err)
+	}
+
+	cr.shutdown()
+	if got := provider.stopCalls.Load(); got != 0 {
+		t.Fatalf("unsafe name-based Stop calls = %d, want 0", got)
+	}
+	if !base.IsRunning("worker") {
+		t.Fatal("runtime was stopped without an atomic instance-token fence")
+	}
+	info, err := sessionFrontDoor(store).Get(item.candidate.info.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obligation, err := decodeAsyncStartCleanupObligation(info.AsyncStartCleanupObligation)
+	if err != nil || obligation.Mode != "admitted" {
+		t.Fatalf("preserved obligation = mode:%q err:%v, want admitted", obligation.Mode, err)
+	}
+	eventsFound, err := recorder.List(events.Filter{Type: events.ShutdownCleanupIncomplete})
+	if err != nil || len(eventsFound) != 1 {
+		t.Fatalf("shutdown_cleanup_incomplete events = %d, err=%v", len(eventsFound), err)
+	}
+	if !strings.Contains(stderr.String(), runtime.ErrFencedStopUnsupported.Error()) {
+		t.Fatalf("shutdown evidence missing unsupported-fence reason: %q", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "tok-worker") || strings.Contains(string(eventsFound[0].Payload), "tok-worker") {
+		t.Fatal("raw instance token leaked into shutdown evidence")
+	}
+
+	finish(nil, func() bool { return stopAsyncStartAfterShutdown(item, raw, provider, store, io.Discard) })
+	if got := cr.asyncStarts.startJournalSnapshot()[item.candidate.info.ID]; got != raw {
+		t.Fatalf("completion discarded preserved admitted journal = %q, want original", got)
+	}
+	info, err = sessionFrontDoor(store).Get(item.candidate.info.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obligation, err = decodeAsyncStartCleanupObligation(info.AsyncStartCleanupObligation)
+	if err != nil || obligation.Mode != "admitted" {
+		t.Fatalf("post-completion obligation = mode:%q err:%v, want admitted", obligation.Mode, err)
+	}
+
+	successor := &asyncCleanupProbeProvider{Provider: runtime.NewFake(), token: "tok-worker"}
+	resolved, pending, err := sweepAsyncStartCleanupObligations(successor, store, time.Now(), io.Discard)
+	if err != nil || resolved != 1 || pending != 0 {
+		t.Fatalf("successor adoption sweep = (%d,%d,%v), want (1,0,nil)", resolved, pending, err)
+	}
+	if successor.stopCalls.Load() != 0 || !base.IsRunning("worker") {
 		t.Fatal("successor treated preserved admitted work as destructive shutdown intent")
 	}
 }

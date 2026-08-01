@@ -22,7 +22,11 @@ func NewBeadsLibStore(dir, idPrefix string) (*BeadsLibStore, error) {
 		"BEADS_DIR":             beadsDir,
 		"BEADS_DOLT_AUTO_START": "1",
 	})
-	bd := NewBdStoreWithPrefix(dir, runner, idPrefix)
+	bd := NewBdStoreWithPrefix(dir, runner, idPrefix,
+		WithBdStoreContextCommandRunner(ExecContextCommandRunnerWithEnv(map[string]string{
+			"BEADS_DIR":             beadsDir,
+			"BEADS_DOLT_AUTO_START": "1",
+		})))
 	return &BeadsLibStore{BdStore: bd, dir: dir}, nil
 }
 

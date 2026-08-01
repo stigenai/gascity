@@ -368,6 +368,29 @@ type InstanceTokenFencedStopProvider interface {
 	StopIfInstanceToken(name, expectedToken string) error
 }
 
+// InstanceTokenFencedStopResolver is implemented by routing providers whose
+// atomic-stop capability depends on the selected route. A router must return
+// false when route selection or the routed provider's capability is uncertain;
+// callers then preserve the runtime rather than arming destructive cleanup.
+type InstanceTokenFencedStopResolver interface {
+	ResolveInstanceTokenFencedStop(name string) (InstanceTokenFencedStopProvider, bool)
+}
+
+// ResolveInstanceTokenFencedStop returns the atomic token-stop implementation
+// for name. Direct providers resolve by interface assertion; route-aware
+// providers decide against the selected backend. There is no probe-plus-Stop
+// fallback because that would introduce a same-name replacement TOCTOU race.
+func ResolveInstanceTokenFencedStop(provider Provider, name string) (InstanceTokenFencedStopProvider, bool) {
+	if provider == nil {
+		return nil, false
+	}
+	if resolver, ok := provider.(InstanceTokenFencedStopResolver); ok {
+		return resolver.ResolveInstanceTokenFencedStop(name)
+	}
+	fenced, ok := provider.(InstanceTokenFencedStopProvider)
+	return fenced, ok
+}
+
 // ImmediateNudgeProvider is an optional extension for runtimes that can inject
 // input immediately without performing their own wait-idle heuristic first.
 type ImmediateNudgeProvider interface {

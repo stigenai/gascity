@@ -2,12 +2,14 @@ package beads
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -24,9 +26,63 @@ import (
 // doltlite_read_store.go.
 var (
 	_ ConditionalWriter                = (*BdStore)(nil)
+	_ ContextMetadataCASWriter         = (*BdStore)(nil)
 	_ conditionalWritesModeCarrier     = (*BdStore)(nil)
 	_ conditionalWriteCapabilityProber = (*BdStore)(nil)
 )
+
+func lockMutexWithContext(ctx context.Context, mu *sync.Mutex) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if mu.TryLock() {
+		return nil
+	}
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if mu.TryLock() {
+				return nil
+			}
+		}
+	}
+}
+
+// conditionalWritesCapableContext is the deadline-aware capability probe used
+// only by ContextMetadataCASWriter. It shares the ordinary probe's memoized
+// verdict but never waits indefinitely for that memo or memoizes a caller
+// cancellation as a permanent backend incapability.
+func (s *BdStore) conditionalWritesCapableContext(ctx context.Context) (bool, error) {
+	if s.ctxRunner == nil {
+		return false, ErrConditionalWriteUnsupported
+	}
+	if err := lockMutexWithContext(ctx, &s.condWriteMu); err != nil {
+		return false, err
+	}
+	defer s.condWriteMu.Unlock()
+	if s.condWriteLatched {
+		return false, nil
+	}
+	if s.condWriteProbed {
+		return s.condWriteCapable, s.condWriteProbeErr
+	}
+	for _, verb := range conditionalWriteProbeVerbs {
+		out, err := s.ctxRunner(ctx, s.dir, "bd", verb, "--help")
+		if err != nil {
+			return false, err
+		}
+		if !bytes.Contains(out, []byte(conditionalWriteFlag)) {
+			s.condWriteProbed, s.condWriteCapable = true, false
+			return false, nil
+		}
+	}
+	s.condWriteProbed, s.condWriteCapable = true, true
+	return true, nil
+}
 
 // probeConditionalWriteCapability adapts the four-verb probe and the runtime
 // unsupported latch to the seam's capability answer. The reasons demand
@@ -588,4 +644,94 @@ func (s *BdStore) CompareAndSetMetadataKey(id, key, expected, next string) (bool
 			return false, err
 		}
 	}
+}
+
+// CompareAndSetMetadataKeyContext is the caller-deadline-bound metadata CAS.
+// Every bd subprocess is launched by the installed ContextCommandRunner; this
+// method never uses a goroutine timeout around the synchronous runner, so a
+// deadline return cannot leave an unsafe late write running in the background.
+func (s *BdStore) CompareAndSetMetadataKeyContext(ctx context.Context, id, key, expected, next string) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	capable, err := s.conditionalWritesCapableContext(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !capable {
+		return false, ErrConditionalWriteUnsupported
+	}
+	for attempt := 1; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		b, err := s.getMetadataCASBeadContext(ctx, id)
+		if err != nil {
+			return false, err
+		}
+		if b.Metadata[key] != expected {
+			return false, nil
+		}
+		args := append(bdUpdateArgs(id, UpdateOpts{Metadata: map[string]string{key: next}}),
+			conditionalWriteFlag, strconv.FormatInt(b.Revision, 10))
+		err = s.runConditionalWriteContext(ctx, id, b.Revision, args...)
+		switch {
+		case err == nil:
+			return true, nil
+		case IsPreconditionFailed(err):
+			if attempt >= casEmulationMaxAttempts {
+				final, readErr := s.getMetadataCASBeadContext(ctx, id)
+				if readErr == nil && final.Metadata[key] != expected {
+					return false, nil
+				}
+				if readErr != nil {
+					return false, readErr
+				}
+				return false, &CASRetriesExhaustedError{
+					ID: id, Key: key, Attempts: attempt, LastRevision: b.Revision,
+				}
+			}
+			timer := time.NewTimer(conditionalWriteBackoff(attempt))
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return false, ctx.Err()
+			case <-timer.C:
+			}
+		default:
+			return false, err
+		}
+	}
+}
+
+func (s *BdStore) getMetadataCASBeadContext(ctx context.Context, id string) (Bead, error) {
+	out, err := s.ctxRunner(ctx, s.dir, "bd", "show", "--json", id)
+	if err != nil {
+		if isBdNotFound(err) {
+			return Bead{}, fmt.Errorf("getting bead %q: %w", id, ErrNotFound)
+		}
+		return Bead{}, fmt.Errorf("getting bead %q: %w", id, err)
+	}
+	var issues []bdIssue
+	if err := json.Unmarshal(extractJSON(out), &issues); err != nil {
+		return Bead{}, fmt.Errorf("bd show: parsing JSON: %w", err)
+	}
+	if len(issues) == 0 {
+		return Bead{}, fmt.Errorf("getting bead %q: %w", id, ErrNotFound)
+	}
+	return issues[0].toBead(), nil
+}
+
+func (s *BdStore) runConditionalWriteContext(ctx context.Context, id string, expectedRevision int64, args ...string) error {
+	verb := ""
+	if len(args) > 0 {
+		verb = args[0]
+	}
+	out, err := s.ctxRunner(ctx, s.dir, "bd", s.bdTransientWriteArgs(args)...)
+	if err == nil {
+		return nil
+	}
+	return s.finalizeConditionalWrite(id, verb, expectedRevision, classifyConditionalWriteResult(out, err))
 }

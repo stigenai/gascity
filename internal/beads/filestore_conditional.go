@@ -1,6 +1,9 @@
 package beads
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // FileStore embeds *MemStore, which implements ConditionalWriter — but the
 // promoted methods would write straight to the in-memory MemStore, bypassing
@@ -119,4 +122,13 @@ func (fs *FileStore) CompareAndSetMetadataKey(id, key, expected, next string) (b
 		return false, err
 	}
 	return true, nil
+}
+
+// CompareAndSetMetadataKeyContext shadows the context method promoted from the
+// embedded MemStore. FileStore's durable CAS also requires a cross-process file
+// lock plus reload/save operations whose interfaces are not context-aware; using
+// the promoted method would mutate memory without persisting. Fail closed until
+// the complete durable operation can honor a caller deadline.
+func (fs *FileStore) CompareAndSetMetadataKeyContext(context.Context, string, string, string, string) (bool, error) {
+	return false, ErrConditionalWriteUnsupported
 }

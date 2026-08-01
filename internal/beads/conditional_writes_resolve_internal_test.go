@@ -460,6 +460,55 @@ func TestResolveConditionalWriterFollowsDeclaredResolveTarget(t *testing.T) {
 	})
 }
 
+func TestConditionalWriterForFollowsOnlyDeclaredResolveTargets(t *testing.T) {
+	t.Parallel()
+
+	t.Run("policy shaped wrapper through cache reaches backing", func(t *testing.T) {
+		t.Parallel()
+		backing := NewMemStore()
+		cache := NewCachingStoreForTest(backing, nil)
+		wrapper := &resolveTargetWrapper{Store: cache, target: cache}
+
+		writer, ok := ConditionalWriterFor(wrapper)
+		if !ok {
+			t.Fatal("ConditionalWriterFor declared wrapper = unavailable, want cache writer")
+		}
+		if got, ok := writer.(*CachingStore); !ok || got != cache {
+			t.Fatalf("ConditionalWriterFor declared wrapper = %T, want the cache (not its backing)", writer)
+		}
+	})
+
+	t.Run("nested declared wrappers terminate at writer", func(t *testing.T) {
+		t.Parallel()
+		mem := NewMemStore()
+		inner := &resolveTargetWrapper{Store: mem, target: mem}
+		outer := &resolveTargetWrapper{Store: inner, target: inner}
+		writer, ok := ConditionalWriterFor(outer)
+		if !ok || writer != mem {
+			t.Fatalf("ConditionalWriterFor nested wrappers = (%T,%t), want inner MemStore", writer, ok)
+		}
+	})
+
+	t.Run("cycle is bounded and exposes no guessed writer", func(t *testing.T) {
+		t.Parallel()
+		a := &resolveTargetWrapper{Store: NewMemStore()}
+		b := &resolveTargetWrapper{Store: NewMemStore()}
+		a.target = b
+		b.target = a
+		if writer, ok := ConditionalWriterFor(a); ok || writer != nil {
+			t.Fatalf("ConditionalWriterFor cycle = (%T,%t), want unavailable", writer, ok)
+		}
+	})
+
+	t.Run("undeclared wrapper is never guessed through", func(t *testing.T) {
+		t.Parallel()
+		wrapper := struct{ Store }{Store: NewMemStore()}
+		if writer, ok := ConditionalWriterFor(wrapper); ok || writer != nil {
+			t.Fatalf("ConditionalWriterFor undeclared wrapper = (%T,%t), want unavailable", writer, ok)
+		}
+	})
+}
+
 func TestResolveConditionalWriterDegradeEmissionLatchedOnce(t *testing.T) {
 	t.Parallel()
 	var fired []ConditionalWritesDegrade

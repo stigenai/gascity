@@ -28,6 +28,7 @@ var (
 	_ runtime.ServerLifecycleProvider         = (*Provider)(nil)
 	_ runtime.FreshRunningSessionLister       = (*Provider)(nil)
 	_ runtime.InstanceTokenFencedStopProvider = (*Provider)(nil)
+	_ runtime.InstanceTokenFencedStopResolver = (*Provider)(nil)
 )
 
 // New creates a hybrid provider. isRemote returns true for sessions
@@ -74,11 +75,18 @@ func (p *Provider) Stop(name string) error {
 // StopIfInstanceToken preserves the routed backend's atomic identity fence.
 // It never degrades to a separate metadata probe and name-based Stop.
 func (p *Provider) StopIfInstanceToken(name, expectedToken string) error {
-	provider, ok := p.route(name).(runtime.InstanceTokenFencedStopProvider)
+	provider, ok := p.ResolveInstanceTokenFencedStop(name)
 	if !ok {
 		return runtime.ErrFencedStopUnsupported
 	}
 	return provider.StopIfInstanceToken(name, expectedToken)
+}
+
+// ResolveInstanceTokenFencedStop resolves the optional atomic stop against the
+// selected backend. A hybrid must not advertise its remote Kubernetes fence as
+// proof that an unrelated local route is also safe.
+func (p *Provider) ResolveInstanceTokenFencedStop(name string) (runtime.InstanceTokenFencedStopProvider, bool) {
+	return runtime.ResolveInstanceTokenFencedStop(p.route(name), name)
 }
 
 // Interrupt delegates to the routed backend.

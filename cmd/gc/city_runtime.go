@@ -3562,22 +3562,15 @@ func asyncStartTokenFingerprint(token string) string {
 }
 
 func (cr *CityRuntime) armAsyncStartsForShutdown(deadline time.Time) []asyncStartCleanupArmFailure {
-	for {
-		failures := armAsyncStartCleanupObligations(
-			cr.sessionsBeadStore().Store,
-			cr.asyncStarts.startJournalSnapshot(),
-			cr.stderr,
-		)
-		if len(failures) == 0 || !time.Now().Before(deadline) {
-			return failures
-		}
-		remaining := time.Until(deadline)
-		wait := min(asyncStartCleanupRetryInterval, remaining)
-		if wait <= 0 {
-			return failures
-		}
-		time.Sleep(wait)
-	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	return armAsyncStartCleanupObligations(
+		ctx,
+		cr.sp,
+		cr.sessionsBeadStore().Store,
+		cr.asyncStarts.startJournalSnapshot(),
+		cr.stderr,
+	)
 }
 
 func (cr *CityRuntime) recordIncompleteAsyncStartShutdown(failures []asyncStartCleanupArmFailure) (preserveNames, preserveSessionIDs map[string]struct{}) {
@@ -3589,7 +3582,7 @@ func (cr *CityRuntime) recordIncompleteAsyncStartShutdown(failures []asyncStartC
 		safeErr := failure.Err
 		preserveNames[name] = struct{}{}
 		preserveSessionIDs[failure.SessionID] = struct{}{}
-		fmt.Fprintf(cr.stderr, "%s: shutdown_cleanup_incomplete session_id=%s session=%s instance_token_fingerprint=%s error=%v; preserving exact runtime\n", cr.logPrefix, failure.SessionID, name, fingerprint, safeErr) //nolint:errcheck
+		fmt.Fprintf(cr.stderr, "%s: shutdown_cleanup_incomplete session_id=%s session=%s instance_token_fingerprint=%s error=%v; preserving exact runtime and journal\n", cr.logPrefix, failure.SessionID, name, fingerprint, safeErr) //nolint:errcheck
 		telemetry.RecordShutdownCleanupIncomplete(context.Background(), name, fingerprint, safeErr)
 		if cr.rec != nil {
 			cr.rec.Record(events.Event{
@@ -3597,7 +3590,7 @@ func (cr *CityRuntime) recordIncompleteAsyncStartShutdown(failures []asyncStartC
 				Actor:     "gc",
 				Subject:   name,
 				SessionID: failure.SessionID,
-				Message:   "async-start cleanup journal could not be durably armed; runtime preserved",
+				Message:   "async-start cleanup could not be safely armed; runtime and journal preserved",
 				Payload:   events.ShutdownCleanupIncompletePayloadJSON(failure.SessionID, name, fingerprint, safeErr),
 			})
 		}

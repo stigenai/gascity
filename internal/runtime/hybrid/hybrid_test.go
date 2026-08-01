@@ -24,6 +24,25 @@ type freshListProvider struct {
 	freshCalls int
 }
 
+type noFencedStopProvider struct{ runtime.Provider }
+
+func TestProvider_ResolvesFencedStopPerRoute(t *testing.T) {
+	local := noFencedStopProvider{Provider: runtime.NewFake()}
+	remote := runtime.NewFake()
+	h := New(local, remote, isRemote)
+
+	if fenced, ok := runtime.ResolveInstanceTokenFencedStop(h, "local-agent"); ok || fenced != nil {
+		t.Fatalf("local fenced-stop resolution = (%T,%t), want unavailable", fenced, ok)
+	}
+	fenced, ok := runtime.ResolveInstanceTokenFencedStop(h, "remote-agent-1")
+	if !ok || fenced == nil {
+		t.Fatalf("remote fenced-stop resolution = (%T,%t), want routed atomic provider", fenced, ok)
+	}
+	if err := h.StopIfInstanceToken("local-agent", "tok"); !errors.Is(err, runtime.ErrFencedStopUnsupported) {
+		t.Fatalf("local StopIfInstanceToken error = %v, want ErrFencedStopUnsupported", err)
+	}
+}
+
 func (p *freshListProvider) ListRunningFresh(prefix string) ([]string, error) {
 	p.freshCalls++
 	var names []string

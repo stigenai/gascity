@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
@@ -219,6 +220,20 @@ func (s *Store) ReplaceAsyncStartCleanupObligation(id, expected, next string) (b
 		return false, fmt.Errorf("replacing async-start cleanup obligation: conditional writes unavailable")
 	}
 	return writer.CompareAndSetMetadataKey(id, AsyncStartCleanupObligationMetadataKey, expected, next)
+}
+
+// ReplaceAsyncStartCleanupObligationContext is the shutdown-safe form of
+// ReplaceAsyncStartCleanupObligation. It requires a writer that binds the
+// entire CAS to ctx and never falls back to an abandoned synchronous write.
+func (s *Store) ReplaceAsyncStartCleanupObligationContext(ctx context.Context, id, expected, next string) (bool, error) {
+	if expected == "" || next == "" {
+		return false, fmt.Errorf("replacing async-start cleanup obligation: empty value")
+	}
+	writer, ok := beads.ContextMetadataCASWriterFor(s.store.Store)
+	if !ok {
+		return false, fmt.Errorf("replacing async-start cleanup obligation: context-bound writer unavailable: %w", beads.ErrConditionalWriteUnsupported)
+	}
+	return writer.CompareAndSetMetadataKeyContext(ctx, id, AsyncStartCleanupObligationMetadataKey, expected, next)
 }
 
 // RecordCurrentBead stamps the work bead a session is currently processing.

@@ -1,6 +1,7 @@
 package beads_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -113,6 +114,36 @@ func TestFileStoreConditionalWriterConformance(t *testing.T) {
 			},
 		},
 	)
+}
+
+func TestFileStoreContextMetadataCASFailsClosedInsteadOfBypassingPersistence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "beads.json")
+	store, err := beads.OpenFileStore(fsys.OSFS{}, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.Create(beads.Bead{Title: "journal owner", Metadata: map[string]string{"journal": "admitted"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, ok := beads.ContextMetadataCASWriterFor(store)
+	if !ok {
+		t.Fatal("FileStore lost its explicit context-CAS refusal surface")
+	}
+	if swapped, err := writer.CompareAndSetMetadataKeyContext(context.Background(), created.ID, "journal", "admitted", "cleanup"); swapped || !errors.Is(err, beads.ErrConditionalWriteUnsupported) {
+		t.Fatalf("context CAS = (%t,%v), want false/ErrConditionalWriteUnsupported", swapped, err)
+	}
+	reopened, err := beads.OpenFileStore(fsys.OSFS{}, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := reopened.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := persisted.Metadata["journal"]; got != "admitted" {
+		t.Fatalf("persisted journal = %q, want admitted", got)
+	}
 }
 
 // TestFileStoreRevisionSurvivesReopen proves the ConditionalWriter revision

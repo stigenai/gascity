@@ -1,6 +1,7 @@
 package beads
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -31,6 +32,7 @@ import (
 // succeeds, feeds the change notification verbatim and nothing else.
 var (
 	_ ConditionalWriter                = (*CachingStore)(nil)
+	_ ContextMetadataCASWriter         = (*CachingStore)(nil)
 	_ conditionalWritesModeCarrier     = (*CachingStore)(nil)
 	_ conditionalWriteCapabilityProber = (*CachingStore)(nil)
 )
@@ -228,6 +230,28 @@ func (c *CachingStore) CompareAndSetMetadataKey(id, key, expected, next string) 
 		c.notifyChange("bead.updated", fresh)
 	}
 	return true, nil
+}
+
+// CompareAndSetMetadataKeyContext forwards a deadline-bound metadata CAS and
+// evicts the cache entry without a synchronous refresh. The backing writer is
+// the only component allowed to evaluate the fence. Omitting the post-write
+// refresh is intentional: a refresh has no context-aware Store contract and
+// could otherwise outlive the caller's shutdown budget; eviction makes the next
+// ordinary read obtain the authoritative row.
+func (c *CachingStore) CompareAndSetMetadataKeyContext(ctx context.Context, id, key, expected, next string) (bool, error) {
+	writer, ok := ContextMetadataCASWriterFor(c.conditionalBacking())
+	if !ok {
+		return false, ErrConditionalWriteUnsupported
+	}
+	swapped, err := writer.CompareAndSetMetadataKeyContext(ctx, id, key, expected, next)
+	if err != nil {
+		c.applyConditionalWriteFailure(id, err)
+		return swapped, err
+	}
+	// A genuine loss and a successful swap both invalidate the cached value.
+	// The next read must consult the backing; no context-free refresh runs here.
+	c.evictForConditionalWrite(id)
+	return swapped, nil
 }
 
 // applyConditionalWriteFailure maps the backing writer's error class onto the

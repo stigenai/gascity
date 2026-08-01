@@ -1,12 +1,14 @@
 package beads
 
 import (
+	"context"
 	"fmt"
 	"time"
 )
 
 var (
 	_ ConditionalWriter                = (*MemStore)(nil)
+	_ ContextMetadataCASWriter         = (*MemStore)(nil)
 	_ conditionalWritesModeCarrier     = (*MemStore)(nil)
 	_ conditionalWriteCapabilityProber = (*MemStore)(nil)
 
@@ -104,6 +106,39 @@ func (m *MemStore) DeleteIfMatch(id string, expectedRevision int64) error {
 func (m *MemStore) CompareAndSetMetadataKey(id, key, expected, next string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.compareAndSetMetadataKeyLocked(id, key, expected, next)
+}
+
+// CompareAndSetMetadataKeyContext performs the metadata CAS without waiting
+// indefinitely for an in-process writer holding the MemStore mutex. No worker
+// goroutine is spawned, so a deadline return cannot be followed by a late swap.
+func (m *MemStore) CompareAndSetMetadataKeyContext(ctx context.Context, id, key, expected, next string) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !m.mu.TryLock() {
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return false, ctx.Err()
+			case <-ticker.C:
+				if m.mu.TryLock() {
+					goto locked
+				}
+			}
+		}
+	}
+locked:
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return m.compareAndSetMetadataKeyLocked(id, key, expected, next)
+}
+
+func (m *MemStore) compareAndSetMetadataKeyLocked(id, key, expected, next string) (bool, error) {
 	if m.DisableConditionalWrites {
 		return false, ErrConditionalWriteUnsupported
 	}

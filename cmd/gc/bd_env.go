@@ -52,6 +52,58 @@ func bdCommandRunnerForCity(cityPath string) beads.CommandRunner {
 	})
 }
 
+// bdContextCommandRunner builds the fail-safe, caller-deadline-bound runner
+// used only by shutdown journal CAS. It deliberately does not run managed-Dolt
+// recovery or replay a failed write: either could consume the shutdown budget,
+// and an ambiguous write must be preserved for successor reconciliation.
+func bdContextCommandRunner(envFn func(context.Context, string) (map[string]string, error)) beads.ContextCommandRunner {
+	return func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		env, err := envFn(ctx, dir)
+		if err != nil {
+			return nil, err
+		}
+		if env == nil {
+			env = map[string]string{}
+		}
+		ensureProjectedDoltEnvExplicit(env)
+		ensureProjectedPostgresEnvExplicit(env)
+		return beads.ExecCommandRunnerWithEnvContext(ctx, env)(dir, name, args...)
+	}
+}
+
+func bdContextCommandRunnerForCity(cityPath string, controller bool) beads.ContextCommandRunner {
+	return bdContextCommandRunner(func(ctx context.Context, dir string) (map[string]string, error) {
+		env, err := bdRuntimeEnvWithErrorRecoveryContext(ctx, cityPath, false)
+		if env != nil {
+			env["BEADS_DIR"] = filepath.Join(dir, ".beads")
+			if controller {
+				applyControllerBdEnv(env)
+			}
+		}
+		return env, err
+	})
+}
+
+func bdContextCommandRunnerForRig(cityPath string, cfg *config.City, rigDir string, controller bool) beads.ContextCommandRunner {
+	return bdContextCommandRunner(func(ctx context.Context, dir string) (map[string]string, error) {
+		env, err := bdRuntimeEnvForRigWithErrorRecoveryContext(ctx, cityPath, cfg, rigDir, false)
+		if env != nil {
+			env["BEADS_DIR"] = filepath.Join(dir, ".beads")
+			if controller {
+				applyControllerBdEnv(env)
+			}
+		}
+		return env, err
+	})
+}
+
+func withBdStoreContextRunner(opts []beads.BdStoreOption, runner beads.ContextCommandRunner) []beads.BdStoreOption {
+	return append(opts, beads.WithBdStoreContextCommandRunner(runner))
+}
+
 func bdStoreForCity(dir, cityPath string) *beads.BdStore {
 	cfg, err := loadCityConfig(cityPath, io.Discard)
 	if err != nil {
@@ -62,7 +114,7 @@ func bdStoreForCity(dir, cityPath string) *beads.BdStore {
 		dir,
 		bdCommandRunnerForCity(cityPath),
 		issuePrefixForScope(dir, cityPath, cfg),
-		bdStoreOptionsForConfig(cfg)...,
+		withBdStoreContextRunner(bdStoreOptionsForConfig(cfg), bdContextCommandRunnerForCity(cityPath, false))...,
 	)
 }
 
@@ -84,7 +136,7 @@ func bdStoreForRig(rigDir, cityPath string, cfg *config.City, knownPrefix ...str
 		rigDir,
 		bdCommandRunnerForRig(cityPath, cfg, rigDir),
 		prefix,
-		bdStoreOptionsForConfig(cfg)...,
+		withBdStoreContextRunner(bdStoreOptionsForConfig(cfg), bdContextCommandRunnerForRig(cityPath, cfg, rigDir, false))...,
 	)
 }
 
@@ -181,7 +233,7 @@ func controlBdStoreForCity(dir, cityPath string, cfg *config.City) *beads.BdStor
 		dir,
 		controlBdCommandRunnerForCity(cityPath),
 		issuePrefixForScope(dir, cityPath, cfg),
-		bdStoreOptionsForConfig(cfg)...,
+		withBdStoreContextRunner(bdStoreOptionsForConfig(cfg), bdContextCommandRunnerForCity(cityPath, true))...,
 	)
 }
 
@@ -200,7 +252,7 @@ func controlBdStoreForRig(rigDir, cityPath string, cfg *config.City, knownPrefix
 		rigDir,
 		controlBdCommandRunnerForRig(cityPath, cfg, rigDir),
 		prefix,
-		bdStoreOptionsForConfig(cfg)...,
+		withBdStoreContextRunner(bdStoreOptionsForConfig(cfg), bdContextCommandRunnerForRig(cityPath, cfg, rigDir, true))...,
 	)
 }
 

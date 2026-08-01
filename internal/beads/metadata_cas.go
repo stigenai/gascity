@@ -39,6 +39,8 @@
 
 package beads
 
+import "context"
+
 // MetadataCASWriter is the metadata value-CAS half of ConditionalWriter,
 // declared on its own so stores that cannot soundly fence on a revision can
 // still offer a sound single-key compare-and-set.
@@ -59,6 +61,15 @@ package beads
 // property that keeps a narrow store out of ConditionalWriter resolution.
 type MetadataCASWriter interface {
 	CompareAndSetMetadataKey(id, key, expected, next string) (bool, error)
+}
+
+// ContextMetadataCASWriter is the deadline-aware form of MetadataCASWriter.
+// Implementations must bind the complete compare-and-write operation to ctx;
+// returning because ctx expired while an untracked goroutine can still commit
+// later violates this contract. Callers use this narrower optional capability
+// when a late write would be less safe than preserving the current value.
+type ContextMetadataCASWriter interface {
+	CompareAndSetMetadataKeyContext(ctx context.Context, id, key, expected, next string) (bool, error)
 }
 
 // MetadataCASWriterHandleProvider exposes a metadata-CAS handle for stores
@@ -94,4 +105,21 @@ func MetadataCASWriterFor(store Store) (MetadataCASWriter, bool) {
 		return provider.MetadataCASWriterHandle()
 	}
 	return nil, false
+}
+
+// ContextMetadataCASWriterFor returns a caller-deadline-bound metadata CAS
+// capability. It follows only ConditionalWritesResolveTargeter declarations,
+// using the same bounded/cycle-safe walk as the other conditional-write
+// capability lookups; it never guesses through interface-embedding wrappers.
+//
+// There is deliberately no fallback to MetadataCASWriter. Running a synchronous
+// writer in an abandoned goroutine could mutate durable state after the caller
+// has timed out, which is exactly what this capability exists to prevent.
+func ContextMetadataCASWriterFor(store Store) (ContextMetadataCASWriter, bool) {
+	if store == nil {
+		return nil, false
+	}
+	store = followConditionalWritesResolveTarget(store)
+	writer, ok := store.(ContextMetadataCASWriter)
+	return writer, ok
 }

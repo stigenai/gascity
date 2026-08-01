@@ -1874,6 +1874,27 @@ func armAsyncStartCleanupObligation(sessFront *sessionpkg.Store, sessionID, raw 
 	return armedRaw, armed, nil
 }
 
+func armAsyncStartCleanupObligationContext(ctx context.Context, sessFront *sessionpkg.Store, sessionID, raw string) (string, bool, error) {
+	obligation, err := decodeAsyncStartCleanupObligation(raw)
+	if err != nil {
+		return "", false, err
+	}
+	if obligation.Mode == "cleanup" {
+		return raw, true, nil
+	}
+	obligation.Mode = "cleanup"
+	encoded, err := json.Marshal(obligation)
+	if err != nil {
+		return "", false, fmt.Errorf("encoding armed async-start cleanup obligation: %w", err)
+	}
+	armedRaw := string(encoded)
+	armed, err := sessFront.ReplaceAsyncStartCleanupObligationContext(ctx, sessionID, raw, armedRaw)
+	if err != nil {
+		return "", false, redactAsyncStartTokenError(err, obligation.InstanceToken)
+	}
+	return armedRaw, armed, nil
+}
+
 // armAsyncStartCleanupObligations durably converts every admitted async Start
 // into destructive cleanup intent before non-preserve shutdown begins waiting.
 // A completion that wins the CAS race is covered by the subsequent fresh
@@ -1885,7 +1906,10 @@ type asyncStartCleanupArmFailure struct {
 	Err                      error
 }
 
-func armAsyncStartCleanupObligations(store beads.Store, tracked map[string]string, stderr io.Writer) []asyncStartCleanupArmFailure {
+func armAsyncStartCleanupObligations(ctx context.Context, sp runtime.Provider, store beads.Store, tracked map[string]string, stderr io.Writer) []asyncStartCleanupArmFailure {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if store == nil {
 		failures := make([]asyncStartCleanupArmFailure, 0, len(tracked))
 		for id, raw := range tracked {
@@ -1911,34 +1935,23 @@ func armAsyncStartCleanupObligations(store beads.Store, tracked map[string]strin
 			continue
 		}
 		if obligation.Mode == "cleanup" {
+			if _, ok := runtime.ResolveInstanceTokenFencedStop(sp, obligation.SessionName); !ok {
+				failures = append(failures, asyncStartCleanupArmFailure{SessionID: id, SessionName: obligation.SessionName, InstanceTokenFingerprint: asyncStartTokenFingerprint(obligation.InstanceToken), Err: runtime.ErrFencedStopUnsupported})
+			}
 			continue
 		}
-		if _, armed, armErr := armAsyncStartCleanupObligation(sessFront, id, raw); armErr != nil {
+		if _, ok := runtime.ResolveInstanceTokenFencedStop(sp, obligation.SessionName); !ok {
+			failures = append(failures, asyncStartCleanupArmFailure{SessionID: id, SessionName: obligation.SessionName, InstanceTokenFingerprint: asyncStartTokenFingerprint(obligation.InstanceToken), Err: runtime.ErrFencedStopUnsupported})
+			continue
+		}
+		if _, armed, armErr := armAsyncStartCleanupObligationContext(ctx, sessFront, id, raw); armErr != nil {
 			fmt.Fprintf(stderr, "session reconciler: arming async-start cleanup for %s: %v\n", id, armErr) //nolint:errcheck
 			failures = append(failures, asyncStartCleanupArmFailure{SessionID: id, SessionName: obligation.SessionName, InstanceTokenFingerprint: asyncStartTokenFingerprint(obligation.InstanceToken), Err: armErr})
 		} else if !armed {
-			// A normal completion may have cleared the admitted entry between
-			// the tracker snapshot and CAS. That completion linearizes before
-			// shutdown's fresh census and is not an unarmed remainder. Re-read to
-			// distinguish that
-			// case from a transient lost-CAS/store observation.
-			current, getErr := sessFront.Get(id)
-			if getErr != nil {
-				failures = append(failures, asyncStartCleanupArmFailure{SessionID: id, SessionName: obligation.SessionName, InstanceTokenFingerprint: asyncStartTokenFingerprint(obligation.InstanceToken), Err: redactAsyncStartTokenError(getErr, obligation.InstanceToken)})
-				continue
-			}
-			currentRaw := current.AsyncStartCleanupObligation
-			if currentRaw == "" {
-				continue
-			}
-			currentObligation, currentErr := decodeAsyncStartCleanupObligation(currentRaw)
-			if currentErr == nil && currentObligation.Mode == "cleanup" &&
-				currentObligation.SessionName == obligation.SessionName && currentObligation.InstanceToken == obligation.InstanceToken && currentObligation.NotBefore.Equal(obligation.NotBefore) {
-				continue
-			}
-			if currentRaw != raw {
-				continue
-			}
+			// A lost CAS is uncertainty. A synchronous re-read can consume the
+			// remaining shutdown budget, while a timed-out goroutine re-read would
+			// outlive it. Preserve the runtime and let the durable journal's current
+			// owner converge on the next controller instead.
 			failures = append(failures, asyncStartCleanupArmFailure{SessionID: id, SessionName: obligation.SessionName, InstanceTokenFingerprint: asyncStartTokenFingerprint(obligation.InstanceToken), Err: fmt.Errorf("async-start cleanup journal CAS did not apply")})
 		}
 	}
@@ -2045,7 +2058,7 @@ func reconcileAsyncStartCleanupObligation(info sessionpkg.Info, raw string, sp r
 		return false
 	}
 	if obligation.Mode == "cleanup" {
-		fenced, ok := sp.(runtime.InstanceTokenFencedStopProvider)
+		fenced, ok := runtime.ResolveInstanceTokenFencedStop(sp, obligation.SessionName)
 		if !ok {
 			fmt.Fprintf(stderr, "session reconciler: async-start cleanup for %s skipped: %v\n", obligation.SessionName, runtime.ErrFencedStopUnsupported) //nolint:errcheck
 			return false
@@ -2131,34 +2144,12 @@ func stopAsyncStartAfterShutdown(item preparedStart, raw string, sp runtime.Prov
 		return false
 	}
 	if obligation.Mode == "admitted" {
-		armedRaw, armed, armErr := armAsyncStartCleanupObligation(sessFront, info.ID, raw)
-		if armErr != nil {
-			fmt.Fprintf(stderr, "session reconciler: forced-shutdown cleanup for async start %s could not arm: %v\n", item.candidate.name(), armErr) //nolint:errcheck
-			return false
-		}
-		if !armed {
-			current, getErr := sessFront.Get(info.ID)
-			if getErr != nil {
-				return false
-			}
-			currentRaw := current.AsyncStartCleanupObligation
-			if currentRaw == "" {
-				return true
-			}
-			currentObligation, currentErr := decodeAsyncStartCleanupObligation(currentRaw)
-			if currentErr != nil || currentObligation.SessionName != obligation.SessionName || currentObligation.InstanceToken != obligation.InstanceToken || !currentObligation.NotBefore.Equal(obligation.NotBefore) {
-				return true
-			}
-			if currentObligation.Mode != "cleanup" {
-				return false
-			}
-			raw = currentRaw
-			info = current
-			info.AsyncStartCleanupObligation = currentRaw
-			return reconcileAsyncStartCleanupObligation(info, raw, sp, sessFront, time.Now(), true, stderr)
-		}
-		raw = armedRaw
-		info.AsyncStartCleanupObligation = armedRaw
+		// Shutdown's pre-wait arm pass is the sole place admitted intent may
+		// become destructive. Reaching completion with an admitted journal means
+		// that pass was unsupported or uncertain; retain the journal and runtime
+		// for successor adoption/definite-absence settlement.
+		fmt.Fprintf(stderr, "session reconciler: forced-shutdown cleanup for async start %s preserving admitted journal\n", item.candidate.name()) //nolint:errcheck
+		return false
 	}
 	return reconcileAsyncStartCleanupObligation(info, raw, sp, sessFront, time.Now(), true, stderr)
 }
