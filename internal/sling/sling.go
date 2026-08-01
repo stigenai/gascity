@@ -1308,6 +1308,9 @@ func InstantiateSlingFormula(ctx context.Context, formulaName string, searchPath
 // source→root acquisition order (I5); the keys never collide, so nesting is
 // deadlock-free.
 func InstantiateCompiledSlingFormula(ctx context.Context, recipe *formula.Recipe, formulaName string, opts molecule.Options, sourceBeadID, scopeKind, scopeRef string, a config.Agent, deps SlingDeps, forceGraphV2Replace ...bool) (*molecule.Result, error) {
+	if err := molecule.ValidateRootMetadata(opts.RootMetadata); err != nil {
+		return nil, err
+	}
 	if opts.PriorityOverride == nil && sourceBeadID != "" {
 		opts.PriorityOverride = BeadPriorityOverride(deps.Store, sourceBeadID)
 	}
@@ -1363,6 +1366,15 @@ func materializeCompiledSlingFormula(ctx context.Context, recipe *formula.Recipe
 			if len(forceGraphV2Replace) > 0 && forceGraphV2Replace[0] {
 				replacedRootID = existing.RootID
 			} else {
+				if len(opts.RootMetadata) > 0 {
+					root, getErr := graphStore.Get(existing.RootID)
+					if getErr != nil {
+						return nil, fmt.Errorf("reading existing formulas v2 root %s metadata: %w", existing.RootID, getErr)
+					}
+					if matchErr := molecule.ValidateExistingRootMetadata(root, opts.RootMetadata); matchErr != nil {
+						return nil, matchErr
+					}
+				}
 				SlingTracef("instantiate graphv2 idempotent formula=%s root=%s", formulaName, existing.RootID)
 				return existing, nil
 			}

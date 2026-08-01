@@ -4,10 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/beads/beadstest"
 	"github.com/gastownhall/gascity/internal/citylayout"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/formula"
@@ -80,6 +83,87 @@ func TestLaunchWorkflowDuplicateAttemptReturnsSameLiveRoot(t *testing.T) {
 	if live := liveGraphV2Roots(t, deps.Store); len(live) != 1 {
 		t.Fatalf("live graph roots = %d, want exactly one (I1); roots=%+v", len(live), live)
 	}
+}
+
+func TestLaunchWorkflowDuplicateRootMetadataDistinguishesMissingFromExplicitEmpty(t *testing.T) {
+	const metadataKey = "admission"
+
+	setup := func(t *testing.T) (string, config.Agent, SlingDeps, molecule.Options) {
+		t.Helper()
+		formulaDir := t.TempDir()
+		writeGraphV2ConvoyFormula(t, formulaDir)
+		cfg := graphV2SlingTestConfig(t, formulaDir)
+		deps := testDeps(cfg, runtime.NewFake(), newFakeRunner().run)
+		deps.CityPath = t.TempDir()
+		convoy, err := deps.Store.Create(beads.Bead{Title: "input", Type: "convoy"})
+		if err != nil {
+			t.Fatalf("create convoy: %v", err)
+		}
+		a := config.Agent{Name: "mayor", MaxActiveSessions: intPtr(1)}
+		return formulaDir, a, deps, molecule.Options{Vars: map[string]string{"convoy_id": convoy.ID}}
+	}
+
+	t.Run("missing key conflicts with requested empty", func(t *testing.T) {
+		formulaDir, a, deps, opts := setup(t)
+		first, err := InstantiateSlingFormula(context.Background(), "graph-work", []string{formulaDir}, opts, "", "default", "", a, deps)
+		if err != nil {
+			t.Fatalf("first launch: %v", err)
+		}
+		before, err := deps.Store.Get(first.RootID)
+		if err != nil {
+			t.Fatalf("Get(root before retry): %v", err)
+		}
+		recording := beadstest.NewRecordingStore(deps.Store)
+		deps.Store = recording
+		opts.RootMetadata = map[string]string{metadataKey: ""}
+
+		_, err = InstantiateSlingFormula(context.Background(), "graph-work", []string{formulaDir}, opts, "", "default", "", a, deps)
+		if err == nil || !strings.Contains(err.Error(), `key is absent, want ""`) {
+			t.Fatalf("missing-key retry error = %v, want explicit absence mismatch", err)
+		}
+		if calls := recording.Calls(); len(calls) != 0 {
+			t.Fatalf("missing-key retry mutated store: %#v", calls)
+		}
+		after, getErr := recording.Get(first.RootID)
+		if getErr != nil {
+			t.Fatalf("Get(root after retry): %v", getErr)
+		}
+		if !reflect.DeepEqual(after, before) {
+			t.Fatalf("missing-key retry changed root:\nbefore=%#v\nafter=%#v", before, after)
+		}
+		if live := liveGraphV2Roots(t, recording); len(live) != 1 || live[0].ID != first.RootID {
+			t.Fatalf("live graph roots = %+v, want only %s", live, first.RootID)
+		}
+	})
+
+	t.Run("explicit empty matches", func(t *testing.T) {
+		formulaDir, a, deps, opts := setup(t)
+		opts.RootMetadata = map[string]string{metadataKey: ""}
+		first, err := InstantiateSlingFormula(context.Background(), "graph-work", []string{formulaDir}, opts, "", "default", "", a, deps)
+		if err != nil {
+			t.Fatalf("first launch: %v", err)
+		}
+		created, err := deps.Store.Get(first.RootID)
+		if err != nil {
+			t.Fatalf("Get(created root): %v", err)
+		}
+		if got, present := created.Metadata[metadataKey]; !present || got != "" {
+			t.Fatalf("created metadata[%q] = %q, present=%v; want explicit empty", metadataKey, got, present)
+		}
+		recording := beadstest.NewRecordingStore(deps.Store)
+		deps.Store = recording
+
+		duplicate, err := InstantiateSlingFormula(context.Background(), "graph-work", []string{formulaDir}, opts, "", "default", "", a, deps)
+		if err != nil {
+			t.Fatalf("matching empty retry: %v", err)
+		}
+		if duplicate.RootID != first.RootID {
+			t.Fatalf("matching empty retry root = %s, want %s", duplicate.RootID, first.RootID)
+		}
+		if calls := recording.Calls(); len(calls) != 0 {
+			t.Fatalf("matching empty retry mutated store: %#v", calls)
+		}
+	})
 }
 
 // TestLaunchWorkflowUsesCrossProcessFileLock proves the dedupe guard is the

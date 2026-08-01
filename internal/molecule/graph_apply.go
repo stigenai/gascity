@@ -128,6 +128,9 @@ func instantiateFragmentViaGraphApply(ctx context.Context, store beads.Store, ap
 }
 
 func buildRecipeApplyPlan(recipe *formula.Recipe, opts Options) (*beads.GraphApplyPlan, bool, string, error) {
+	if err := ValidateRootMetadata(opts.RootMetadata); err != nil {
+		return nil, false, "", err
+	}
 	if recipe == nil {
 		return nil, false, "", fmt.Errorf("recipe is nil")
 	}
@@ -202,6 +205,7 @@ func buildRecipeApplyPlan(recipe *formula.Recipe, opts Options) (*beads.GraphApp
 				}
 				node.Metadata[beadmeta.FormulaSourceMetadataKey] = recipe.FormulaSource
 			}
+			node.Metadata = mergeRootMetadata(node.Metadata, opts.RootMetadata)
 		} else {
 			// graph.v2 workflows and their retry/Ralph attempt sub-recipes
 			// use step beads as independently routable actionable work, not

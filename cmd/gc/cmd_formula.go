@@ -615,6 +615,11 @@ func newFormulaCookCmd(stdout, stderr io.Writer) *cobra.Command {
 This is a low-level workflow construction tool. It creates the formula root
 and all compiled step beads without routing any work.
 
+Root metadata supplied with --meta is validated before store access and
+written atomically with root creation. The engine-owned gc.* namespace and
+legacy engine metadata keys are rejected; use a caller-owned annotation
+namespace instead.
+
 With --attach=<bead-id>, the sub-DAG is created as children of the given
 bead. The bead gains a blocking dependency on the sub-DAG root, so it won't
 close until the sub-DAG completes. This is the core primitive for late-bound
@@ -628,6 +633,13 @@ source bead reuses the live workflow instead of duplicating it, and a
 conflicting live workflow from the same source is an error.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			rootMeta, err := parseMetadataArgs(metadata)
+			if err != nil {
+				return formulaCommandError(stderr, "gc formula cook", jsonOutput, err)
+			}
+			if err := molecule.ValidateRootMetadata(rootMeta); err != nil {
+				return formulaCommandError(stderr, "gc formula cook", jsonOutput, err)
+			}
 			cityPath, err := resolveCity()
 			if err != nil {
 				return formulaCommandError(stderr, "gc formula cook", jsonOutput, err)
@@ -685,6 +697,9 @@ conflicting live workflow from the same source is an error.`,
 							return err
 						}
 						if existing != nil {
+							if err := formulaCookRootMetadataMatches(store, existing.RootID, rootMeta); err != nil {
+								return err
+							}
 							result = existing
 							return ensureFormulaCookAttachDep(store, attach, result.RootID)
 						}
@@ -712,6 +727,7 @@ conflicting live workflow from the same source is an error.`,
 							Title:            title,
 							Vars:             cookVars,
 							IdempotencyKey:   graphRootKey,
+							RootMetadata:     rootMeta,
 							PriorityOverride: cloneFormulaCookPriority(source.Priority),
 						})
 						if err != nil {
@@ -768,6 +784,7 @@ conflicting live workflow from the same source is an error.`,
 					Title:          title,
 					Vars:           cookVars,
 					IdempotencyKey: graphRootKey,
+					RootMetadata:   rootMeta,
 				})
 				if err != nil {
 					return formulaCommandError(stderr, "gc formula cook: attach", jsonOutput, err)
@@ -837,27 +854,18 @@ conflicting live workflow from the same source is an error.`,
 					Title:          title,
 					Vars:           cookVars,
 					IdempotencyKey: graphRootKey,
+					RootMetadata:   rootMeta,
 				})
 				if err != nil {
 					return formulaCommandError(stderr, "gc formula cook", jsonOutput, err)
 				}
 			} else {
 				result, err = molecule.Cook(cmd.Context(), store, args[0], scope.searchPaths, molecule.Options{
-					Title: title,
-					Vars:  cookVars,
+					Title:        title,
+					Vars:         cookVars,
+					RootMetadata: rootMeta,
 				})
 				if err != nil {
-					return formulaCommandError(stderr, "gc formula cook", jsonOutput, err)
-				}
-			}
-
-			rootMeta, err := parseMetadataArgs(metadata)
-			if err != nil {
-				return formulaCommandError(stderr, "gc formula cook", jsonOutput, err)
-			}
-			if len(rootMeta) > 0 {
-				if err := store.SetMetadataBatch(result.RootID, rootMeta); err != nil {
-					err := fmt.Errorf("setting root metadata on %s: %w", result.RootID, err)
 					return formulaCommandError(stderr, "gc formula cook", jsonOutput, err)
 				}
 			}
@@ -888,7 +896,7 @@ conflicting live workflow from the same source is an error.`,
 	}
 	cmd.Flags().StringVarP(&title, "title", "t", "", "override root bead title")
 	cmd.Flags().StringArrayVar(&vars, "var", nil, "variable substitution for formula (key=value, repeatable)")
-	cmd.Flags().StringArrayVar(&metadata, "meta", nil, "set root bead metadata after cook (key=value, repeatable)")
+	cmd.Flags().StringArrayVar(&metadata, "meta", nil, "set caller-owned root annotation metadata atomically at creation (key=value, repeatable)")
 	cmd.Flags().StringVar(&attach, "attach", "", "attach sub-DAG to existing bead (bead gains blocking dep on sub-DAG root)")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output JSONL summary")
 	return cmd
@@ -1036,6 +1044,17 @@ func existingFormulaCookGraphV2Root(store beads.Store, recipe *formula.Recipe) (
 		GraphWorkflow: true,
 		IDMapping:     idMapping,
 	}, nil
+}
+
+func formulaCookRootMetadataMatches(store beads.Store, rootID string, expected map[string]string) error {
+	if len(expected) == 0 {
+		return nil
+	}
+	root, err := store.Get(rootID)
+	if err != nil {
+		return fmt.Errorf("reading existing formulas v2 root %s metadata: %w", rootID, err)
+	}
+	return molecule.ValidateExistingRootMetadata(root, expected)
 }
 
 func cloneFormulaCookPriority(priority *int) *int {

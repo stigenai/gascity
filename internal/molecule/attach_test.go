@@ -3,10 +3,13 @@ package molecule
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/beads/beadstest"
 	"github.com/gastownhall/gascity/internal/formula"
 )
 
@@ -527,6 +530,198 @@ func TestAttachIdempotency(t *testing.T) {
 	allAfter, _ := store.ListOpen()
 	if len(allAfter) != countBefore {
 		t.Errorf("bead count changed: %d → %d (expected no change)", countBefore, len(allAfter))
+	}
+}
+
+func TestAttachRootMetadataIsCreatedAtomicallyAndDuplicateMustMatch(t *testing.T) {
+	store := beads.NewMemStore()
+	root := setupWorkflow(t, store)
+	control := setupWorkflowChild(t, store, root.ID, "Control")
+
+	const idempotencyKey = "retry:control:metadata:1"
+	rootMetadata := map[string]string{
+		"admission": "accepted",
+		"number":    "123",
+		"boolean":   "true",
+		"object":    `{"answer":42}`,
+	}
+	result, err := Attach(context.Background(), store, makeWorkflowRecipe("attempt", "run"), control.ID, AttachOptions{
+		IdempotencyKey: idempotencyKey,
+		RootMetadata:   rootMetadata,
+	})
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	createdRoot, err := store.Get(result.RootID)
+	if err != nil {
+		t.Fatalf("Get(root): %v", err)
+	}
+	for key, value := range rootMetadata {
+		if got := createdRoot.Metadata[key]; got != value {
+			t.Errorf("root metadata[%q] = %q, want exact string %q", key, got, value)
+		}
+	}
+
+	duplicate, err := Attach(context.Background(), store, makeWorkflowRecipe("attempt", "run"), control.ID, AttachOptions{
+		IdempotencyKey: idempotencyKey,
+		RootMetadata:   rootMetadata,
+	})
+	if err != nil {
+		t.Fatalf("matching duplicate Attach: %v", err)
+	}
+	if !duplicate.Duplicate || duplicate.RootID != result.RootID {
+		t.Fatalf("matching duplicate = %+v, want existing root %s", duplicate, result.RootID)
+	}
+
+	_, err = Attach(context.Background(), store, makeWorkflowRecipe("attempt", "run"), control.ID, AttachOptions{
+		IdempotencyKey: idempotencyKey,
+		RootMetadata:   map[string]string{"admission": "different"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "metadata mismatch") {
+		t.Fatalf("mismatched duplicate Attach error = %v, want metadata mismatch", err)
+	}
+	afterMismatch, err := store.Get(result.RootID)
+	if err != nil {
+		t.Fatalf("Get(root after mismatch): %v", err)
+	}
+	if got := afterMismatch.Metadata["admission"]; got != "accepted" {
+		t.Fatalf("mismatched duplicate mutated admission = %q, want accepted", got)
+	}
+}
+
+func TestAttachDuplicateRootMetadataDistinguishesMissingFromExplicitEmpty(t *testing.T) {
+	const (
+		metadataKey    = "admission"
+		idempotencyKey = "retry:control:metadata-empty:1"
+	)
+
+	t.Run("missing key conflicts with requested empty", func(t *testing.T) {
+		base := beads.NewMemStore()
+		root := setupWorkflow(t, base)
+		control := setupWorkflowChild(t, base, root.ID, "Control")
+		first, err := Attach(context.Background(), base, makeWorkflowRecipe("attempt", "run"), control.ID, AttachOptions{
+			IdempotencyKey: idempotencyKey,
+		})
+		if err != nil {
+			t.Fatalf("first Attach: %v", err)
+		}
+		before, err := base.ListOpen()
+		if err != nil {
+			t.Fatalf("ListOpen before retry: %v", err)
+		}
+		recording := beadstest.NewRecordingStore(base)
+
+		_, err = Attach(context.Background(), recording, makeWorkflowRecipe("attempt", "run"), control.ID, AttachOptions{
+			IdempotencyKey: idempotencyKey,
+			RootMetadata:   map[string]string{metadataKey: ""},
+		})
+		if err == nil || !strings.Contains(err.Error(), `key is absent, want ""`) {
+			t.Fatalf("missing-key retry error = %v, want explicit absence mismatch", err)
+		}
+		if calls := recording.Calls(); len(calls) != 0 {
+			t.Fatalf("missing-key retry mutated store: %#v", calls)
+		}
+		after, listErr := base.ListOpen()
+		if listErr != nil {
+			t.Fatalf("ListOpen after retry: %v", listErr)
+		}
+		if !reflect.DeepEqual(after, before) {
+			t.Fatalf("missing-key retry changed beads:\nbefore=%#v\nafter=%#v", before, after)
+		}
+		original, getErr := base.Get(first.RootID)
+		if getErr != nil {
+			t.Fatalf("Get(original root): %v", getErr)
+		}
+		if _, present := original.Metadata[metadataKey]; present {
+			t.Fatalf("original root unexpectedly gained %q: %#v", metadataKey, original.Metadata)
+		}
+	})
+
+	t.Run("explicit empty matches", func(t *testing.T) {
+		base := beads.NewMemStore()
+		root := setupWorkflow(t, base)
+		control := setupWorkflowChild(t, base, root.ID, "Control")
+		metadata := map[string]string{metadataKey: ""}
+		first, err := Attach(context.Background(), base, makeWorkflowRecipe("attempt", "run"), control.ID, AttachOptions{
+			IdempotencyKey: idempotencyKey,
+			RootMetadata:   metadata,
+		})
+		if err != nil {
+			t.Fatalf("first Attach: %v", err)
+		}
+		created, err := base.Get(first.RootID)
+		if err != nil {
+			t.Fatalf("Get(created root): %v", err)
+		}
+		if got, present := created.Metadata[metadataKey]; !present || got != "" {
+			t.Fatalf("created metadata[%q] = %q, present=%v; want explicit empty", metadataKey, got, present)
+		}
+
+		recording := beadstest.NewRecordingStore(base)
+		duplicate, err := Attach(context.Background(), recording, makeWorkflowRecipe("attempt", "run"), control.ID, AttachOptions{
+			IdempotencyKey: idempotencyKey,
+			RootMetadata:   metadata,
+		})
+		if err != nil {
+			t.Fatalf("matching empty retry: %v", err)
+		}
+		if !duplicate.Duplicate || duplicate.RootID != first.RootID {
+			t.Fatalf("matching empty retry = %+v, want duplicate root %s", duplicate, first.RootID)
+		}
+		if calls := recording.Calls(); len(calls) != 0 {
+			t.Fatalf("matching empty retry mutated store: %#v", calls)
+		}
+	})
+}
+
+func TestAttachDuplicateRejectsProtectedIdentityMetadataWithoutCreatingSecondRoot(t *testing.T) {
+	base := beads.NewMemStore()
+	root := setupWorkflow(t, base)
+	control := setupWorkflowChild(t, base, root.ID, "Control")
+	const idempotencyKey = "retry:control:protected-identity:1"
+
+	first, err := Attach(context.Background(), base, makeWorkflowRecipe("attempt", "run"), control.ID, AttachOptions{
+		IdempotencyKey: idempotencyKey,
+	})
+	if err != nil {
+		t.Fatalf("first Attach: %v", err)
+	}
+	before, err := base.ListOpen()
+	if err != nil {
+		t.Fatalf("ListOpen before retry: %v", err)
+	}
+	recording := beadstest.NewRecordingStore(base)
+	store := &attachPreAdmissionAccessStore{Store: recording}
+
+	_, err = Attach(context.Background(), store, makeWorkflowRecipe("attempt", "run"), control.ID, AttachOptions{
+		IdempotencyKey: idempotencyKey,
+		RootMetadata: map[string]string{
+			beadmeta.IdempotencyKeyMetadataKey: "attacker-idempotency",
+			beadmeta.RootBeadIDMetadataKey:     "attacker-root",
+			"idempotency_key":                  "attacker-legacy-idempotency",
+		},
+	})
+	if err == nil {
+		t.Fatal("duplicate Attach accepted protected identity metadata")
+	}
+	if store.readCalls != 0 || len(recording.Calls()) != 0 {
+		t.Fatalf("duplicate Attach performed store access before rejection: reads=%d writes=%#v", store.readCalls, recording.Calls())
+	}
+	after, listErr := base.ListOpen()
+	if listErr != nil {
+		t.Fatalf("ListOpen after retry: %v", listErr)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("duplicate identity override created a second root: bead count %d -> %d", len(before), len(after))
+	}
+	roots, listErr := base.List(beads.ListQuery{Metadata: map[string]string{
+		beadmeta.IdempotencyKeyMetadataKey: idempotencyKey,
+	}})
+	if listErr != nil {
+		t.Fatalf("List roots: %v", listErr)
+	}
+	if len(roots) != 1 || roots[0].ID != first.RootID {
+		t.Fatalf("identity-keyed roots = %#v, want only original %s", roots, first.RootID)
 	}
 }
 
