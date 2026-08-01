@@ -5909,6 +5909,85 @@ esac
 	}
 }
 
+func TestGcBeadsBdInitMarksExternalDoltServerExternallyManagedForBd(t *testing.T) {
+	cityPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cityPath, ".gc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	materializeBuiltinPacksForTest(t, cityPath)
+	script := gcBeadsBdScriptPath(cityPath)
+
+	binDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	initArgsFile := filepath.Join(t.TempDir(), "bd-init-args")
+	fakeBd := filepath.Join(binDir, "bd")
+	fakeBdScript := fmt.Sprintf(`#!/bin/sh
+set -eu
+case "${1:-}" in
+  init)
+    has_external=false
+    for arg in "$@"; do
+      if [ "$arg" = "--external" ]; then
+        has_external=true
+      fi
+    done
+    printf '%%s\n' "$@" > %q
+    if [ "$has_external" != "true" ]; then
+      echo "bd init would start the inherited shared server" >&2
+      exit 86
+    fi
+    exit 0
+    ;;
+  config|migrate|list)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`, initArgsFile)
+	if err := os.WriteFile(fakeBd, []byte(fakeBdScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeDolt := filepath.Join(binDir, "dolt")
+	if err := os.WriteFile(fakeDolt, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(script, "init", cityPath, "gc", "gascity")
+	cmd.Env = sanitizedBaseEnv(append(gcBeadsBdTestHomeEnv(t),
+		"GC_CITY_PATH="+cityPath,
+		"GC_DOLT_HOST=db.example.com",
+		"GC_DOLT_PORT=3307",
+		"BEADS_DOLT_SHARED_SERVER=1",
+		"PATH="+strings.Join([]string{binDir, os.Getenv("PATH")}, string(os.PathListSeparator)),
+	)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("gc-beads-bd init failed: %v\n%s", err, out)
+	}
+
+	data, err := os.ReadFile(initArgsFile)
+	if err != nil {
+		t.Fatalf("read bd init args: %v", err)
+	}
+	args := strings.Fields(string(data))
+	argSet := make(map[string]bool, len(args))
+	for _, arg := range args {
+		argSet[arg] = true
+	}
+	for _, want := range []string{"--server", "--external", "--server-host", "db.example.com", "--server-port", "3307"} {
+		if !argSet[want] {
+			t.Fatalf("bd init args missing %q:\n%s", want, data)
+		}
+	}
+}
+
 func TestGcBeadsBdInitEnsuresProjectIdentityWhenMetadataExistsWithoutProjectID(t *testing.T) {
 	skipSlowCmdGCTest(t, "runs the materialized gc-beads-bd init script with GC_BIN helper; run make test-cmd-gc-process for full coverage")
 	cityPath := t.TempDir()
@@ -7046,7 +7125,7 @@ esac
 		t.Fatalf("expected bd init fallback to run: %v", err)
 	}
 	got := string(data)
-	for _, want := range []string{"--force", "--server", "-p", "gc", "--database", "hq", cityPath} {
+	for _, want := range []string{"--force", "--server", "--external", "-p", "gc", "--database", "hq", cityPath} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("bd init argv missing %q:\n%s", want, got)
 		}
@@ -7295,7 +7374,7 @@ esac
 		t.Fatalf("read init args: %v", err)
 	}
 	gotArgs := string(argsData)
-	for _, want := range []string{"init --quiet --server -p gc --database hq"} {
+	for _, want := range []string{"init --quiet --server --external -p gc --database hq"} {
 		if !strings.Contains(gotArgs, want) {
 			t.Fatalf("bd init retry args missing %q:\n%s", want, gotArgs)
 		}
@@ -7425,8 +7504,8 @@ esac
 	}
 	gotState := string(stateData)
 	for _, want := range []string{
-		"metadata=yes args=init --force --quiet --server -p gc --database hq",
-		"metadata=no args=init --quiet --server -p gc --database hq",
+		"metadata=yes args=init --force --quiet --server --external -p gc --database hq",
+		"metadata=no args=init --quiet --server --external -p gc --database hq",
 	} {
 		if !strings.Contains(gotState, want) {
 			t.Fatalf("init state missing %q:\n%s", want, gotState)
