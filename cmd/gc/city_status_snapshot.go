@@ -81,6 +81,7 @@ type cityStatusAgentRow struct {
 	GroupName   string
 	ScaleLabel  string
 	Expanded    bool
+	Draining    bool
 }
 
 type cityStatusNamedSession struct {
@@ -453,6 +454,9 @@ func cityStatusJSONFromSnapshot(snapshot cityStatusSnapshot, summary StatusSumma
 		rigs = []StatusRigJSON{}
 	}
 	var signals []string
+	if snapshot.Partial {
+		signals = append(signals, "partial_status")
+	}
 	if snapshot.Suspended {
 		signals = append(signals, "city_suspended")
 	}
@@ -500,6 +504,12 @@ func renderCityStatusText(snapshot cityStatusSnapshot, dops drainOps, stdout io.
 	for _, line := range controllerStatusGuidance(snapshot.Controller, snapshot.CityPath) {
 		fmt.Fprintf(stdout, "  %s\n", line) //nolint:errcheck // best-effort stdout
 	}
+	if snapshot.Partial {
+		fmt.Fprintln(stdout, "  Status:     partial") //nolint:errcheck // best-effort stdout
+		for _, detail := range snapshot.PartialErrors {
+			fmt.Fprintf(stdout, "  ! %s\n", detail) //nolint:errcheck // best-effort stdout
+		}
+	}
 
 	if snapshot.Suspended {
 		fmt.Fprintf(stdout, "  Suspended:  yes\n") //nolint:errcheck // best-effort stdout
@@ -514,7 +524,7 @@ func renderCityStatusText(snapshot cityStatusSnapshot, dops drainOps, stdout io.
 			if row.ScaleLabel != "" {
 				fmt.Fprintf(stdout, "  %-24s%s\n", row.GroupName, row.ScaleLabel) //nolint:errcheck // best-effort stdout
 			}
-			status := agentStatusLineWithPartial(row.Agent.Running, dops, row.SessionName, row.Agent.Suspended, snapshot.Partial)
+			status := agentStatusLineWithPartialAndHint(row.Agent.Running, dops, row.SessionName, row.Agent.Suspended, row.Draining, snapshot.Partial)
 			if row.Expanded {
 				fmt.Fprintf(stdout, "    %-22s%s\n", row.Agent.QualifiedName, status) //nolint:errcheck // best-effort stdout
 			} else {

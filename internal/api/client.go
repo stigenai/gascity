@@ -89,6 +89,30 @@ func (e *cacheNotLiveError) Error() string {
 	return e.msg
 }
 
+// cityNotRunningError preserves the supervisor's stable city-scoped 404 as a
+// typed control-plane state. Most 404s are business errors and must remain
+// non-fallbackable; this one specifically means the supervisor is reachable
+// but has not published a running per-city server yet.
+type cityNotRunningError struct {
+	detail string
+}
+
+func (e *cityNotRunningError) Error() string {
+	if e.detail == "" {
+		return "API error: city not found or not running"
+	}
+	return "API error: " + e.detail
+}
+
+// IsCityNotRunningError reports whether a city-scoped status request reached
+// the supervisor but the target city was not currently running. Callers can
+// then consult the supervisor-level city list under the same deadline instead
+// of entering an unbounded local status path.
+func IsCityNotRunningError(err error) bool {
+	var target *cityNotRunningError
+	return errors.As(err, &target)
+}
+
 // storeSlowError indicates the supervisor returned 503 because a mail read
 // exceeded its internal store deadline. It is intentionally not fallbackable:
 // the local store path is affected by the same contention.
@@ -662,13 +686,20 @@ func (c *Client) requireCityScope() error {
 
 // ListCities fetches the current set of cities managed by the supervisor.
 func (c *Client) ListCities() ([]CityInfo, error) {
+	return c.ListCitiesContext(context.Background())
+}
+
+// ListCitiesContext is ListCities with a caller-owned deadline. It is used by
+// latency-sensitive control-plane reads that must not inherit the client's
+// generous federated-read timeout.
+func (c *Client) ListCitiesContext(ctx context.Context) ([]CityInfo, error) {
 	if c.initErr != nil {
 		return nil, c.initErr
 	}
 	if c.cw == nil {
 		return nil, errClientUninitialized
 	}
-	resp, err := c.cw.GetV0CitiesWithResponse(context.Background())
+	resp, err := c.cw.GetV0CitiesWithResponse(ctx)
 	if err != nil {
 		return nil, &connError{err: fmt.Errorf("request failed: %w", err)}
 	}
@@ -1205,17 +1236,29 @@ func (c *Client) GetBead(id string) (CachedRead[beads.Bead], error) {
 // so callers can surface _cache_age_s on --json output and a staleness
 // banner on human output.
 func (c *Client) GetStatus() (CachedRead[StatusView], error) {
+	return c.GetStatusContext(context.Background())
+}
+
+// GetStatusContext is GetStatus with a caller-owned deadline. Most API reads
+// use the client's generous federated-read timeout, but latency-sensitive
+// control-plane probes such as `gc status` need a tighter command budget so a
+// wedged supervisor cannot pin the operator CLI for a full minute.
+func (c *Client) GetStatusContext(ctx context.Context) (CachedRead[StatusView], error) {
 	if err := c.requireCityScope(); err != nil {
 		return CachedRead[StatusView]{}, err
 	}
-	resp, err := c.cw.GetV0CityByCityNameStatusWithResponse(context.Background(), c.cityName, &genclient.GetV0CityByCityNameStatusParams{})
+	resp, err := c.cw.GetV0CityByCityNameStatusWithResponse(ctx, c.cityName, &genclient.GetV0CityByCityNameStatusParams{})
 	if err != nil {
 		return CachedRead[StatusView]{}, &connError{err: fmt.Errorf("request failed: %w", err)}
 	}
 	if resp == nil {
 		return CachedRead[StatusView]{}, &connError{err: fmt.Errorf("nil response")}
 	}
-	if err := apiErrorFromResponse(resp.StatusCode(), pdOf(resp)); err != nil {
+	pd := pdOf(resp)
+	if resp.StatusCode() == http.StatusNotFound && pd != nil && pd.Detail != nil && IsCityNotFoundOrNotRunningDetail(*pd.Detail) {
+		return CachedRead[StatusView]{}, &cityNotRunningError{detail: *pd.Detail}
+	}
+	if err := apiErrorFromResponse(resp.StatusCode(), pd); err != nil {
 		return CachedRead[StatusView]{}, err
 	}
 	return CachedRead[StatusView]{

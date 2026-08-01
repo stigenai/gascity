@@ -19,6 +19,7 @@ func TestStatusViewFromGen_ValidResponse(t *testing.T) {
 	groupName := "mayor"
 	scaleLabel := "scaled (min=0, max=3)"
 	expanded := true
+	draining := true
 	preflightGate := "metadata_backend"
 	preflightReason := "metadata backend=file; native store requires dolt"
 	body := &genclient.StatusBody{
@@ -38,6 +39,7 @@ func TestStatusViewFromGen_ValidResponse(t *testing.T) {
 				Scope:         "city",
 				Running:       true,
 				Suspended:     false,
+				Draining:      &draining,
 				SessionName:   &sessionName,
 				GroupName:     &groupName,
 				ScaleLabel:    &scaleLabel,
@@ -87,6 +89,9 @@ func TestStatusViewFromGen_ValidResponse(t *testing.T) {
 	}
 	if !got.Agents[0].Expanded {
 		t.Errorf("agent[0].Expanded should be true")
+	}
+	if !got.Agents[0].Draining {
+		t.Errorf("agent[0].Draining should be true")
 	}
 	if len(got.Rigs) != 1 || got.Rigs[0].Name != "myrig" {
 		t.Errorf("Rigs = %+v", got.Rigs)

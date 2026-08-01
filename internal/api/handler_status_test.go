@@ -686,6 +686,33 @@ func TestBuildStatusBodyFullIncludesExpensiveBlocks(t *testing.T) {
 	}
 }
 
+func TestBuildStatusBodyCarriesDrainingSessionState(t *testing.T) {
+	state := newFakeState(t)
+	state.sp.Start(context.Background(), "myrig--worker", runtime.Config{}) //nolint:errcheck
+	cityStore := beads.NewMemStore()
+	if _, err := cityStore.Create(beads.Bead{
+		Type:   session.BeadType,
+		Status: "open",
+		Labels: []string{session.LabelSession},
+		Metadata: map[string]string{
+			"state":        string(session.StateDraining),
+			"template":     "myrig/worker",
+			"session_name": "myrig--worker",
+		},
+	}); err != nil {
+		t.Fatalf("Create draining session bead: %v", err)
+	}
+	state.cityBeadStore = cityStore
+
+	body := (&Server{state: state}).buildStatusBody(context.Background(), false)
+	if len(body.AgentDetails) != 1 {
+		t.Fatalf("AgentDetails = %#v, want one row", body.AgentDetails)
+	}
+	if !body.AgentDetails[0].Draining {
+		t.Fatalf("AgentDetails[0].Draining = false, want true from lifecycle snapshot")
+	}
+}
+
 // TestBuildStatusBodyLiteOmitsExpensiveBlocks verifies the lite variant drops
 // the three expensive per-request blocks while keeping the cheap fleet
 // overview (agent/rig counts) intact.
