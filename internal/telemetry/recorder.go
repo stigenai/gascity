@@ -433,6 +433,26 @@ func RecordControllerLifecycle(ctx context.Context, event string) {
 	)
 }
 
+// RecordShutdownCleanupIncomplete records a bounded fail-safe shutdown that
+// preserved one runtime because its async-start journal could not be durably
+// armed. The caller supplies only a non-reversible token fingerprint.
+func RecordShutdownCleanupIncomplete(ctx context.Context, sessionName, tokenFingerprint string, err error) {
+	initInstruments()
+	inst.controllerTotal.Add(ctx, 1,
+		metric.WithAttributes(
+			attribute.String("event", "shutdown_cleanup_incomplete"),
+			attribute.String("session", sessionName),
+			attribute.String("instance_token_fingerprint", tokenFingerprint),
+			attribute.String("status", "failed"),
+		),
+	)
+	emit(ctx, "controller.shutdown_cleanup_incomplete", otellog.SeverityError,
+		otellog.String("session", sessionName),
+		otellog.String("instance_token_fingerprint", tokenFingerprint),
+		errKV(err),
+	)
+}
+
 // RecordSupervisorStarted records a supervisor startup with restart-cause
 // attribution (metrics + log event). previousExit classifies how the
 // previous supervisor instance exited: "clean", "crash", or "unknown".

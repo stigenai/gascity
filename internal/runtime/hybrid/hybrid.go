@@ -18,15 +18,16 @@ type Provider struct {
 }
 
 var (
-	_ runtime.Provider                      = (*Provider)(nil)
-	_ runtime.DeadRuntimeSessionChecker     = (*Provider)(nil)
-	_ runtime.InteractionProvider           = (*Provider)(nil)
-	_ runtime.InterruptBoundaryWaitProvider = (*Provider)(nil)
-	_ runtime.InterruptedTurnResetProvider  = (*Provider)(nil)
-	_ runtime.RelaunchProvider              = (*Provider)(nil)
-	_ runtime.LivenessObserver              = (*Provider)(nil)
-	_ runtime.ServerLifecycleProvider       = (*Provider)(nil)
-	_ runtime.FreshRunningSessionLister     = (*Provider)(nil)
+	_ runtime.Provider                        = (*Provider)(nil)
+	_ runtime.DeadRuntimeSessionChecker       = (*Provider)(nil)
+	_ runtime.InteractionProvider             = (*Provider)(nil)
+	_ runtime.InterruptBoundaryWaitProvider   = (*Provider)(nil)
+	_ runtime.InterruptedTurnResetProvider    = (*Provider)(nil)
+	_ runtime.RelaunchProvider                = (*Provider)(nil)
+	_ runtime.LivenessObserver                = (*Provider)(nil)
+	_ runtime.ServerLifecycleProvider         = (*Provider)(nil)
+	_ runtime.FreshRunningSessionLister       = (*Provider)(nil)
+	_ runtime.InstanceTokenFencedStopProvider = (*Provider)(nil)
 )
 
 // New creates a hybrid provider. isRemote returns true for sessions
@@ -68,6 +69,16 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 // Stop delegates to the routed backend.
 func (p *Provider) Stop(name string) error {
 	return p.route(name).Stop(name)
+}
+
+// StopIfInstanceToken preserves the routed backend's atomic identity fence.
+// It never degrades to a separate metadata probe and name-based Stop.
+func (p *Provider) StopIfInstanceToken(name, expectedToken string) error {
+	provider, ok := p.route(name).(runtime.InstanceTokenFencedStopProvider)
+	if !ok {
+		return runtime.ErrFencedStopUnsupported
+	}
+	return provider.StopIfInstanceToken(name, expectedToken)
 }
 
 // Interrupt delegates to the routed backend.

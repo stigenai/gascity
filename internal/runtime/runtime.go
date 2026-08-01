@@ -67,6 +67,18 @@ var ErrExecUnsupported = errors.New("runtime does not implement the exec op")
 // separate signals for separate call paths.
 var ErrRuntimeUnavailable = errors.New("runtime unavailable: liveness observation failed")
 
+// ErrInstanceTokenMismatch reports that a destructive operation observed a
+// live runtime incarnation whose immutable token differs from the caller's
+// expected token. The caller must treat this as proof that the old incarnation
+// no longer owns the name and must not destroy the replacement.
+var ErrInstanceTokenMismatch = errors.New("runtime instance token mismatch")
+
+// ErrFencedStopUnsupported reports that a provider cannot bind an immutable
+// instance-token comparison to the exact runtime objects it destroys. Callers
+// requiring a destructive identity fence must fail closed rather than falling
+// back to a separate GetMeta+Stop sequence.
+var ErrFencedStopUnsupported = errors.New("runtime does not support token-fenced stop")
+
 // ErrRelaunchUnsupported reports that the underlying runtime cannot relaunch the
 // agent in a warm box (it is not a [RelaunchProvider], or is conjoined like
 // subprocess/acp/t3bridge). Composite/wrapping providers return it from their
@@ -340,6 +352,20 @@ type DialogProvider interface {
 // the active session provider before session creation starts mutating state.
 type TransportCapabilityProvider interface {
 	SupportsTransport(transport string) bool
+}
+
+// InstanceTokenFencedStopProvider is an optional extension for providers that
+// can compare an expected immutable instance token and stop only the exact
+// runtime objects carrying that token as one backend operation. Implementations
+// must protect same-name replacements: for object stores such as Kubernetes,
+// this means deleting captured immutable UIDs with preconditions rather than
+// re-listing by name after the comparison.
+//
+// A missing runtime returns ErrSessionNotFound; a definite different token
+// returns ErrInstanceTokenMismatch; absence or ambiguity of immutable identity
+// is an error and must not destroy anything.
+type InstanceTokenFencedStopProvider interface {
+	StopIfInstanceToken(name, expectedToken string) error
 }
 
 // ImmediateNudgeProvider is an optional extension for runtimes that can inject

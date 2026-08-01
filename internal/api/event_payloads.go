@@ -642,6 +642,7 @@ func init() {
 	events.RegisterPayload(events.ConvoyClosed, events.NoPayload{})
 	events.RegisterPayload(events.ControllerStarted, events.NoPayload{})
 	events.RegisterPayload(events.ControllerStopped, events.NoPayload{})
+	events.RegisterPayload(events.ShutdownCleanupIncomplete, events.ShutdownCleanupIncompletePayload{})
 	events.RegisterPayload(events.SupervisorStarted, SupervisorStartedPayload{})
 	events.RegisterPayload(events.SupervisorShutdownRequested, SupervisorShutdownPayload{})
 	events.RegisterPayload(events.SupervisorRequest, SupervisorRequestPayload{})

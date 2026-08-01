@@ -18,10 +18,11 @@ type seamBackedProvider struct {
 }
 
 var (
-	_ runtime.Provider                  = (*seamBackedProvider)(nil)
-	_ runtime.SleepCapabilityProvider   = (*seamBackedProvider)(nil)
-	_ runtime.RelaunchProvider          = (*seamBackedProvider)(nil)
-	_ runtime.FreshRunningSessionLister = (*seamBackedProvider)(nil)
+	_ runtime.Provider                        = (*seamBackedProvider)(nil)
+	_ runtime.SleepCapabilityProvider         = (*seamBackedProvider)(nil)
+	_ runtime.RelaunchProvider                = (*seamBackedProvider)(nil)
+	_ runtime.FreshRunningSessionLister       = (*seamBackedProvider)(nil)
+	_ runtime.InstanceTokenFencedStopProvider = (*seamBackedProvider)(nil)
 )
 
 // NewSeamBacked constructs a k8s provider served through the seams.
@@ -55,6 +56,10 @@ func (s *seamBackedProvider) Relaunch(ctx context.Context, name string, cfg runt
 // across the production seam wrapper.
 func (s *seamBackedProvider) ListRunningFresh(prefix string) ([]string, error) {
 	return s.raw.ListRunningFresh(prefix)
+}
+
+func (s *seamBackedProvider) StopIfInstanceToken(name, expectedToken string) error {
+	return s.raw.StopIfInstanceToken(name, expectedToken)
 }
 
 // The generic seam adapter preserves legacy best-effort behavior when

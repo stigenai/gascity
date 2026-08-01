@@ -404,23 +404,164 @@ func withReadyAssignedFlags(readyAssignedFlags []bool) startExecutionOption {
 }
 
 type asyncStartTracker struct {
-	mu               sync.Mutex
-	wg               sync.WaitGroup
-	stopping         bool
-	drainAckStopKeys sync.Map
+	mu                 sync.Mutex
+	wg                 sync.WaitGroup
+	stopping           bool
+	cleanupCompletions bool
+	activeStartKeys    map[string]struct{}
+	startJournals      map[string]string
+	drainAckStopKeys   sync.Map
 }
 
 func (t *asyncStartTracker) start() (func(), bool) {
+	finish, ok := t.startWithCompletionCleanup()
+	if !ok {
+		return nil, false
+	}
+	return func() { finish(nil, nil) }, true
+}
+
+// startWithCompletionCleanup admits one async start and returns its completion
+// handoff. If shutdown abandons the wait, the handoff runs cleanup after the
+// start goroutine finishes. The tracker mutex linearizes completion against the
+// abandon transition: work completed before the transition is covered by the
+// shutdown's fresh runtime census; work completed after it owns its cleanup.
+func (t *asyncStartTracker) startWithCompletionCleanup() (func(func() bool, func() bool), bool) {
+	finish, ok, _ := t.startWithCompletionCleanupRegistered("", nil)
+	return finish, ok
+}
+
+// startWithCompletionCleanupRegistered linearizes durable registration with
+// admission. Shutdown takes the same mutex to close admission before scanning
+// journals, so every admitted provider Start is already discoverable when the
+// shutdown arm pass begins.
+func (t *asyncStartTracker) startWithCompletionCleanupRegistered(key string, register func() (string, error)) (func(func() bool, func() bool), bool, error) {
 	if t == nil {
-		return func() {}, true
+		registeredRaw := ""
+		if register != nil {
+			var err error
+			registeredRaw, err = register()
+			if err != nil {
+				return nil, false, err
+			}
+		}
+		if strings.TrimSpace(key) != "" && strings.TrimSpace(registeredRaw) == "" {
+			return nil, false, fmt.Errorf("async start %s registered an empty journal", strings.TrimSpace(key))
+		}
+		// Callers without a tracker still need the completion handoff to clear
+		// the durable journal. They have no shutdown transition to select the
+		// destructive callback, so normal completion is the only valid path.
+		return func(complete, _ func() bool) {
+			if complete != nil {
+				complete()
+			}
+		}, true, nil
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.stopping {
-		return nil, false
+		return nil, false, nil
+	}
+	key = strings.TrimSpace(key)
+	if key != "" {
+		if _, exists := t.activeStartKeys[key]; exists {
+			return nil, false, fmt.Errorf("async start %s is already registered", key)
+		}
+	}
+	registeredRaw := ""
+	if register != nil {
+		var err error
+		registeredRaw, err = register()
+		if err != nil {
+			return nil, false, err
+		}
+		if key != "" && strings.TrimSpace(registeredRaw) == "" {
+			return nil, false, fmt.Errorf("async start %s registered an empty journal", key)
+		}
+	}
+	if key != "" {
+		if t.activeStartKeys == nil {
+			t.activeStartKeys = make(map[string]struct{})
+		}
+		if t.startJournals == nil {
+			t.startJournals = make(map[string]string)
+		}
+		t.activeStartKeys[key] = struct{}{}
+		t.startJournals[key] = registeredRaw
 	}
 	t.wg.Add(1)
-	return t.wg.Done, true
+	return func(complete, cleanup func() bool) {
+		t.mu.Lock()
+		cleanupRequired := t.cleanupCompletions
+		t.mu.Unlock()
+		// Publish completion only after the selected durable-marker handoff has
+		// finished. Shutdown must not observe the tracker drained while a blocked
+		// provider Stop or marker clear is still outstanding.
+		settled := true
+		defer func() {
+			if key != "" {
+				t.mu.Lock()
+				delete(t.activeStartKeys, key)
+				if settled {
+					delete(t.startJournals, key)
+				}
+				t.mu.Unlock()
+			}
+			t.wg.Done()
+		}()
+		if cleanupRequired {
+			if cleanup != nil {
+				settled = cleanup()
+			}
+			return
+		}
+		if complete != nil {
+			settled = complete()
+		}
+	}, true, nil
+}
+
+func (t *asyncStartTracker) ownsStartKey(key string) bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, ok := t.activeStartKeys[strings.TrimSpace(key)]
+	return ok
+}
+
+func (t *asyncStartTracker) startJournalSnapshot() map[string]string {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	result := make(map[string]string, len(t.startJournals))
+	for key, raw := range t.startJournals {
+		result[key] = raw
+	}
+	return result
+}
+
+func (t *asyncStartTracker) forgetStartJournal(key, raw string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.startJournals[strings.TrimSpace(key)] == raw {
+		delete(t.startJournals, strings.TrimSpace(key))
+	}
+}
+
+func (t *asyncStartTracker) stopAdmission() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.stopping = true
+	t.mu.Unlock()
 }
 
 func (t *asyncStartTracker) startDrainAckStop(key string) (func(), bool) {
@@ -450,18 +591,35 @@ func (t *asyncStartTracker) wait(timeout time.Duration) bool {
 }
 
 func (t *asyncStartTracker) waitUntil(timeout time.Duration, shouldStop func() bool) bool {
+	return t.waitUntilMode(timeout, shouldStop, false)
+}
+
+// waitUntilWithCompletionCleanup stops admission and waits for active work. If
+// the bounded wait is abandoned, it atomically transfers every still-active
+// start's cleanup obligation to its completion handoff.
+func (t *asyncStartTracker) waitUntilWithCompletionCleanup(timeout time.Duration, shouldStop func() bool) bool {
+	return t.waitUntilMode(timeout, shouldStop, true)
+}
+
+func (t *asyncStartTracker) waitUntilMode(timeout time.Duration, shouldStop func() bool, cleanupOnAbandon bool) bool {
 	if t == nil {
 		return true
 	}
-	t.mu.Lock()
-	t.stopping = true
-	t.mu.Unlock()
+	abandonWait := func() bool {
+		if cleanupOnAbandon {
+			t.mu.Lock()
+			t.cleanupCompletions = true
+			t.mu.Unlock()
+		}
+		return false
+	}
+	t.stopAdmission()
 	if shouldStop == nil && timeout < 0 {
 		t.wg.Wait()
 		return true
 	}
 	if shouldStop != nil && shouldStop() {
-		return false
+		return abandonWait()
 	}
 	done := make(chan struct{})
 	go func() {
@@ -473,7 +631,7 @@ func (t *asyncStartTracker) waitUntil(timeout time.Duration, shouldStop func() b
 		case <-done:
 			return true
 		default:
-			return false
+			return abandonWait()
 		}
 	}
 	if shouldStop == nil {
@@ -481,7 +639,7 @@ func (t *asyncStartTracker) waitUntil(timeout time.Duration, shouldStop func() b
 		case <-done:
 			return true
 		case <-time.After(timeout):
-			return false
+			return abandonWait()
 		}
 	}
 	ticker := time.NewTicker(25 * time.Millisecond)
@@ -493,7 +651,7 @@ func (t *asyncStartTracker) waitUntil(timeout time.Duration, shouldStop func() b
 				return true
 			case <-ticker.C:
 				if shouldStop() {
-					return false
+					return abandonWait()
 				}
 			}
 		}
@@ -505,19 +663,20 @@ func (t *asyncStartTracker) waitUntil(timeout time.Duration, shouldStop func() b
 		case <-done:
 			return true
 		case <-timer.C:
-			return false
+			return abandonWait()
 		case <-ticker.C:
 			if shouldStop() {
-				return false
+				return abandonWait()
 			}
 		}
 	}
 }
 
 type asyncPreparedStart struct {
-	item    preparedStart
-	release func()
-	done    func()
+	item          preparedStart
+	release       func()
+	done          func(func() bool, func() bool)
+	obligationRaw string
 }
 
 type stopTarget struct {
@@ -1591,9 +1750,13 @@ func enqueuePreparedStartWaveForCity(
 			finished: now,
 		}
 		done := reserved.done
-		go func(item preparedStart, release func(), done func()) {
+		obligationRaw := reserved.obligationRaw
+		go func(item preparedStart, release func(), done func(func() bool, func() bool), obligationRaw string) {
 			if done != nil {
-				defer done()
+				defer done(
+					func() bool { return completeAsyncStartObligation(item, obligationRaw, sp, store, stderr) },
+					func() bool { return stopAsyncStartAfterShutdown(item, obligationRaw, sp, store, stderr) },
+				)
 			}
 			if release != nil {
 				defer release()
@@ -1603,9 +1766,434 @@ func enqueuePreparedStartWaveForCity(
 			if asyncFollowUp != nil {
 				asyncFollowUp()
 			}
-		}(item, release, done)
+		}(item, release, done, obligationRaw)
 	}
 	return results
+}
+
+const asyncStartCleanupVisibilityGrace = 5 * time.Second
+
+var asyncStartCleanupRetryInterval = 50 * time.Millisecond
+
+type asyncStartCleanupObligation struct {
+	Version       int       `json:"version"`
+	Mode          string    `json:"mode"`
+	SessionName   string    `json:"session_name"`
+	InstanceToken string    `json:"instance_token"`
+	NotBefore     time.Time `json:"not_before"`
+}
+
+func encodeAsyncStartCleanupObligation(info sessionpkg.Info, sessionName string, now time.Time, startupTimeout time.Duration) (string, error) {
+	sessionName = strings.TrimSpace(sessionName)
+	token := strings.TrimSpace(info.InstanceToken)
+	if strings.TrimSpace(info.ID) == "" || sessionName == "" || token == "" {
+		return "", fmt.Errorf("incomplete async-start cleanup identity (session_id=%q session_name=%q token_present=%t)", info.ID, sessionName, token != "")
+	}
+	if startupTimeout <= 0 {
+		startupTimeout = time.Minute
+	}
+	obligation := asyncStartCleanupObligation{
+		Version:       1,
+		Mode:          "admitted",
+		SessionName:   sessionName,
+		InstanceToken: token,
+		NotBefore:     now.UTC().Add(startupTimeout + asyncStartCleanupVisibilityGrace),
+	}
+	encoded, err := json.Marshal(obligation)
+	if err != nil {
+		return "", fmt.Errorf("encoding async-start cleanup obligation: %w", err)
+	}
+	return string(encoded), nil
+}
+
+func decodeAsyncStartCleanupObligation(raw string) (asyncStartCleanupObligation, error) {
+	var obligation asyncStartCleanupObligation
+	if err := json.Unmarshal([]byte(raw), &obligation); err != nil {
+		return obligation, fmt.Errorf("decoding async-start cleanup obligation: %w", err)
+	}
+	obligation.SessionName = strings.TrimSpace(obligation.SessionName)
+	obligation.InstanceToken = strings.TrimSpace(obligation.InstanceToken)
+	if obligation.Version != 1 || (obligation.Mode != "admitted" && obligation.Mode != "cleanup") || obligation.SessionName == "" || obligation.InstanceToken == "" || obligation.NotBefore.IsZero() {
+		return obligation, fmt.Errorf("invalid async-start cleanup obligation identity")
+	}
+	return obligation, nil
+}
+
+func redactAsyncStartTokenError(err error, token string) error {
+	if err == nil {
+		return nil
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return err
+	}
+	message := err.Error()
+	redacted := strings.ReplaceAll(message, token, "[redacted]")
+	if redacted == message {
+		return err
+	}
+	return errors.New(redacted)
+}
+
+func claimAsyncStartCleanupObligation(sessFront *sessionpkg.Store, item preparedStart, now time.Time, startupTimeout time.Duration) (string, error) {
+	if sessFront == nil || !sessFront.Backed() {
+		return "", fmt.Errorf("session store unavailable")
+	}
+	raw, err := encodeAsyncStartCleanupObligation(item.candidate.info, item.candidate.name(), now, startupTimeout)
+	if err != nil {
+		return "", err
+	}
+	claimed, err := sessFront.ClaimAsyncStartCleanupObligation(item.candidate.info.ID, raw)
+	if err != nil {
+		return "", redactAsyncStartTokenError(err, item.candidate.info.InstanceToken)
+	}
+	if !claimed {
+		return "", fmt.Errorf("another controller owns the async-start cleanup obligation")
+	}
+	return raw, nil
+}
+
+func armAsyncStartCleanupObligation(sessFront *sessionpkg.Store, sessionID, raw string) (string, bool, error) {
+	obligation, err := decodeAsyncStartCleanupObligation(raw)
+	if err != nil {
+		return "", false, err
+	}
+	if obligation.Mode == "cleanup" {
+		return raw, true, nil
+	}
+	obligation.Mode = "cleanup"
+	encoded, err := json.Marshal(obligation)
+	if err != nil {
+		return "", false, fmt.Errorf("encoding armed async-start cleanup obligation: %w", err)
+	}
+	armedRaw := string(encoded)
+	armed, err := sessFront.ReplaceAsyncStartCleanupObligation(sessionID, raw, armedRaw)
+	if err != nil {
+		return "", false, redactAsyncStartTokenError(err, obligation.InstanceToken)
+	}
+	return armedRaw, armed, nil
+}
+
+// armAsyncStartCleanupObligations durably converts every admitted async Start
+// into destructive cleanup intent before non-preserve shutdown begins waiting.
+// A completion that wins the CAS race is covered by the subsequent fresh
+// runtime census; an armed entry is handled by its callback or a successor.
+type asyncStartCleanupArmFailure struct {
+	SessionID                string
+	SessionName              string
+	InstanceTokenFingerprint string
+	Err                      error
+}
+
+func armAsyncStartCleanupObligations(store beads.Store, tracked map[string]string, stderr io.Writer) []asyncStartCleanupArmFailure {
+	if store == nil {
+		failures := make([]asyncStartCleanupArmFailure, 0, len(tracked))
+		for id, raw := range tracked {
+			obligation, _ := decodeAsyncStartCleanupObligation(raw)
+			failures = append(failures, asyncStartCleanupArmFailure{SessionID: id, SessionName: obligation.SessionName, InstanceTokenFingerprint: asyncStartTokenFingerprint(obligation.InstanceToken), Err: fmt.Errorf("session store unavailable")})
+		}
+		return failures
+	}
+	sessFront := sessionFrontDoor(store)
+	targets := make(map[string]string, len(tracked))
+	for id, raw := range tracked {
+		targets[id] = raw
+	}
+	failures := make([]asyncStartCleanupArmFailure, 0)
+	for id, raw := range targets {
+		if raw == "" {
+			continue
+		}
+		obligation, decodeErr := decodeAsyncStartCleanupObligation(raw)
+		if decodeErr != nil {
+			fmt.Fprintf(stderr, "session reconciler: arming async-start cleanup for %s: %v\n", id, decodeErr) //nolint:errcheck
+			failures = append(failures, asyncStartCleanupArmFailure{SessionID: id, Err: decodeErr})
+			continue
+		}
+		if obligation.Mode == "cleanup" {
+			continue
+		}
+		if _, armed, armErr := armAsyncStartCleanupObligation(sessFront, id, raw); armErr != nil {
+			fmt.Fprintf(stderr, "session reconciler: arming async-start cleanup for %s: %v\n", id, armErr) //nolint:errcheck
+			failures = append(failures, asyncStartCleanupArmFailure{SessionID: id, SessionName: obligation.SessionName, InstanceTokenFingerprint: asyncStartTokenFingerprint(obligation.InstanceToken), Err: armErr})
+		} else if !armed {
+			// A normal completion may have cleared the admitted entry between
+			// the tracker snapshot and CAS. That completion linearizes before
+			// shutdown's fresh census and is not an unarmed remainder. Re-read to
+			// distinguish that
+			// case from a transient lost-CAS/store observation.
+			current, getErr := sessFront.Get(id)
+			if getErr != nil {
+				failures = append(failures, asyncStartCleanupArmFailure{SessionID: id, SessionName: obligation.SessionName, InstanceTokenFingerprint: asyncStartTokenFingerprint(obligation.InstanceToken), Err: redactAsyncStartTokenError(getErr, obligation.InstanceToken)})
+				continue
+			}
+			currentRaw := current.AsyncStartCleanupObligation
+			if currentRaw == "" {
+				continue
+			}
+			currentObligation, currentErr := decodeAsyncStartCleanupObligation(currentRaw)
+			if currentErr == nil && currentObligation.Mode == "cleanup" &&
+				currentObligation.SessionName == obligation.SessionName && currentObligation.InstanceToken == obligation.InstanceToken && currentObligation.NotBefore.Equal(obligation.NotBefore) {
+				continue
+			}
+			if currentRaw != raw {
+				continue
+			}
+			failures = append(failures, asyncStartCleanupArmFailure{SessionID: id, SessionName: obligation.SessionName, InstanceTokenFingerprint: asyncStartTokenFingerprint(obligation.InstanceToken), Err: fmt.Errorf("async-start cleanup journal CAS did not apply")})
+		}
+	}
+	return failures
+}
+
+func clearAsyncStartCleanupObligation(sessFront *sessionpkg.Store, sessionID, raw string, stderr io.Writer) bool {
+	if sessFront == nil || !sessFront.Backed() || strings.TrimSpace(sessionID) == "" || raw == "" {
+		return false
+	}
+	cleared, err := sessFront.ClearAsyncStartCleanupObligation(sessionID, raw)
+	if err != nil {
+		if obligation, decodeErr := decodeAsyncStartCleanupObligation(raw); decodeErr == nil {
+			err = redactAsyncStartTokenError(err, obligation.InstanceToken)
+		}
+		fmt.Fprintf(stderr, "session reconciler: clearing async-start cleanup obligation for %s: %v\n", sessionID, err) //nolint:errcheck
+		return false
+	}
+	if !cleared {
+		fmt.Fprintf(stderr, "session reconciler: async-start cleanup obligation for %s changed before clear; preserving newer owner\n", sessionID) //nolint:errcheck
+	}
+	return cleared
+}
+
+func completeAsyncStartObligation(item preparedStart, admittedRaw string, sp runtime.Provider, store beads.Store, stderr io.Writer) bool {
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	const immediateAttempts = 4
+	for attempt := 0; attempt < immediateAttempts; attempt++ {
+		if completeAsyncStartObligationAttempt(item, admittedRaw, sp, store, stderr) {
+			return true
+		}
+		if attempt+1 < immediateAttempts {
+			time.Sleep(asyncStartCleanupRetryInterval)
+		}
+	}
+	fmt.Fprintf(stderr, "session reconciler: deferring completed async-start obligation for %s to steady-state reconciliation\n", item.candidate.info.ID) //nolint:errcheck
+	return false
+}
+
+// completeAsyncStartObligationAttempt returns true only after this callback no
+// longer owns a journal or has fully settled it. A false result is retried
+// briefly by the callback, then left durable for the controller tick sweeper.
+func completeAsyncStartObligationAttempt(item preparedStart, admittedRaw string, sp runtime.Provider, store beads.Store, stderr io.Writer) (done bool) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			fmt.Fprintf(stderr, "session reconciler: completing async-start obligation for %s panicked: %v\n%s", item.candidate.name(), recovered, debug.Stack()) //nolint:errcheck
+			done = false
+		}
+	}()
+	sessFront := sessionFrontDoor(store)
+	info, err := sessFront.Get(item.candidate.info.ID)
+	if err != nil {
+		fmt.Fprintf(stderr, "session reconciler: loading completed async-start obligation for %s: %v\n", item.candidate.info.ID, err) //nolint:errcheck
+		return false
+	}
+	currentRaw := info.AsyncStartCleanupObligation
+	if currentRaw == "" {
+		return true
+	}
+	if currentRaw == admittedRaw {
+		if clearAsyncStartCleanupObligation(sessFront, info.ID, admittedRaw, stderr) {
+			return true
+		}
+		// A store failure or a concurrent admitted→cleanup CAS both require a
+		// fresh attempt before tracker completion is published.
+		return false
+	}
+	current, currentErr := decodeAsyncStartCleanupObligation(currentRaw)
+	admitted, admittedErr := decodeAsyncStartCleanupObligation(admittedRaw)
+	if currentErr != nil || admittedErr != nil || current.Mode != "cleanup" ||
+		current.SessionName != admitted.SessionName || current.InstanceToken != admitted.InstanceToken || !current.NotBefore.Equal(admitted.NotBefore) {
+		return true
+	}
+	return reconcileAsyncStartCleanupObligation(info, currentRaw, sp, sessFront, time.Now(), true, stderr)
+}
+
+func settleAsyncStartCleanupObligation(info sessionpkg.Info, raw string, sessFront *sessionpkg.Store, stderr io.Writer) bool {
+	if !info.Closed {
+		if err := sessFront.Sleep(info.ID, string(sessionpkg.SleepReasonCityStop), time.Now()); err != nil {
+			fmt.Fprintf(stderr, "session reconciler: settling async-start cleanup obligation for %s: %v\n", info.ID, err) //nolint:errcheck
+			return false
+		}
+	}
+	return clearAsyncStartCleanupObligation(sessFront, info.ID, raw, stderr)
+}
+
+// reconcileAsyncStartCleanupObligation stops only after a successful, exact,
+// non-empty immutable-token observation. Probe errors and empty metadata are
+// uncertainty and therefore fail closed. A definite mismatch proves that the
+// old incarnation no longer owns the name and releases only the old journal.
+func reconcileAsyncStartCleanupObligation(info sessionpkg.Info, raw string, sp runtime.Provider, sessFront *sessionpkg.Store, now time.Time, startCallFinished bool, stderr io.Writer) bool {
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	obligation, err := decodeAsyncStartCleanupObligation(raw)
+	if err != nil {
+		fmt.Fprintf(stderr, "session reconciler: async-start cleanup for %s skipped: %v\n", info.ID, err) //nolint:errcheck
+		return false
+	}
+	if sp == nil {
+		fmt.Fprintf(stderr, "session reconciler: async-start cleanup for %s skipped: runtime provider unavailable\n", obligation.SessionName) //nolint:errcheck
+		return false
+	}
+	if obligation.Mode == "cleanup" {
+		fenced, ok := sp.(runtime.InstanceTokenFencedStopProvider)
+		if !ok {
+			fmt.Fprintf(stderr, "session reconciler: async-start cleanup for %s skipped: %v\n", obligation.SessionName, runtime.ErrFencedStopUnsupported) //nolint:errcheck
+			return false
+		}
+		stopErr := fenced.StopIfInstanceToken(obligation.SessionName, obligation.InstanceToken)
+		switch {
+		case stopErr == nil:
+			return settleAsyncStartCleanupObligation(info, raw, sessFront, stderr)
+		case errors.Is(stopErr, runtime.ErrInstanceTokenMismatch):
+			fmt.Fprintf(stderr, "session reconciler: async-start cleanup for %s skipped: instance token mismatch\n", obligation.SessionName) //nolint:errcheck
+			return clearAsyncStartCleanupObligation(sessFront, info.ID, raw, stderr)
+		case runtime.IsSessionGone(stopErr) && (startCallFinished || !now.Before(obligation.NotBefore)):
+			return settleAsyncStartCleanupObligation(info, raw, sessFront, stderr)
+		default:
+			fmt.Fprintf(stderr, "session reconciler: async-start cleanup for %s: token-fenced stop: %v\n", obligation.SessionName, redactAsyncStartTokenError(stopErr, obligation.InstanceToken)) //nolint:errcheck
+			return false
+		}
+	}
+	actualToken, probeErr := sp.GetMeta(obligation.SessionName, "GC_INSTANCE_TOKEN")
+	if probeErr != nil {
+		if runtime.IsSessionGone(probeErr) && (startCallFinished || !now.Before(obligation.NotBefore)) {
+			if obligation.Mode == "admitted" {
+				return clearAsyncStartCleanupObligation(sessFront, info.ID, raw, stderr)
+			}
+			return settleAsyncStartCleanupObligation(info, raw, sessFront, stderr)
+		}
+		fmt.Fprintf(stderr, "session reconciler: async-start cleanup for %s skipped: instance token probe: %v\n", obligation.SessionName, probeErr) //nolint:errcheck
+		return false
+	}
+	actualToken = strings.TrimSpace(actualToken)
+	if actualToken == "" {
+		fmt.Fprintf(stderr, "session reconciler: async-start cleanup for %s skipped: empty instance token\n", obligation.SessionName) //nolint:errcheck
+		return false
+	}
+	if actualToken != obligation.InstanceToken {
+		fmt.Fprintf(stderr, "session reconciler: async-start cleanup for %s skipped: instance token mismatch\n", obligation.SessionName) //nolint:errcheck
+		return clearAsyncStartCleanupObligation(sessFront, info.ID, raw, stderr)
+	}
+	// Ordinary controller loss is adoption, not shutdown intent. The exact
+	// token proves the desired incarnation survived; release only its journal
+	// and let normal desired-state reconciliation retain it.
+	return clearAsyncStartCleanupObligation(sessFront, info.ID, raw, stderr)
+}
+
+// stopAsyncStartAfterShutdown is the completion-side half of the forced or
+// timed-out shutdown handoff. The durable marker means this callback may die
+// with the old controller process: a successor runs the same reconciliation.
+func stopAsyncStartAfterShutdown(item preparedStart, raw string, sp runtime.Provider, store beads.Store, stderr io.Writer) (settled bool) {
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			fmt.Fprintf(stderr, "session reconciler: forced-shutdown cleanup for async start %s panicked: %v\n%s", item.candidate.name(), recovered, debug.Stack()) //nolint:errcheck
+			settled = false
+		}
+	}()
+	sessFront := sessionFrontDoor(store)
+	info, err := sessFront.Get(item.candidate.info.ID)
+	if err != nil {
+		fmt.Fprintf(stderr, "session reconciler: loading async-start cleanup obligation for %s: %v\n", item.candidate.info.ID, err) //nolint:errcheck
+		return false
+	}
+	expected, expectedErr := decodeAsyncStartCleanupObligation(raw)
+	if expectedErr != nil {
+		fmt.Fprintf(stderr, "session reconciler: forced-shutdown cleanup for async start %s skipped: %v\n", item.candidate.name(), expectedErr) //nolint:errcheck
+		return false
+	}
+	if info.AsyncStartCleanupObligation != raw {
+		currentRaw := info.AsyncStartCleanupObligation
+		if currentRaw == "" {
+			return true
+		}
+		current, currentErr := decodeAsyncStartCleanupObligation(currentRaw)
+		if currentErr != nil || current.SessionName != expected.SessionName || current.InstanceToken != expected.InstanceToken || !current.NotBefore.Equal(expected.NotBefore) {
+			return true
+		}
+		raw = currentRaw
+	}
+	obligation, decodeErr := decodeAsyncStartCleanupObligation(raw)
+	if decodeErr != nil {
+		fmt.Fprintf(stderr, "session reconciler: forced-shutdown cleanup for async start %s skipped: %v\n", item.candidate.name(), decodeErr) //nolint:errcheck
+		return false
+	}
+	if obligation.Mode == "admitted" {
+		armedRaw, armed, armErr := armAsyncStartCleanupObligation(sessFront, info.ID, raw)
+		if armErr != nil {
+			fmt.Fprintf(stderr, "session reconciler: forced-shutdown cleanup for async start %s could not arm: %v\n", item.candidate.name(), armErr) //nolint:errcheck
+			return false
+		}
+		if !armed {
+			current, getErr := sessFront.Get(info.ID)
+			if getErr != nil {
+				return false
+			}
+			currentRaw := current.AsyncStartCleanupObligation
+			if currentRaw == "" {
+				return true
+			}
+			currentObligation, currentErr := decodeAsyncStartCleanupObligation(currentRaw)
+			if currentErr != nil || currentObligation.SessionName != obligation.SessionName || currentObligation.InstanceToken != obligation.InstanceToken || !currentObligation.NotBefore.Equal(obligation.NotBefore) {
+				return true
+			}
+			if currentObligation.Mode != "cleanup" {
+				return false
+			}
+			raw = currentRaw
+			info = current
+			info.AsyncStartCleanupObligation = currentRaw
+			return reconcileAsyncStartCleanupObligation(info, raw, sp, sessFront, time.Now(), true, stderr)
+		}
+		raw = armedRaw
+		info.AsyncStartCleanupObligation = armedRaw
+	}
+	return reconcileAsyncStartCleanupObligation(info, raw, sp, sessFront, time.Now(), true, stderr)
+}
+
+func sweepAsyncStartCleanupObligations(sp runtime.Provider, store beads.Store, now time.Time, stderr io.Writer) (resolved, pending int, err error) {
+	return sweepAsyncStartCleanupObligationsSkipping(sp, store, now, stderr, nil, nil)
+}
+
+func sweepAsyncStartCleanupObligationsSkipping(sp runtime.Provider, store beads.Store, now time.Time, stderr io.Writer, skip func(sessionpkg.Info) bool, onResolved func(sessionpkg.Info, string)) (resolved, pending int, err error) {
+	if store == nil {
+		return 0, 0, nil
+	}
+	sessFront := sessionFrontDoor(store)
+	infos, err := sessFront.ListAll(sessionpkg.ListAllOptions{IncludeClosed: true})
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, info := range infos {
+		if skip != nil && skip(info) {
+			continue
+		}
+		raw := info.AsyncStartCleanupObligation
+		if raw == "" {
+			continue
+		}
+		if reconcileAsyncStartCleanupObligation(info, raw, sp, sessFront, now, false, stderr) {
+			resolved++
+			if onResolved != nil {
+				onResolved(info, raw)
+			}
+		} else {
+			pending++
+		}
+	}
+	return resolved, pending, nil
 }
 
 func reserveAsyncStartSlot(ctx context.Context, limiter *asyncStartLimiter) (func(), bool, string) {
@@ -2743,19 +3331,12 @@ func executePlannedStartsTraced(
 					continue
 				}
 				var release func()
-				var done func()
+				var done func(func() bool, func() bool)
 				if startOpts.async {
-					var tracking bool
-					done, tracking = startOpts.asyncTracker.start()
-					if !tracking {
-						logLifecycleOutcome(stderr, "start", wave, candidate.name(), candidate.logicalTemplate(cfg), "context_canceled", time.Time{}, time.Time{}, nil)
-						continue
-					}
 					var reserved bool
 					var outcome string
 					release, reserved, outcome = reserveAsyncStartSlot(ctx, asyncLimiter)
 					if !reserved {
-						done()
 						logLifecycleOutcome(stderr, "start", wave, candidate.name(), candidate.logicalTemplate(cfg), outcome, time.Time{}, time.Time{}, nil)
 						continue
 					}
@@ -2769,7 +3350,7 @@ func executePlannedStartsTraced(
 								release()
 							}
 							if done != nil {
-								done()
+								done(nil, nil)
 							}
 							if err := persistSessionCircuitBreakerMetadata(sessFront, candidate.info.ID, cb, identity, cbNow); err != nil {
 								fmt.Fprintf(stderr, "session reconciler: %v\n", err) //nolint:errcheck // best-effort stderr
@@ -2788,7 +3369,7 @@ func executePlannedStartsTraced(
 								release()
 							}
 							if done != nil {
-								done()
+								done(nil, nil)
 							}
 							fmt.Fprintf(stderr, "session reconciler: %v\n", err) //nolint:errcheck // best-effort stderr
 							logLifecycleOutcome(stderr, "start", wave, candidate.name(), candidate.logicalTemplate(cfg), "circuit_metadata_failed", time.Time{}, time.Time{}, err)
@@ -2799,7 +3380,7 @@ func executePlannedStartsTraced(
 								release()
 							}
 							if done != nil {
-								done()
+								done(nil, nil)
 							}
 							cb.LogOpenOnce(identity, stderr)
 							if trace != nil {
@@ -2818,14 +3399,37 @@ func executePlannedStartsTraced(
 						release()
 					}
 					if done != nil {
-						done()
+						done(nil, nil)
 					}
 					fmt.Fprintf(stderr, "session reconciler: pre-wake %s: %s\n", candidate.name(), formatLifecycleError(err)) //nolint:errcheck
 					logLifecycleOutcome(stderr, "start", wave, candidate.name(), candidate.logicalTemplate(cfg), "failed", time.Time{}, time.Time{}, err)
 					continue
 				}
 				if startOpts.async {
-					asyncPrepared = append(asyncPrepared, asyncPreparedStart{item: *item, release: release, done: done})
+					var obligationRaw string
+					done, tracking, obligationErr := startOpts.asyncTracker.startWithCompletionCleanupRegistered(item.candidate.info.ID, func() (string, error) {
+						var claimErr error
+						obligationRaw, claimErr = claimAsyncStartCleanupObligation(sessFront, *item, clk.Now(), startupTimeout)
+						return obligationRaw, claimErr
+					})
+					if obligationErr != nil {
+						clearPendingStartInFlightLease(candidate.info.ID, sessFront, stderr)
+						if release != nil {
+							release()
+						}
+						fmt.Fprintf(stderr, "session reconciler: journaling async start %s: %v\n", candidate.name(), obligationErr) //nolint:errcheck
+						logLifecycleOutcome(stderr, "start", wave, candidate.name(), candidate.logicalTemplate(cfg), "cleanup_journal_failed", time.Time{}, time.Time{}, obligationErr)
+						continue
+					}
+					if !tracking {
+						clearPendingStartInFlightLease(candidate.info.ID, sessFront, stderr)
+						if release != nil {
+							release()
+						}
+						logLifecycleOutcome(stderr, "start", wave, candidate.name(), candidate.logicalTemplate(cfg), "context_canceled", time.Time{}, time.Time{}, nil)
+						continue
+					}
+					asyncPrepared = append(asyncPrepared, asyncPreparedStart{item: *item, release: release, done: done, obligationRaw: obligationRaw})
 				} else {
 					prepared = append(prepared, *item)
 				}
@@ -2833,6 +3437,15 @@ func executePlannedStartsTraced(
 			offset = end
 			var results []startResult
 			if ctx != nil && ctx.Err() != nil {
+				for _, reserved := range asyncPrepared {
+					clearAsyncStartCleanupObligation(sessFront, reserved.item.candidate.info.ID, reserved.obligationRaw, stderr)
+					if reserved.release != nil {
+						reserved.release()
+					}
+					if reserved.done != nil {
+						reserved.done(nil, nil)
+					}
+				}
 				return wakeCount
 			}
 			if startOpts.async {

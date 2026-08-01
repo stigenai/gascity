@@ -50,6 +50,23 @@ func (p *sweepIsRunningFalseNegativeProvider) IsRunning(name string) bool {
 	return false
 }
 
+type cachedInventoryProvider struct {
+	*runtime.Fake
+	cached         []string
+	listCalls      atomic.Int32
+	freshListCalls atomic.Int32
+}
+
+func (p *cachedInventoryProvider) ListRunning(string) ([]string, error) {
+	p.listCalls.Add(1)
+	return append([]string(nil), p.cached...), nil
+}
+
+func (p *cachedInventoryProvider) ListRunningFresh(prefix string) ([]string, error) {
+	p.freshListCalls.Add(1)
+	return p.Fake.ListRunning(prefix)
+}
+
 func TestSweepUndesiredPoolSessionBeads_KeepsRunningSessionsOpen(t *testing.T) {
 	store := beads.NewMemStore()
 	bead, err := store.Create(beads.Bead{
@@ -4164,13 +4181,16 @@ func TestCityRuntimeBuildDesiredState_StandaloneIncludesRigStores(t *testing.T) 
 func TestCityRuntimeReloadProviderSwapPreservesDrainTracker(t *testing.T) {
 	cityPath := t.TempDir()
 	tomlPath := filepath.Join(cityPath, "city.toml")
-	writeCityRuntimeConfig(t, tomlPath, "fake")
+	writeCityRuntimeConfigWithShutdownTimeout(t, tomlPath, "fake", "0s")
 
 	cfg, err := config.Load(osFS{}, tomlPath)
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	sp := runtime.NewFake()
+	sp := &cachedInventoryProvider{Fake: runtime.NewFake()}
+	if err := sp.Start(context.Background(), "late-visible-worker", runtime.Config{}); err != nil {
+		t.Fatalf("start old-provider session: %v", err)
+	}
 	var stdout bytes.Buffer
 	cr := newTestCityRuntime(t, CityRuntimeParams{
 		CityPath: cityPath,
@@ -4194,7 +4214,7 @@ func TestCityRuntimeReloadProviderSwapPreservesDrainTracker(t *testing.T) {
 	// Manually initialize drain tracker (normally done in run()).
 	cr.sessionDrains = newDrainTracker()
 
-	writeCityRuntimeConfig(t, tomlPath, "fail")
+	writeCityRuntimeConfigWithShutdownTimeout(t, tomlPath, "fail", "0s")
 	lastProviderName := "fake"
 	cr.reloadConfig(context.Background(), &lastProviderName, cityPath)
 
@@ -4203,6 +4223,15 @@ func TestCityRuntimeReloadProviderSwapPreservesDrainTracker(t *testing.T) {
 	}
 	if cr.sessionDrains == nil {
 		t.Fatal("sessionDrains = nil after provider swap, want non-nil")
+	}
+	if sp.IsRunning("late-visible-worker") {
+		t.Fatal("provider swap missed the session hidden by the observation cache")
+	}
+	if got := sp.listCalls.Load(); got != 0 {
+		t.Fatalf("cached ListRunning calls during provider swap = %d, want 0", got)
+	}
+	if got := sp.freshListCalls.Load(); got != 1 {
+		t.Fatalf("ListRunningFresh calls during provider swap = %d, want 1", got)
 	}
 }
 

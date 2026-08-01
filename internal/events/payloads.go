@@ -133,3 +133,33 @@ func SessionResetStalledPayloadJSON(sessionName, template, resetCommittedAt stri
 	})
 	return b
 }
+
+// ShutdownCleanupIncompletePayload identifies an async-start incarnation that
+// a bounded non-preserve shutdown preserved because its cleanup journal could
+// not be durably armed. InstanceTokenFingerprint is safe for correlation in
+// logs and event streams without exposing the bearer-like raw identity value.
+type ShutdownCleanupIncompletePayload struct {
+	SessionID                string `json:"session_id"`
+	SessionName              string `json:"session_name"`
+	InstanceTokenFingerprint string `json:"instance_token_fingerprint"`
+	Error                    string `json:"error"`
+}
+
+// IsEventPayload marks ShutdownCleanupIncompletePayload as a typed event payload.
+func (ShutdownCleanupIncompletePayload) IsEventPayload() {}
+
+// ShutdownCleanupIncompletePayloadJSON marshals the typed bounded-shutdown
+// evidence payload for event recording.
+func ShutdownCleanupIncompletePayloadJSON(sessionID, sessionName, tokenFingerprint string, err error) json.RawMessage {
+	errText := ""
+	if err != nil {
+		errText = err.Error()
+	}
+	b, _ := json.Marshal(ShutdownCleanupIncompletePayload{
+		SessionID:                sessionID,
+		SessionName:              sessionName,
+		InstanceTokenFingerprint: tokenFingerprint,
+		Error:                    errText,
+	})
+	return b
+}

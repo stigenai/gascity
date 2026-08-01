@@ -179,6 +179,48 @@ func (s *Store) SetMarker(id, key, value string) error {
 	return s.setMetadataValue(id, key, value)
 }
 
+// ClaimAsyncStartCleanupObligation value-CASes the durable async-start journal
+// from empty to value. Requiring the conditional-write capability prevents two
+// controller generations from overwriting each other's cleanup identity.
+func (s *Store) ClaimAsyncStartCleanupObligation(id, value string) (bool, error) {
+	if value == "" {
+		return false, fmt.Errorf("claiming async-start cleanup obligation: empty value")
+	}
+	writer, ok := beads.ConditionalWriterFor(s.store.Store)
+	if !ok {
+		return false, fmt.Errorf("claiming async-start cleanup obligation: conditional writes unavailable")
+	}
+	return writer.CompareAndSetMetadataKey(id, AsyncStartCleanupObligationMetadataKey, "", value)
+}
+
+// ClearAsyncStartCleanupObligation clears value only when it is still the
+// caller's exact journal entry. A late completion from an older controller can
+// therefore never erase a newer generation's obligation.
+func (s *Store) ClearAsyncStartCleanupObligation(id, value string) (bool, error) {
+	if value == "" {
+		return false, fmt.Errorf("clearing async-start cleanup obligation: empty expected value")
+	}
+	writer, ok := beads.ConditionalWriterFor(s.store.Store)
+	if !ok {
+		return false, fmt.Errorf("clearing async-start cleanup obligation: conditional writes unavailable")
+	}
+	return writer.CompareAndSetMetadataKey(id, AsyncStartCleanupObligationMetadataKey, value, "")
+}
+
+// ReplaceAsyncStartCleanupObligation value-CASes one exact journal value to
+// another. Shutdown uses it to durably arm an admitted Start for destructive
+// cleanup without racing a normal completion or a newer controller generation.
+func (s *Store) ReplaceAsyncStartCleanupObligation(id, expected, next string) (bool, error) {
+	if expected == "" || next == "" {
+		return false, fmt.Errorf("replacing async-start cleanup obligation: empty value")
+	}
+	writer, ok := beads.ConditionalWriterFor(s.store.Store)
+	if !ok {
+		return false, fmt.Errorf("replacing async-start cleanup obligation: conditional writes unavailable")
+	}
+	return writer.CompareAndSetMetadataKey(id, AsyncStartCleanupObligationMetadataKey, expected, next)
+}
+
 // RecordCurrentBead stamps the work bead a session is currently processing.
 // Replaces recordCurrentBeadIDOnWake (session_bead_cycle.go), which uses a
 // single-key SetMetadata write — so this emits SetMetadata, not a batch.

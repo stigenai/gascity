@@ -259,8 +259,10 @@ func TestGatedStartProviderWaitForStartsSurvivesDelayPastOldFixedDeadline(t *tes
 
 type shutdownWaitProvider struct {
 	*gatedStartProvider
-	listCalled chan struct{}
-	listOnce   sync.Once
+	listCalled     chan struct{}
+	listOnce       sync.Once
+	listCalls      atomic.Int32
+	freshListCalls atomic.Int32
 }
 
 func newShutdownWaitProvider() *shutdownWaitProvider {
@@ -271,53 +273,61 @@ func newShutdownWaitProvider() *shutdownWaitProvider {
 }
 
 func (p *shutdownWaitProvider) ListRunning(prefix string) ([]string, error) {
+	p.listCalls.Add(1)
+	return p.Fake.ListRunning(prefix)
+}
+
+func (p *shutdownWaitProvider) ListRunningFresh(prefix string) ([]string, error) {
+	p.freshListCalls.Add(1)
 	p.listOnce.Do(func() { close(p.listCalled) })
 	return p.Fake.ListRunning(prefix)
 }
 
 type lateAsyncStartListProvider struct {
 	*gatedStartProvider
-	listCalls         atomic.Int32
-	freshListCalls    atomic.Int32
-	snapshotOnce      sync.Once
-	startCompleteOnce sync.Once
-	startCompleted    chan struct{}
-	cachedRunning     []string
-	cachedListErr     error
+	listCalls      atomic.Int32
+	freshListCalls atomic.Int32
+	stopped        chan string
 }
 
 func newLateAsyncStartListProvider() *lateAsyncStartListProvider {
 	return &lateAsyncStartListProvider{
 		gatedStartProvider: newGatedStartProvider(),
-		startCompleted:     make(chan struct{}),
+		stopped:            make(chan string, 64),
 	}
 }
 
-func (p *lateAsyncStartListProvider) Start(ctx context.Context, name string, cfg runtime.Config) error {
-	err := p.gatedStartProvider.Start(ctx, name, cfg)
-	p.startCompleteOnce.Do(func() { close(p.startCompleted) })
-	return err
-}
-
-func (p *lateAsyncStartListProvider) ListRunning(prefix string) ([]string, error) {
+func (p *lateAsyncStartListProvider) ListRunning(string) ([]string, error) {
 	p.listCalls.Add(1)
-	p.snapshotOnce.Do(func() {
-		p.cachedRunning, p.cachedListErr = p.Fake.ListRunning(prefix)
-		p.release("worker")
-		timer := time.NewTimer(testutil.GoroutineRaceTimeout)
-		defer timer.Stop()
-		select {
-		case <-p.startCompleted:
-		case <-timer.C:
-			p.cachedListErr = errors.New("timed out waiting for late async start")
-		}
-	})
-	return append([]string(nil), p.cachedRunning...), p.cachedListErr
+	return nil, nil
 }
 
 func (p *lateAsyncStartListProvider) ListRunningFresh(prefix string) ([]string, error) {
 	p.freshListCalls.Add(1)
 	return p.Fake.ListRunning(prefix)
+}
+
+func (p *lateAsyncStartListProvider) GetMeta(name, key string) (string, error) {
+	if key == "GC_INSTANCE_TOKEN" && p.IsRunning(name) {
+		if cfg := p.LastStartConfig(name); cfg != nil {
+			return cfg.Env[key], nil
+		}
+	}
+	return p.Fake.GetMeta(name, key)
+}
+
+func (p *lateAsyncStartListProvider) Stop(name string) error {
+	err := p.Fake.Stop(name)
+	p.stopped <- name
+	return err
+}
+
+func (p *lateAsyncStartListProvider) StopIfInstanceToken(name, expectedToken string) error {
+	err := p.Fake.StopIfInstanceToken(name, expectedToken)
+	if err == nil {
+		p.stopped <- name
+	}
+	return err
 }
 
 func creatingMeta(meta map[string]string) map[string]string {
@@ -2205,6 +2215,7 @@ func TestCityRuntimeShutdownWaitsForTrackedAsyncStartsBeforeStopSnapshot(t *test
 		t.Fatalf("woken = %d, want 1", got)
 	}
 	sp.waitForStarts(t, 1)
+	freshListCallsBeforeShutdown := sp.freshListCalls.Load()
 
 	shutdownDone := make(chan struct{})
 	go func() {
@@ -2233,9 +2244,128 @@ func TestCityRuntimeShutdownWaitsForTrackedAsyncStartsBeforeStopSnapshot(t *test
 	if sp.IsRunning("worker") {
 		t.Fatal("shutdown should stop the runtime that the async start created")
 	}
+	if got := sp.freshListCalls.Load() - freshListCallsBeforeShutdown; got != 1 {
+		t.Fatalf("ListRunningFresh calls added by shutdown = %d, want 1", got)
+	}
 }
 
-func TestCityRuntimeForceShutdownRelistsLateAsyncStart(t *testing.T) {
+func TestCityRuntimeForceShutdownCleansEveryLateAsyncStartOnCompletion(t *testing.T) {
+	const startCount = 12
+	store := beads.NewMemStore()
+	clk := &clock.Fake{Time: time.Date(2026, 4, 26, 12, 1, 26, 0, time.UTC)}
+	maxWakes := startCount
+	cfg := &config.City{Daemon: config.DaemonConfig{ShutdownTimeout: "500ms", MaxWakesPerTick: &maxWakes}}
+	desired := make(map[string]TemplateParams, startCount)
+	candidates := make([]startCandidate, 0, startCount)
+	names := make([]string, 0, startCount)
+	for i := range startCount {
+		name := fmt.Sprintf("worker-%02d", i)
+		session, err := store.Create(beads.Bead{
+			ID:     "gc-" + name,
+			Title:  name,
+			Type:   sessionBeadType,
+			Labels: []string{sessionBeadLabel},
+			Metadata: creatingMeta(map[string]string{
+				"session_name":         name,
+				"template":             name,
+				"generation":           "1",
+				"continuation_epoch":   "1",
+				"instance_token":       "tok-" + name,
+				"pending_create_claim": "true",
+			}),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		tp := TemplateParams{Command: name, SessionName: name, TemplateName: name}
+		cfg.Agents = append(cfg.Agents, config.Agent{Name: name})
+		desired[name] = tp
+		candidates = append(candidates, startCandidate{info: sessiontest.SeedBead(t, session), tp: tp})
+		names = append(names, name)
+	}
+	sp := newLateAsyncStartListProvider()
+	t.Cleanup(func() {
+		for _, name := range names {
+			sp.release(name)
+		}
+	})
+	forceStop := &atomic.Bool{}
+	forceStop.Store(true)
+	cr := &CityRuntime{
+		cfg:                 cfg,
+		sp:                  sp,
+		rec:                 events.Discard,
+		standaloneCityStore: store,
+		asyncStartLimiter:   newAsyncStartLimiter(maxParallelStartsPerTick(cfg)),
+		forceStopShutdown:   forceStop,
+		logPrefix:           "gc test",
+		stdout:              ioDiscard{},
+		stderr:              ioDiscard{},
+	}
+	if got := executePlannedStartsTraced(
+		context.Background(),
+		candidates,
+		cfg,
+		desired,
+		sp,
+		store,
+		"test-city",
+		"",
+		clk,
+		events.Discard,
+		time.Minute,
+		ioDiscard{},
+		ioDiscard{},
+		nil,
+		withAsyncStartExecution(),
+		withAsyncStartLimiter(cr.ensureAsyncStartLimiter()),
+		withAsyncStartTracker(&cr.asyncStarts),
+	); got != startCount {
+		t.Fatalf("woken = %d, want %d", got, startCount)
+	}
+	sp.waitForStarts(t, startCount)
+	listCallsBeforeShutdown := sp.listCalls.Load()
+	freshListCallsBeforeShutdown := sp.freshListCalls.Load()
+
+	cr.shutdown()
+
+	select {
+	case name := <-sp.stopped:
+		t.Fatalf("completion cleanup stopped %q before its provider Start completed", name)
+	default:
+	}
+	if got := sp.listCalls.Load() - listCallsBeforeShutdown; got != 0 {
+		t.Fatalf("cached ListRunning calls added by shutdown = %d, want 0", got)
+	}
+	if got := sp.freshListCalls.Load() - freshListCallsBeforeShutdown; got != 1 {
+		t.Fatalf("ListRunningFresh calls added by shutdown = %d, want one primary force-shutdown inventory", got)
+	}
+
+	for _, name := range names {
+		sp.release(name)
+	}
+	stopped := make(map[string]int, startCount)
+	timer := time.NewTimer(testutil.GoroutineRaceTimeout)
+	defer timer.Stop()
+	for len(stopped) < startCount {
+		select {
+		case name := <-sp.stopped:
+			stopped[name]++
+		case <-timer.C:
+			t.Fatalf("timed out waiting for completion-side cleanup: got %v", stopped)
+		}
+	}
+	for _, name := range names {
+		if stopped[name] != 1 {
+			t.Errorf("completion cleanup count for %s = %d, want 1", name, stopped[name])
+		}
+		if sp.IsRunning(name) {
+			t.Errorf("late async-started runtime %s survived forced shutdown", name)
+		}
+	}
+}
+
+func TestCityRuntimePreserveShutdownDoesNotArmLateStartCleanup(t *testing.T) {
 	store := beads.NewMemStore()
 	clk := &clock.Fake{Time: time.Date(2026, 4, 26, 12, 1, 26, 0, time.UTC)}
 	session, err := store.Create(beads.Bead{
@@ -2256,19 +2386,20 @@ func TestCityRuntimeForceShutdownRelistsLateAsyncStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	sp := newLateAsyncStartListProvider()
+	t.Cleanup(func() {
+		sp.release("worker")
+		_ = sp.Fake.Stop("worker")
+	})
 	cfg := &config.City{
-		Daemon: config.DaemonConfig{ShutdownTimeout: "500ms"},
+		Daemon: config.DaemonConfig{ShutdownTimeout: "10ms"},
 		Agents: []config.Agent{{Name: "worker"}},
 	}
-	forceStop := &atomic.Bool{}
-	forceStop.Store(true)
 	cr := &CityRuntime{
 		cfg:                 cfg,
 		sp:                  sp,
 		rec:                 events.Discard,
 		standaloneCityStore: store,
 		asyncStartLimiter:   newAsyncStartLimiter(maxParallelStartsPerTick(cfg)),
-		forceStopShutdown:   forceStop,
 		logPrefix:           "gc test",
 		stdout:              ioDiscard{},
 		stderr:              ioDiscard{},
@@ -2296,17 +2427,23 @@ func TestCityRuntimeForceShutdownRelistsLateAsyncStart(t *testing.T) {
 		t.Fatalf("woken = %d, want 1", got)
 	}
 	sp.waitForStarts(t, 1)
-
+	cr.preserveSessionsOnShutdown()
 	cr.shutdown()
+	if got := sp.freshListCalls.Load(); got != 0 {
+		t.Fatalf("preserve shutdown fresh inventories = %d, want 0", got)
+	}
 
-	if sp.IsRunning("worker") {
-		t.Fatal("force shutdown missed late async-started runtime")
+	sp.release("worker")
+	if !cr.asyncStarts.wait(time.Second) {
+		t.Fatal("late preserved async start did not finish")
 	}
-	if got := sp.listCalls.Load(); got != 1 {
-		t.Fatalf("cached ListRunning calls = %d, want 1 observation snapshot", got)
+	select {
+	case name := <-sp.stopped:
+		t.Fatalf("preserve shutdown completion unexpectedly stopped %q", name)
+	default:
 	}
-	if got := sp.freshListCalls.Load(); got != 1 {
-		t.Fatalf("ListRunningFresh calls = %d, want 1 force-fresh async-start cleanup snapshot", got)
+	if !sp.IsRunning("worker") {
+		t.Fatal("preserve shutdown should leave the late async-started runtime running")
 	}
 }
 
@@ -2664,6 +2801,80 @@ func TestAsyncStartTrackerWaitZeroDoesNotBlock(t *testing.T) {
 	done()
 	if !tracker.wait(time.Second) {
 		t.Fatal("tracker should report completion after async work finishes")
+	}
+}
+
+func TestAsyncStartTrackerAbandonHandsEveryLateCompletionItsCleanup(t *testing.T) {
+	const (
+		earlyCompletions = 7
+		lateCompletions  = 128
+	)
+	var tracker asyncStartTracker
+	finishes := make([]func(func() bool, func() bool), 0, earlyCompletions+lateCompletions)
+	for range earlyCompletions + lateCompletions {
+		finish, ok := tracker.startWithCompletionCleanup()
+		if !ok {
+			t.Fatal("tracker rejected work before shutdown")
+		}
+		finishes = append(finishes, finish)
+	}
+
+	var cleanups atomic.Int32
+	cleanup := func() bool { cleanups.Add(1); return true }
+	for _, finish := range finishes[:earlyCompletions] {
+		finish(nil, cleanup)
+	}
+	if got := cleanups.Load(); got != 0 {
+		t.Fatalf("cleanup count before shutdown handoff = %d, want 0", got)
+	}
+	if tracker.waitUntilWithCompletionCleanup(time.Hour, func() bool { return true }) {
+		t.Fatal("forced wait unexpectedly reported all starts complete")
+	}
+	if _, ok := tracker.startWithCompletionCleanup(); ok {
+		t.Fatal("tracker admitted a start after shutdown handoff")
+	}
+
+	var wg sync.WaitGroup
+	for _, finish := range finishes[earlyCompletions:] {
+		wg.Add(1)
+		go func(finish func(func() bool, func() bool)) {
+			defer wg.Done()
+			finish(nil, cleanup)
+		}(finish)
+	}
+	wg.Wait()
+	if got := cleanups.Load(); got != lateCompletions {
+		t.Fatalf("completion-side cleanup count = %d, want %d", got, lateCompletions)
+	}
+	if !tracker.wait(time.Second) {
+		t.Fatal("tracker did not settle after every completion-side cleanup")
+	}
+}
+
+func TestAsyncStartTrackerDoesNotPublishCompletionBeforeBlockedCleanupReturns(t *testing.T) {
+	var tracker asyncStartTracker
+	finish, ok := tracker.startWithCompletionCleanup()
+	if !ok {
+		t.Fatal("tracker rejected work before shutdown")
+	}
+	if tracker.waitUntilWithCompletionCleanup(time.Hour, func() bool { return true }) {
+		t.Fatal("forced wait unexpectedly reported completion")
+	}
+
+	cleanupStarted := make(chan struct{})
+	releaseCleanup := make(chan struct{})
+	go finish(nil, func() bool {
+		close(cleanupStarted)
+		<-releaseCleanup
+		return true
+	})
+	<-cleanupStarted
+	if tracker.wait(0) {
+		t.Fatal("tracker published completion while shutdown cleanup was blocked")
+	}
+	close(releaseCleanup)
+	if !tracker.wait(time.Second) {
+		t.Fatal("tracker did not publish completion after shutdown cleanup returned")
 	}
 }
 

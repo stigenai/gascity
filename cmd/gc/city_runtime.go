@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -498,6 +499,43 @@ func (cr *CityRuntime) run(ctx context.Context) {
 		return
 	}
 
+	// Reconcile write-ahead journals left by async provider Start calls before
+	// any desired-state construction or order dispatch can route work to those
+	// names. A journal survives the old standalone controller process; its mode
+	// selects adoption or token-fenced cleanup, while uncertainty keeps startup
+	// closed.
+	asyncCleanupAttempt := 0
+	for {
+		resolved, pending, cleanupErr := sweepAsyncStartCleanupObligations(
+			cr.sp,
+			cr.sessionsBeadStore().Store,
+			time.Now(),
+			cr.stderr,
+		)
+		if resolved > 0 {
+			fmt.Fprintf(cr.stderr, "%s: reconciled %d durable async-start cleanup obligation(s)\n", cr.logPrefix, resolved) //nolint:errcheck
+		}
+		if cleanupErr == nil && pending == 0 {
+			break
+		}
+		asyncCleanupAttempt++
+		if cleanupErr != nil {
+			fmt.Fprintf(cr.stderr, "%s: loading durable async-start cleanup obligations: %v\n", cr.logPrefix, cleanupErr) //nolint:errcheck
+		} else {
+			fmt.Fprintf(cr.stderr, "%s: %d durable async-start cleanup obligation(s) remain unresolved; delaying startup\n", cr.logPrefix, pending) //nolint:errcheck
+		}
+		if startupRetryLimit > 0 && asyncCleanupAttempt >= startupRetryLimit {
+			fmt.Fprintf(cr.stderr, "%s: durable async-start cleanup did not settle after %d attempt(s); stopping city runtime\n", cr.logPrefix, asyncCleanupAttempt) //nolint:errcheck
+			return
+		}
+		if !waitForRetry() {
+			return
+		}
+	}
+	if ctx.Err() != nil {
+		return
+	}
+
 	// Initialize convergence handler (requires bead store).
 	cr.initConvergenceHandler()
 	if ctx.Err() != nil {
@@ -979,6 +1017,22 @@ func (cr *CityRuntime) tick(
 ) {
 	if ctx.Err() != nil {
 		return
+	}
+	// Retry durable completion journals that outlived their bounded callback
+	// retry. Entries still owned by an in-flight provider Start are skipped;
+	// their completion callback retains first responsibility.
+	resolvedAsyncJournals, _, asyncJournalErr := sweepAsyncStartCleanupObligationsSkipping(
+		cr.sp,
+		cr.sessionsBeadStore().Store,
+		time.Now(),
+		cr.stderr,
+		func(info sessionpkg.Info) bool { return cr.asyncStarts.ownsStartKey(info.ID) },
+		func(info sessionpkg.Info, raw string) { cr.asyncStarts.forgetStartJournal(info.ID, raw) },
+	)
+	if asyncJournalErr != nil {
+		fmt.Fprintf(cr.stderr, "%s: retrying durable async-start completion journals: %v\n", cr.logPrefix, asyncJournalErr) //nolint:errcheck
+	} else if resolvedAsyncJournals > 0 {
+		fmt.Fprintf(cr.stderr, "%s: reconciled %d deferred async-start completion journal(s)\n", cr.logPrefix, resolvedAsyncJournals) //nolint:errcheck
 	}
 	traceTrigger := trigger
 	traceDetail := "controller_tick"
@@ -1923,7 +1977,7 @@ func (cr *CityRuntime) reloadConfigTraced(
 	})
 
 	if providerChanged {
-		running, lErr := cr.sp.ListRunning("")
+		running, lErr := runtime.ListRunningFresh(cr.sp, "")
 		if lErr != nil {
 			err := fmt.Errorf("config reload: listing sessions failed during provider swap: %w", lErr)
 			if runtime.IsPartialListError(lErr) {
@@ -2699,6 +2753,10 @@ func (cr *CityRuntime) requestAsyncStartFollowUpTick() {
 }
 
 func (cr *CityRuntime) waitForAsyncStarts() bool {
+	return cr.waitForAsyncStartsMode(false)
+}
+
+func (cr *CityRuntime) waitForAsyncStartsMode(cleanupOnAbandon bool) bool {
 	if cr == nil {
 		return true
 	}
@@ -2709,11 +2767,25 @@ func (cr *CityRuntime) waitForAsyncStarts() bool {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
-	// A force stop may leave provider Start calls to finish after shutdown has
-	// stopped waiting. That favors bounded shutdown; the next controller start
-	// re-lists live runtime sessions after the first stop pass so late-created
-	// sessions do not survive the shutdown that abandoned the async wait.
-	if !cr.asyncStarts.waitUntil(timeout, cr.forceStopRequested) {
+	return cr.waitForAsyncStartsModeWithin(cleanupOnAbandon, timeout)
+}
+
+func (cr *CityRuntime) waitForAsyncStartsModeWithin(cleanupOnAbandon bool, timeout time.Duration) bool {
+	if cr == nil {
+		return true
+	}
+	if timeout < 0 {
+		timeout = 0
+	}
+	// A force request or timeout may leave provider Start calls to finish after
+	// shutdown stops waiting. Arm their completion-side cleanup atomically with
+	// abandoning this bounded wait so no one-shot runtime inventory must guess
+	// when the last late Start becomes visible.
+	wait := cr.asyncStarts.waitUntil
+	if cleanupOnAbandon {
+		wait = cr.asyncStarts.waitUntilWithCompletionCleanup
+	}
+	if !wait(timeout, cr.forceStopRequested) {
 		if cr.stderr != nil && !cr.forceStopRequested() {
 			fmt.Fprintf(cr.stderr, "%s: async session starts still running after %s; continuing shutdown\n", cr.logPrefix, timeout) //nolint:errcheck // best-effort stderr
 		}
@@ -3484,14 +3556,91 @@ func (cr *CityRuntime) recordPreservedShutdownTrace() {
 	})
 }
 
+func asyncStartTokenFingerprint(token string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(token)))
+	return fmt.Sprintf("%x", sum[:8])
+}
+
+func (cr *CityRuntime) armAsyncStartsForShutdown(deadline time.Time) []asyncStartCleanupArmFailure {
+	for {
+		failures := armAsyncStartCleanupObligations(
+			cr.sessionsBeadStore().Store,
+			cr.asyncStarts.startJournalSnapshot(),
+			cr.stderr,
+		)
+		if len(failures) == 0 || !time.Now().Before(deadline) {
+			return failures
+		}
+		remaining := time.Until(deadline)
+		wait := min(asyncStartCleanupRetryInterval, remaining)
+		if wait <= 0 {
+			return failures
+		}
+		time.Sleep(wait)
+	}
+}
+
+func (cr *CityRuntime) recordIncompleteAsyncStartShutdown(failures []asyncStartCleanupArmFailure) (preserveNames, preserveSessionIDs map[string]struct{}) {
+	preserveNames = make(map[string]struct{}, len(failures))
+	preserveSessionIDs = make(map[string]struct{}, len(failures))
+	for _, failure := range failures {
+		name := strings.TrimSpace(failure.SessionName)
+		fingerprint := failure.InstanceTokenFingerprint
+		safeErr := failure.Err
+		preserveNames[name] = struct{}{}
+		preserveSessionIDs[failure.SessionID] = struct{}{}
+		fmt.Fprintf(cr.stderr, "%s: shutdown_cleanup_incomplete session_id=%s session=%s instance_token_fingerprint=%s error=%v; preserving exact runtime\n", cr.logPrefix, failure.SessionID, name, fingerprint, safeErr) //nolint:errcheck
+		telemetry.RecordShutdownCleanupIncomplete(context.Background(), name, fingerprint, safeErr)
+		if cr.rec != nil {
+			cr.rec.Record(events.Event{
+				Type:      events.ShutdownCleanupIncomplete,
+				Actor:     "gc",
+				Subject:   name,
+				SessionID: failure.SessionID,
+				Message:   "async-start cleanup journal could not be durably armed; runtime preserved",
+				Payload:   events.ShutdownCleanupIncompletePayloadJSON(failure.SessionID, name, fingerprint, safeErr),
+			})
+		}
+	}
+	return preserveNames, preserveSessionIDs
+}
+
+func filterPreservedShutdownRuntimes(running []string, preserveNames map[string]struct{}) []string {
+	if len(preserveNames) == 0 {
+		return running
+	}
+	filtered := make([]string, 0, len(running))
+	for _, name := range running {
+		if _, preserve := preserveNames[name]; !preserve {
+			filtered = append(filtered, name)
+		}
+	}
+	return filtered
+}
+
 // shutdown performs graceful two-pass agent shutdown for this city.
 // Safe to call multiple times (e.g., from both panic recovery and
 // normal shutdown) — only the first call takes effect.
 func (cr *CityRuntime) shutdown() {
 	cr.shutdownOnce.Do(func() {
-		asyncStartsDrained := cr.waitForAsyncStarts()
-		cr.waitForAsyncStops()
 		preserveSessions := cr.preserveSessionsShutdown.Load()
+		shutdownBudget := 5 * time.Second
+		if cr.cfg != nil && cr.cfg.Daemon.ShutdownTimeoutDuration() > 0 {
+			shutdownBudget = cr.cfg.Daemon.ShutdownTimeoutDuration()
+		}
+		asyncStartDeadline := time.Now().Add(shutdownBudget)
+		var preserveNames, preserveSessionIDs map[string]struct{}
+		// Close admission before scanning journals. Async registration claims its
+		// journal while holding the same tracker mutex, so every admitted Start is
+		// discoverable by the arm pass below.
+		cr.asyncStarts.stopAdmission()
+		if !preserveSessions {
+			if failures := cr.armAsyncStartsForShutdown(asyncStartDeadline); len(failures) > 0 {
+				preserveNames, preserveSessionIDs = cr.recordIncompleteAsyncStartShutdown(failures)
+			}
+		}
+		cr.waitForAsyncStartsModeWithin(!preserveSessions, time.Until(asyncStartDeadline))
+		cr.waitForAsyncStops()
 		if preserveSessions {
 			cr.recordPreservedShutdownTrace()
 		}
@@ -3530,7 +3679,7 @@ func (cr *CityRuntime) shutdown() {
 			cr.drainOrderDispatchers(drainCtx)
 			drainCancel()
 		}
-		running, listErr := cr.sp.ListRunning("")
+		running, listErr := runtime.ListRunningFresh(cr.sp, "")
 		if listErr != nil {
 			if runtime.IsPartialListError(listErr) {
 				fmt.Fprintf(cr.stderr, "%s: shutdown session listing partially failed; stopping %d visible agent(s): %v\n", cr.logPrefix, len(running), listErr) //nolint:errcheck // best-effort stderr
@@ -3538,23 +3687,10 @@ func (cr *CityRuntime) shutdown() {
 				fmt.Fprintf(cr.stderr, "%s: shutdown session listing failed: %v\n", cr.logPrefix, listErr) //nolint:errcheck // best-effort stderr
 			}
 		}
+		running = filterPreservedShutdownRuntimes(running, preserveNames)
 		store := cr.sessionsBeadStore()
-		markCityStopSessionSleepReason(sessionFrontDoor(store.Store), cr.stderr)
+		markCityStopSessionSleepReasonExcept(sessionFrontDoor(store.Store), cr.stderr, preserveSessionIDs)
 		gracefulStopAllWithForceSignal(running, cr.sp, gracefulTimeout, cr.rec, cr.cfg, store, cr.stdout, cr.stderr, cr.forceStopRequested)
-		if !asyncStartsDrained && cr.forceStopRequested() {
-			lateRunning, lateListErr := runtime.ListRunningFresh(cr.sp, "")
-			if lateListErr != nil {
-				if runtime.IsPartialListError(lateListErr) {
-					fmt.Fprintf(cr.stderr, "%s: force shutdown late async-start listing partially failed; stopping %d visible agent(s): %v\n", cr.logPrefix, len(lateRunning), lateListErr) //nolint:errcheck // best-effort stderr
-				} else {
-					fmt.Fprintf(cr.stderr, "%s: force shutdown late async-start listing failed: %v\n", cr.logPrefix, lateListErr) //nolint:errcheck // best-effort stderr
-				}
-			}
-			if len(lateRunning) > 0 {
-				markCityStopSessionSleepReason(sessionFrontDoor(store.Store), cr.stderr)
-				gracefulStopAllWithForceSignal(lateRunning, cr.sp, 0, cr.rec, cr.cfg, store, cr.stdout, cr.stderr, cr.forceStopRequested)
-			}
-		}
 	})
 }
 
