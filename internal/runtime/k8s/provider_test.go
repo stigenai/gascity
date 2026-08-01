@@ -476,6 +476,44 @@ func TestListRunningAndSessionLookupShareSnapshot(t *testing.T) {
 	}
 }
 
+func TestListRunningFreshBypassesObservationSnapshotThroughProductionWrapper(t *testing.T) {
+	ops := newSnapshotListOps()
+	raw := newProviderWithOps(ops)
+	raw.runningPodCacheTTL = time.Hour
+	provider := newSeamBacked(raw)
+
+	names, err := provider.ListRunning("")
+	if err != nil {
+		t.Fatalf("priming ListRunning: %v", err)
+	}
+	if len(names) != 0 {
+		t.Fatalf("priming ListRunning = %v, want no sessions", names)
+	}
+	ops.pods = []corev1.Pod{runningPodForSnapshot("pod-late", "gc-city-worker-late")}
+
+	names, err = provider.ListRunning("")
+	if err != nil {
+		t.Fatalf("cached ListRunning: %v", err)
+	}
+	if len(names) != 0 {
+		t.Fatalf("cached ListRunning = %v, want stale empty observation snapshot", names)
+	}
+	fresh, ok := provider.(runtime.FreshRunningSessionLister)
+	if !ok {
+		t.Fatalf("production k8s provider %T does not preserve fresh running-session inventory", provider)
+	}
+	names, err = fresh.ListRunningFresh("")
+	if err != nil {
+		t.Fatalf("ListRunningFresh: %v", err)
+	}
+	if len(names) != 1 || names[0] != "gc-city-worker-late" {
+		t.Fatalf("ListRunningFresh = %v, want [gc-city-worker-late]", names)
+	}
+	if got := ops.listCalls.Load(); got != 2 {
+		t.Fatalf("Kubernetes LIST calls across cached observations and fresh inventory = %d, want 2", got)
+	}
+}
+
 func TestRunningPodSnapshotCoalescesConcurrentFailure(t *testing.T) {
 	wantErr := errors.New("Kubernetes API unavailable")
 	ops := newSnapshotListOps()

@@ -33,6 +33,7 @@ var (
 	_ runtime.TransportCapabilityProvider   = (*Provider)(nil)
 	_ runtime.RelaunchProvider              = (*Provider)(nil)
 	_ runtime.LivenessObserver              = (*Provider)(nil)
+	_ runtime.FreshRunningSessionLister     = (*Provider)(nil)
 )
 
 // New creates a composite provider. defaultSP handles sessions not
@@ -342,6 +343,17 @@ func (p *Provider) Peek(name string, lines int) (string, error) {
 func (p *Provider) ListRunning(prefix string) ([]string, error) {
 	defaultList, dErr := p.defaultSP.ListRunning(prefix)
 	acpList, aErr := p.acpSP.ListRunning(prefix)
+	return runtime.MergeBackendListResults(
+		runtime.BackendListResult{Label: "default", Names: defaultList, Err: dErr},
+		runtime.BackendListResult{Label: "acp", Names: acpList, Err: aErr},
+	)
+}
+
+// ListRunningFresh queries both backends through their uncached lifecycle
+// inventory when available, preserving partial-list behavior.
+func (p *Provider) ListRunningFresh(prefix string) ([]string, error) {
+	defaultList, dErr := runtime.ListRunningFresh(p.defaultSP, prefix)
+	acpList, aErr := runtime.ListRunningFresh(p.acpSP, prefix)
 	return runtime.MergeBackendListResults(
 		runtime.BackendListResult{Label: "default", Names: defaultList, Err: dErr},
 		runtime.BackendListResult{Label: "acp", Names: acpList, Err: aErr},

@@ -26,6 +26,7 @@ var (
 	_ runtime.RelaunchProvider              = (*Provider)(nil)
 	_ runtime.LivenessObserver              = (*Provider)(nil)
 	_ runtime.ServerLifecycleProvider       = (*Provider)(nil)
+	_ runtime.FreshRunningSessionLister     = (*Provider)(nil)
 )
 
 // New creates a hybrid provider. isRemote returns true for sessions
@@ -206,6 +207,17 @@ func (p *Provider) Peek(name string, lines int) (string, error) {
 func (p *Provider) ListRunning(prefix string) ([]string, error) {
 	local, lErr := p.local.ListRunning(prefix)
 	remote, rErr := p.remote.ListRunning(prefix)
+	return runtime.MergeBackendListResults(
+		runtime.BackendListResult{Label: "local", Names: local, Err: lErr},
+		runtime.BackendListResult{Label: "remote", Names: remote, Err: rErr},
+	)
+}
+
+// ListRunningFresh queries both backends through their uncached lifecycle
+// inventory when available, preserving partial-list behavior.
+func (p *Provider) ListRunningFresh(prefix string) ([]string, error) {
+	local, lErr := runtime.ListRunningFresh(p.local, prefix)
+	remote, rErr := runtime.ListRunningFresh(p.remote, prefix)
 	return runtime.MergeBackendListResults(
 		runtime.BackendListResult{Label: "local", Names: local, Err: lErr},
 		runtime.BackendListResult{Label: "remote", Names: remote, Err: rErr},

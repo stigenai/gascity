@@ -18,6 +18,23 @@ type lifecycleProvider struct {
 	teardownCalls  int
 }
 
+type freshListProvider struct {
+	*runtime.Fake
+	freshNames []string
+	freshCalls int
+}
+
+func (p *freshListProvider) ListRunningFresh(prefix string) ([]string, error) {
+	p.freshCalls++
+	var names []string
+	for _, name := range p.freshNames {
+		if strings.HasPrefix(name, prefix) {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
 func (p *lifecycleProvider) ConfigureServer() error {
 	p.configureCalls++
 	return nil
@@ -126,6 +143,29 @@ func TestListRunning_MergesBothBackends(t *testing.T) {
 	}
 	if len(names) != 3 {
 		t.Fatalf("expected 3 sessions, got %d: %v", len(names), names)
+	}
+}
+
+func TestListRunningFreshPreservesRemoteFreshInventory(t *testing.T) {
+	local := runtime.NewFake()
+	remote := &freshListProvider{
+		Fake:       runtime.NewFake(),
+		freshNames: []string{"gc-demo--remote-agent-late"},
+	}
+	h := New(local, remote, isRemote)
+	if err := local.Start(context.Background(), "gc-demo--local-agent", runtime.Config{}); err != nil {
+		t.Fatalf("start local: %v", err)
+	}
+
+	names, err := h.ListRunningFresh("gc-demo-")
+	if err != nil {
+		t.Fatalf("ListRunningFresh: %v", err)
+	}
+	if len(names) != 2 {
+		t.Fatalf("ListRunningFresh = %v, want local and late remote sessions", names)
+	}
+	if remote.freshCalls != 1 {
+		t.Fatalf("remote ListRunningFresh calls = %d, want 1", remote.freshCalls)
 	}
 }
 

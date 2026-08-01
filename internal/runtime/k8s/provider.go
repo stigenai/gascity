@@ -30,8 +30,9 @@ const runningPodSnapshotTimeout = 5 * time.Second
 
 // Compile-time interface checks.
 var (
-	_ runtime.Provider     = (*Provider)(nil)
-	_ runtime.ExecProvider = (*Provider)(nil)
+	_ runtime.Provider                  = (*Provider)(nil)
+	_ runtime.ExecProvider              = (*Provider)(nil)
+	_ runtime.FreshRunningSessionLister = (*Provider)(nil)
 )
 
 // Provider is a native Kubernetes session provider using client-go.
@@ -669,11 +670,7 @@ func (p *Provider) ListRunning(prefix string) ([]string, error) {
 	defer cancel()
 
 	if p.runningPodCacheTTL <= 0 {
-		pods, err := p.ops.listPods(ctx, "app=gc-agent", "status.phase=Running")
-		if err != nil {
-			return nil, err
-		}
-		return runningSessionNames(pods, prefix), nil
+		return p.listRunningFresh(ctx, prefix)
 	}
 
 	snapshot, err := p.runningPodSnapshot(ctx)
@@ -687,6 +684,22 @@ func (p *Provider) ListRunning(prefix string) ([]string, error) {
 		}
 	}
 	return names, nil
+}
+
+// ListRunningFresh bypasses the short-lived observation snapshot for lifecycle
+// decisions that must see pods which became Running after an earlier list.
+func (p *Provider) ListRunningFresh(prefix string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), runningPodSnapshotTimeout)
+	defer cancel()
+	return p.listRunningFresh(ctx, prefix)
+}
+
+func (p *Provider) listRunningFresh(ctx context.Context, prefix string) ([]string, error) {
+	pods, err := p.ops.listPods(ctx, "app=gc-agent", "status.phase=Running")
+	if err != nil {
+		return nil, err
+	}
+	return runningSessionNames(pods, prefix), nil
 }
 
 func runningSessionNames(pods []corev1.Pod, prefix string) []string {

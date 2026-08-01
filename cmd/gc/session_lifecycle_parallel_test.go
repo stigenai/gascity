@@ -277,30 +277,47 @@ func (p *shutdownWaitProvider) ListRunning(prefix string) ([]string, error) {
 
 type lateAsyncStartListProvider struct {
 	*gatedStartProvider
-	listCalls int
+	listCalls         atomic.Int32
+	freshListCalls    atomic.Int32
+	snapshotOnce      sync.Once
+	startCompleteOnce sync.Once
+	startCompleted    chan struct{}
+	cachedRunning     []string
+	cachedListErr     error
 }
 
 func newLateAsyncStartListProvider() *lateAsyncStartListProvider {
 	return &lateAsyncStartListProvider{
 		gatedStartProvider: newGatedStartProvider(),
+		startCompleted:     make(chan struct{}),
 	}
 }
 
-func (p *lateAsyncStartListProvider) ListRunning(prefix string) ([]string, error) {
-	p.mu.Lock()
-	p.listCalls++
-	call := p.listCalls
-	p.mu.Unlock()
+func (p *lateAsyncStartListProvider) Start(ctx context.Context, name string, cfg runtime.Config) error {
+	err := p.gatedStartProvider.Start(ctx, name, cfg)
+	p.startCompleteOnce.Do(func() { close(p.startCompleted) })
+	return err
+}
 
-	running, err := p.Fake.ListRunning(prefix)
-	if call == 1 {
+func (p *lateAsyncStartListProvider) ListRunning(prefix string) ([]string, error) {
+	p.listCalls.Add(1)
+	p.snapshotOnce.Do(func() {
+		p.cachedRunning, p.cachedListErr = p.Fake.ListRunning(prefix)
 		p.release("worker")
-		deadline := time.Now().Add(2 * time.Second)
-		for !p.IsRunning("worker") && time.Now().Before(deadline) {
-			time.Sleep(10 * time.Millisecond)
+		timer := time.NewTimer(testutil.GoroutineRaceTimeout)
+		defer timer.Stop()
+		select {
+		case <-p.startCompleted:
+		case <-timer.C:
+			p.cachedListErr = errors.New("timed out waiting for late async start")
 		}
-	}
-	return running, err
+	})
+	return append([]string(nil), p.cachedRunning...), p.cachedListErr
+}
+
+func (p *lateAsyncStartListProvider) ListRunningFresh(prefix string) ([]string, error) {
+	p.freshListCalls.Add(1)
+	return p.Fake.ListRunning(prefix)
 }
 
 func creatingMeta(meta map[string]string) map[string]string {
@@ -2285,8 +2302,11 @@ func TestCityRuntimeForceShutdownRelistsLateAsyncStart(t *testing.T) {
 	if sp.IsRunning("worker") {
 		t.Fatal("force shutdown missed late async-started runtime")
 	}
-	if sp.listCalls < 2 {
-		t.Fatalf("ListRunning calls = %d, want a second snapshot for force async-start cleanup", sp.listCalls)
+	if got := sp.listCalls.Load(); got != 1 {
+		t.Fatalf("cached ListRunning calls = %d, want 1 observation snapshot", got)
+	}
+	if got := sp.freshListCalls.Load(); got != 1 {
+		t.Fatalf("ListRunningFresh calls = %d, want 1 force-fresh async-start cleanup snapshot", got)
 	}
 }
 

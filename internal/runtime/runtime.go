@@ -248,6 +248,27 @@ type Provider interface {
 	Capabilities() ProviderCapabilities
 }
 
+// FreshRunningSessionLister is an optional lifecycle capability for providers
+// whose ordinary running-session inventory may be backed by a short-lived
+// observation cache. ListRunningFresh must bypass that cache so destructive
+// lifecycle decisions cannot miss a session that became running after an
+// earlier observation. Its prefix semantics match [Provider.ListRunning].
+//
+// Callers should use [ListRunningFresh] so providers without an observation
+// cache retain the ordinary Provider behavior.
+type FreshRunningSessionLister interface {
+	ListRunningFresh(prefix string) ([]string, error)
+}
+
+// ListRunningFresh requests uncached running-session inventory when the
+// provider exposes that capability, and otherwise falls back to ListRunning.
+func ListRunningFresh(provider Provider, prefix string) ([]string, error) {
+	if fresh, ok := provider.(FreshRunningSessionLister); ok {
+		return fresh.ListRunningFresh(prefix)
+	}
+	return provider.ListRunning(prefix)
+}
+
 // PendingInteraction describes a blocking interaction raised by a session.
 // This is an optional capability exposed by providers that support
 // structured approvals, questions, or other turn-blocking prompts.

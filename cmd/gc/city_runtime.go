@@ -3542,7 +3542,7 @@ func (cr *CityRuntime) shutdown() {
 		markCityStopSessionSleepReason(sessionFrontDoor(store.Store), cr.stderr)
 		gracefulStopAllWithForceSignal(running, cr.sp, gracefulTimeout, cr.rec, cr.cfg, store, cr.stdout, cr.stderr, cr.forceStopRequested)
 		if !asyncStartsDrained && cr.forceStopRequested() {
-			lateRunning, lateListErr := cr.sp.ListRunning("")
+			lateRunning, lateListErr := runtime.ListRunningFresh(cr.sp, "")
 			if lateListErr != nil {
 				if runtime.IsPartialListError(lateListErr) {
 					fmt.Fprintf(cr.stderr, "%s: force shutdown late async-start listing partially failed; stopping %d visible agent(s): %v\n", cr.logPrefix, len(lateRunning), lateListErr) //nolint:errcheck // best-effort stderr

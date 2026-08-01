@@ -13,6 +13,23 @@ import (
 
 var _ runtime.Provider = (*Provider)(nil)
 
+type freshListProvider struct {
+	*runtime.Fake
+	freshNames []string
+	freshCalls int
+}
+
+func (p *freshListProvider) ListRunningFresh(prefix string) ([]string, error) {
+	p.freshCalls++
+	var names []string
+	for _, name := range p.freshNames {
+		if strings.HasPrefix(name, prefix) {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
 // Relaunch must reach the routed backend (default vs ACP), or the reconciler's
 // RelaunchProvider type-assert would be masked by the auto router and fall back
 // to Stop+Start.
@@ -152,6 +169,29 @@ func TestListRunningMergesBothBackends(t *testing.T) {
 	}
 	if !found["default-1"] || !found["acp-1"] {
 		t.Errorf("ListRunning = %v, want default-1 and acp-1", names)
+	}
+}
+
+func TestListRunningFreshPreservesDefaultFreshInventory(t *testing.T) {
+	defaultSP := &freshListProvider{
+		Fake:       runtime.NewFake(),
+		freshNames: []string{"default-late"},
+	}
+	acpSP := runtime.NewFake()
+	p := New(defaultSP, acpSP)
+	if err := acpSP.Start(context.Background(), "acp-1", runtime.Config{}); err != nil {
+		t.Fatalf("start ACP: %v", err)
+	}
+
+	names, err := p.ListRunningFresh("")
+	if err != nil {
+		t.Fatalf("ListRunningFresh: %v", err)
+	}
+	if len(names) != 2 {
+		t.Fatalf("ListRunningFresh = %v, want late default and ACP sessions", names)
+	}
+	if defaultSP.freshCalls != 1 {
+		t.Fatalf("default ListRunningFresh calls = %d, want 1", defaultSP.freshCalls)
 	}
 }
 
