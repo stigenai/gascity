@@ -1,6 +1,47 @@
 package runtime
 
-import "testing"
+import (
+	"errors"
+	"fmt"
+	"testing"
+)
+
+func TestIsSessionGone(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", err: nil, want: false},
+		{name: "typed absence", err: fmt.Errorf("stop: %w", ErrSessionNotFound), want: true},
+		{name: "legacy session not found", err: errors.New("tmux: session not found: worker"), want: true},
+		{name: "legacy not running", err: errors.New("pod worker not running"), want: true},
+		{name: "legacy generic not found", err: errors.New("pane not found"), want: true},
+		{name: "legacy no tmux server", err: errors.New("no tmux server running on socket"), want: true},
+		{name: "other", err: errors.New("permission denied"), want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsSessionGone(tt.err); got != tt.want {
+				t.Fatalf("IsSessionGone(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsSessionGoneRuntimeUnavailableAlwaysWins(t *testing.T) {
+	tests := []error{
+		ErrRuntimeUnavailable,
+		fmt.Errorf("provider: %w", ErrRuntimeUnavailable),
+		fmt.Errorf("transport endpoint not found: %w", ErrRuntimeUnavailable),
+		fmt.Errorf("%w: %w: transport endpoint not found", ErrRuntimeUnavailable, ErrSessionNotFound),
+	}
+	for _, err := range tests {
+		if IsSessionGone(err) {
+			t.Errorf("IsSessionGone(%v) = true; ErrRuntimeUnavailable must never prove absence", err)
+		}
+	}
+}
 
 func TestSyncWorkDirEnvSetsGCDir(t *testing.T) {
 	cfg := SyncWorkDirEnv(Config{WorkDir: "/tmp/work"})

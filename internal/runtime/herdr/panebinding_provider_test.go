@@ -42,14 +42,77 @@ shift 2
 printf '%s\n' "$*" >> "$STATE/calls.log"
 case "$1_$2" in
 agent_get)
-  if [ -e "$STATE/registered" ]; then
+  if [ -e "$STATE/agent_transport_not_found" ]; then
+    printf '%s' 'transport target not found' >&2
+    exit 1
+  elif [ -e "$STATE/agent_exit_empty" ]; then
+    exit 1
+  elif [ -e "$STATE/agent_exit_malformed" ]; then
+    printf '%s' '{' >&2
+    exit 1
+  elif [ -e "$STATE/agent_exit_empty_object" ]; then
+    printf '%s' '{}' >&2
+    exit 1
+  elif [ -e "$STATE/agent_exit_null_error" ]; then
+    printf '%s' '{"error":null}' >&2
+    exit 1
+  elif [ -e "$STATE/agent_exit_missing_code" ]; then
+    printf '%s' '{"error":{"message":"missing code"}}' >&2
+    exit 1
+  elif [ -e "$STATE/agent_exit_missing_message" ]; then
+    printf '%s' '{"error":{"code":"agent_not_found"}}' >&2
+    exit 1
+  elif [ -e "$STATE/agent_exit_result_only" ]; then
+    printf '%s' '{"result":{"agent":{"name":"worker","pane_id":"%5"}}}' >&2
+    exit 1
+  elif [ -e "$STATE/agent_exit_mixed" ]; then
+    printf '%s' '{"result":{},"error":{"code":"agent_not_found","message":"mixed"}}' >&2
+    exit 1
+  elif [ -e "$STATE/agent_exit_stdout_result" ]; then
+    printf '%s' '{"result":{"agent":{"name":"worker","pane_id":"%5"}}}'
+    exit 1
+  elif [ -e "$STATE/agent_decode_error" ]; then
+    printf '%s' '{"result":"malformed-agent"}'
+  elif [ -e "$STATE/agent_get_missing_agent" ]; then
+    printf '%s' '{"result":{}}'
+  elif [ -e "$STATE/agent_get_null_agent" ]; then
+    printf '%s' '{"result":{"agent":null}}'
+  elif [ -e "$STATE/agent_get_empty_pane" ]; then
+    printf '%s' '{"result":{"agent":{"name":"'"$3"'","pane_id":""}}}'
+  elif [ -e "$STATE/registered" ]; then
     printf '%s' '{"result":{"agent":{"name":"'"$3"'","pane_id":"%5","tab_id":"t1","workspace_id":"w1","agent_status":"idle"}}}'
   else
-    printf '%s' '{"error":{"code":"agent_not_found","message":"agent target not found"}}'
+    printf '%s' '{"error":{"code":"agent_not_found","message":"agent target not found"},"id":"cli:agent:get"}' >&2
+    exit 1
   fi ;;
 agent_list)
-  printf '%s' '{"result":{"agents":[]}}' ;;
+  if [ -e "$STATE/agent_list_missing_agents" ]; then
+    printf '%s' '{"result":{}}'
+  elif [ -e "$STATE/agent_list_null_agents" ]; then
+    printf '%s' '{"result":{"agents":null}}'
+  elif [ -e "$STATE/agent_list_empty_name" ]; then
+    printf '%s' '{"result":{"agents":[{"name":"","pane_id":"%5"}]}}'
+  elif [ -e "$STATE/agent_list_empty_pane" ]; then
+    printf '%s' '{"result":{"agents":[{"name":"worker","pane_id":""}]}}'
+  else
+    printf '%s' '{"result":{"agents":[]}}'
+  fi ;;
 agent_start)
+  if [ -e "$STATE/agent_start_name_taken_once" ] && [ ! -e "$STATE/agent_start_name_taken_seen" ]; then
+    : > "$STATE/agent_start_name_taken_seen"
+    printf '%s' '{"error":{"code":"agent_name_taken","message":"agent name already used"},"id":"cli:agent:start"}' >&2
+    exit 1
+  fi
+  if [ -e "$STATE/agent_start_missing_agent" ]; then
+    printf '%s' '{"result":{}}'
+    exit 0
+  elif [ -e "$STATE/agent_start_null_agent" ]; then
+    printf '%s' '{"result":{"agent":null}}'
+    exit 0
+  elif [ -e "$STATE/agent_start_empty_pane" ]; then
+    printf '%s' '{"result":{"agent":{"name":"'"$3"'","pane_id":""}}}'
+    exit 0
+  fi
   : > "$STATE/agent_started"
   : > "$STATE/registered"
   : > "$STATE/busy"
@@ -59,19 +122,64 @@ agent_start)
 agent_wait)
   printf '%s' '{"result":{"agent":{"name":"'"$3"'","agent_status":"idle"}}}' ;;
 agent_prompt)
-  if [ -e "$STATE/registered" ]; then
+  if [ -e "$STATE/agent_prompt_transport_not_found" ]; then
+    printf '%s' 'transport endpoint not found' >&2
+    exit 1
+  elif [ -e "$STATE/agent_prompt_empty_envelope" ]; then
+    printf '%s' '{}'
+  elif [ -e "$STATE/agent_prompt_pane_gone" ]; then
+    printf '%s' '{"error":{"code":"pane_not_found","message":"pane disappeared"}}' >&2
+    exit 1
+  elif [ -e "$STATE/agent_prompt_agent_gone" ]; then
+    printf '%s' '{"error":{"code":"agent_not_found","message":"agent disappeared"}}' >&2
+    exit 1
+  elif [ -e "$STATE/registered" ]; then
     : > "$STATE/prompted"
     printf '%s' '{"result":{"type":"agent_prompted"}}'
   else
-    printf '%s' '{"error":{"code":"agent_not_found","message":"agent target not found"}}'
+    printf '%s' '{"error":{"code":"agent_not_found","message":"agent target not found"}}' >&2
+    exit 1
   fi ;;
 pane_run)
-  : > "$STATE/busy"
-  printf '%s' "$4" | sed -e 's|^exec /bin/sh -c ||' -e "s/^'//" -e "s/'\$//" > "$STATE/rawcmd"
-  exit 0 ;;
+  if [ -e "$STATE/pane_run_agent_gone" ]; then
+    printf '%s' '{"error":{"code":"agent_not_found","message":"agent disappeared"}}' >&2
+    exit 1
+  else
+    : > "$STATE/busy"
+    printf '%s' "$4" | sed -e 's|^exec /bin/sh -c ||' -e "s/^'//" -e "s/'\$//" > "$STATE/rawcmd"
+    exit 0
+  fi ;;
 pane_process-info)
-  if [ -e "$STATE/pane_gone" ]; then
-    printf '%s' '{"error":{"code":"pane_not_found","message":"pane not found"}}'
+  if [ -e "$STATE/pane_transport_not_found" ]; then
+    printf '%s' 'transport endpoint not found' >&2
+    exit 1
+  elif [ -e "$STATE/pane_transport_not_found_once" ] && [ ! -e "$STATE/pane_transport_seen" ]; then
+    : > "$STATE/pane_transport_seen"
+    printf '%s' 'transport endpoint not found' >&2
+    exit 1
+  elif [ -e "$STATE/pane_gone" ]; then
+    printf '%s' '{"error":{"code":"pane_not_found","message":"pane not found"},"id":"cli:pane:process-info"}' >&2
+    exit 1
+  elif [ -e "$STATE/pane_decode_error" ]; then
+    printf '%s' '{"result":"malformed-process-info"}'
+  elif [ -e "$STATE/pane_missing_process_info" ]; then
+    printf '%s' '{"result":{}}'
+  elif [ -e "$STATE/pane_null_process_info" ]; then
+    printf '%s' '{"result":{"process_info":null}}'
+  elif [ -e "$STATE/pane_missing_shell_pid" ]; then
+    printf '%s' '{"result":{"process_info":{"foreground_processes":[]}}}'
+  elif [ -e "$STATE/pane_missing_foreground_processes" ]; then
+    printf '%s' '{"result":{"process_info":{"shell_pid":4242}}}'
+  elif [ -e "$STATE/pane_null_foreground_processes" ]; then
+    printf '%s' '{"result":{"process_info":{"shell_pid":4242,"foreground_processes":null}}}'
+  elif [ -e "$STATE/pane_malformed_foreground_process" ]; then
+    printf '%s' '{"result":{"process_info":{"shell_pid":4242,"foreground_processes":[{}]}}}'
+  elif [ -e "$STATE/pane_empty_foreground_processes" ]; then
+    printf '%s' '{"result":{"process_info":{"shell_pid":4242,"foreground_processes":[]}}}'
+  elif [ -e "$STATE/pane_zero_shell_pid" ]; then
+    printf '%s' '{"result":{"process_info":{"shell_pid":0,"foreground_processes":[]}}}'
+  elif [ -e "$STATE/pane_zero_shell_with_foreground" ]; then
+    printf '%s' '{"result":{"process_info":{"shell_pid":0,"foreground_processes":[{"pid":4243,"name":"claude"}]}}}'
   elif [ -e "$STATE/rawcmd" ]; then
     printf '%s' '{"result":{"process_info":{"shell_pid":4242,"foreground_processes":[{"pid":4242,"name":"bash","argv":["/bin/sh","-c","'"$(cat "$STATE/rawcmd")"'"]}]}}}'
   elif [ -e "$STATE/busy" ]; then
@@ -79,19 +187,62 @@ pane_process-info)
   else
     printf '%s' '{"result":{"process_info":{"shell_pid":4242,"foreground_processes":[{"pid":4242,"name":"zsh"}]}}}'
   fi ;;
+pane_close)
+  if [ -e "$STATE/pane_close_transport_not_found" ]; then
+    printf '%s' 'transport endpoint not found' >&2
+    exit 1
+  elif [ -e "$STATE/pane_close_gone" ]; then
+    printf '%s' '{"error":{"code":"pane_not_found","message":"pane not found"},"id":"cli:pane:close"}' >&2
+    exit 1
+  else
+    : > "$STATE/pane_closed"
+    printf '%s' '{"result":{}}'
+  fi ;;
 workspace_list)
   : > "$STATE/placement_attempted"
-  printf '%s' '{"result":{"workspaces":[]}}' ;;
+  if [ -e "$STATE/workspace_list_missing_workspaces" ]; then
+    printf '%s' '{"result":{}}'
+  elif [ -e "$STATE/workspace_list_null_workspaces" ]; then
+    printf '%s' '{"result":{"workspaces":null}}'
+  elif [ -e "$STATE/workspace_list_empty_id" ]; then
+    printf '%s' '{"result":{"workspaces":[{"workspace_id":"","label":"rig"}]}}'
+  elif [ -e "$STATE/workspace_list_missing_label" ]; then
+    printf '%s' '{"result":{"workspaces":[{"workspace_id":"w1"}]}}'
+  elif [ -e "$STATE/workspace_list_empty_label" ]; then
+    printf '%s' '{"result":{"workspaces":[{"workspace_id":"w1","label":""}]}}'
+  elif [ -e "$STATE/workspace_exists" ]; then
+    printf '%s' '{"result":{"workspaces":[{"workspace_id":"w1","label":"gastown"}]}}'
+  else
+    printf '%s' '{"result":{"workspaces":[]}}'
+  fi ;;
 workspace_create)
-  printf '%s' '{"result":{"workspace":{"workspace_id":"w1"},"tab":{"tab_id":"t1"},"root_pane":{"pane_id":"%5"}}}' ;;
+  if [ -e "$STATE/workspace_create_incomplete" ]; then
+    printf '%s' '{"result":{"workspace":{"workspace_id":"w1"},"tab":null,"root_pane":{"pane_id":""}}}'
+  else
+    printf '%s' '{"result":{"workspace":{"workspace_id":"w1"},"tab":{"tab_id":"t1"},"root_pane":{"pane_id":"%5"}}}'
+  fi ;;
 tab_list)
-  if [ -e "$STATE/stale_tabs" ]; then
+  if [ -e "$STATE/tab_list_missing_tabs" ]; then
+    printf '%s' '{"result":{}}'
+  elif [ -e "$STATE/tab_list_null_tabs" ]; then
+    printf '%s' '{"result":{"tabs":null}}'
+  elif [ -e "$STATE/tab_list_empty_id" ]; then
+    printf '%s' '{"result":{"tabs":[{"tab_id":"","label":"worker"}]}}'
+  elif [ -e "$STATE/tab_list_missing_label" ]; then
+    printf '%s' '{"result":{"tabs":[{"tab_id":"t1"}]}}'
+  elif [ -e "$STATE/tab_list_empty_label" ]; then
+    printf '%s' '{"result":{"tabs":[{"tab_id":"t1","label":""}]}}'
+  elif [ -e "$STATE/stale_tabs" ]; then
     printf '%s' '{"result":{"tabs":[{"tab_id":"t-old1","label":"witness"},{"tab_id":"t-old2","label":"witness"},{"tab_id":"t-other","label":"deacon"}]}}'
   else
     printf '%s' '{"result":{"tabs":[]}}'
   fi ;;
 tab_create)
-  printf '%s' '{"result":{"tab":{"tab_id":"t1"},"root_pane":{"pane_id":"%5"}}}' ;;
+  if [ -e "$STATE/tab_create_incomplete" ]; then
+    printf '%s' '{"result":{"tab":null,"root_pane":{"pane_id":""}}}'
+  else
+    printf '%s' '{"result":{"tab":{"tab_id":"t1"},"root_pane":{"pane_id":"%5"}}}'
+  fi ;;
 *)
   exit 0 ;;
 esac
@@ -155,6 +306,492 @@ func bindTestPane(t *testing.T, p *Provider, name, mode string) {
 	}
 }
 
+func TestRunDecodesTypedErrorEnvelopeFromNonzeroStderr(t *testing.T) {
+	t.Run("agent_not_found", func(t *testing.T) {
+		p, _, _ := newFakeHerdrProvider(t)
+		_, err := p.c.run(context.Background(), "agent", "get", "missing")
+		if got := herdrErrorCode(err); got != "agent_not_found" || errors.Is(err, runtime.ErrRuntimeUnavailable) {
+			t.Fatalf("run error = %v, code %q; want typed agent_not_found only", err, got)
+		}
+		if _, present, err := p.c.getAgent(context.Background(), "missing"); err != nil || present {
+			t.Fatalf("getAgent = present %v, err %v; want typed absence", present, err)
+		}
+	})
+
+	t.Run("pane_not_found", func(t *testing.T) {
+		p, _, state := newFakeHerdrProvider(t)
+		setState(t, state, "pane_gone")
+		_, err := p.c.run(context.Background(), "pane", "process-info", "--pane", "%5")
+		if got := herdrErrorCode(err); got != "pane_not_found" || errors.Is(err, runtime.ErrRuntimeUnavailable) {
+			t.Fatalf("run error = %v, code %q; want typed pane_not_found only", err, got)
+		}
+		if probe, err := p.probePane(context.Background(), "%5"); err != nil || probe != (paneProbe{}) {
+			t.Fatalf("probePane = %+v, %v; want confirmed typed absence", probe, err)
+		}
+	})
+
+	t.Run("agent_name_taken", func(t *testing.T) {
+		p, _, state := newFakeHerdrProvider(t)
+		setState(t, state, "agent_start_name_taken_once")
+		_, err := p.c.startAgentKind(context.Background(), "worker", "claude", "%5", nil)
+		if got := herdrErrorCode(err); got != "agent_name_taken" || errors.Is(err, runtime.ErrRuntimeUnavailable) {
+			t.Fatalf("startAgentKind error = %v, code %q; want typed agent_name_taken only", err, got)
+		}
+	})
+
+	t.Run("transport prose", func(t *testing.T) {
+		p, _, state := newFakeHerdrProvider(t)
+		setState(t, state, "agent_transport_not_found")
+		_, err := p.c.run(context.Background(), "agent", "get", "missing")
+		if !errors.Is(err, runtime.ErrRuntimeUnavailable) || herdrErrorCode(err) != "" {
+			t.Fatalf("run transport error = %v; want ErrRuntimeUnavailable without Herdr code", err)
+		}
+	})
+
+	t.Run("invalid nonzero envelopes", func(t *testing.T) {
+		for _, flag := range []string{
+			"agent_exit_empty",
+			"agent_exit_malformed",
+			"agent_exit_empty_object",
+			"agent_exit_null_error",
+			"agent_exit_missing_code",
+			"agent_exit_missing_message",
+			"agent_exit_result_only",
+			"agent_exit_mixed",
+			"agent_exit_stdout_result",
+		} {
+			t.Run(flag, func(t *testing.T) {
+				p, _, state := newFakeHerdrProvider(t)
+				setState(t, state, flag)
+				_, err := p.c.run(context.Background(), "agent", "get", "missing")
+				if !errors.Is(err, runtime.ErrRuntimeUnavailable) || herdrErrorCode(err) != "" {
+					t.Fatalf("run invalid exit error = %v; want ErrRuntimeUnavailable without Herdr code", err)
+				}
+			})
+		}
+	})
+}
+
+// Only Herdr's typed resource error proves absence. Transport, wrapper, and
+// decode errors can contain human text such as "not found" while the pane or
+// agent is still live; treating that prose as absence is destructive because
+// ObserveLiveness reaps a supposedly missing pane.
+func TestTypedNotFoundDoesNotCollapseTransportFailures(t *testing.T) {
+	t.Run("pane probe", func(t *testing.T) {
+		p, _, state := newFakeHerdrProvider(t)
+		setState(t, state, "pane_transport_not_found")
+		bindTestPane(t, p, "gastown__witness", bindModeAgent)
+
+		if _, err := p.probePane(context.Background(), "%5"); !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+			t.Fatalf("probePane error = %v; want ErrRuntimeUnavailable", err)
+		}
+		if got := p.ObserveLiveness("gastown__witness", nil); !got.Running || !got.Alive {
+			t.Fatalf("ObserveLiveness = %+v on transport failure; want fail-safe live verdict", got)
+		}
+		if got, _ := p.GetMeta("gastown__witness", metaBoundPane); got != "%5" {
+			t.Fatalf("transport failure cleared live binding: %q", got)
+		}
+		if calls := fakeCalls(t, state); strings.Contains(calls, "pane close %5") {
+			t.Fatalf("transport failure reaped pane:\n%s", calls)
+		}
+	})
+
+	t.Run("agent get", func(t *testing.T) {
+		p, _, state := newFakeHerdrProvider(t)
+		setState(t, state, "agent_transport_not_found")
+		if _, present, err := p.c.getAgent(context.Background(), "witness"); !errors.Is(err, runtime.ErrRuntimeUnavailable) || present {
+			t.Fatalf("getAgent = present %v, err %v; want ErrRuntimeUnavailable", present, err)
+		}
+		if got := p.ObserveLiveness("gastown__witness", nil); !got.Running || !got.Alive {
+			t.Fatalf("ObserveLiveness = %+v on agent transport failure; want fail-safe live verdict", got)
+		}
+	})
+
+	t.Run("decode", func(t *testing.T) {
+		p, _, state := newFakeHerdrProvider(t)
+		setState(t, state, "agent_decode_error")
+		if _, _, err := p.c.getAgent(context.Background(), "witness"); !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+			t.Fatalf("getAgent decode error = %v; want ErrRuntimeUnavailable", err)
+		}
+		if got := p.ObserveLiveness("gastown__witness", nil); !got.Running || !got.Alive {
+			t.Fatalf("ObserveLiveness = %+v on decode failure; want fail-safe live verdict", got)
+		}
+
+		p2, _, state2 := newFakeHerdrProvider(t)
+		setState(t, state2, "pane_decode_error")
+		if _, err := p2.probePane(context.Background(), "%5"); !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+			t.Fatalf("probePane decode error = %v; want ErrRuntimeUnavailable", err)
+		}
+	})
+
+	t.Run("well-formed incomplete process info", func(t *testing.T) {
+		for _, flag := range []string{
+			"pane_missing_process_info",
+			"pane_null_process_info",
+			"pane_missing_shell_pid",
+			"pane_missing_foreground_processes",
+			"pane_null_foreground_processes",
+			"pane_malformed_foreground_process",
+			"pane_zero_shell_with_foreground",
+		} {
+			t.Run(flag, func(t *testing.T) {
+				p, _, state := newFakeHerdrProvider(t)
+				setState(t, state, flag)
+				bindTestPane(t, p, "gastown__witness", bindModeAgent)
+				if _, err := p.probePane(context.Background(), "%5"); !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+					t.Fatalf("probePane incomplete response error = %v; want ErrRuntimeUnavailable", err)
+				}
+				if got := p.ObserveLiveness("gastown__witness", nil); !got.Running || !got.Alive {
+					t.Fatalf("ObserveLiveness = %+v on incomplete response; want fail-safe live verdict", got)
+				}
+				if got, _ := p.GetMeta("gastown__witness", metaBoundPane); got != "%5" {
+					t.Fatalf("incomplete response cleared live binding: %q", got)
+				}
+				if calls := fakeCalls(t, state); strings.Contains(calls, "pane close %5") {
+					t.Fatalf("incomplete response reaped pane:\n%s", calls)
+				}
+			})
+		}
+
+		p, _, state := newFakeHerdrProvider(t)
+		setState(t, state, "pane_zero_shell_pid")
+		shellPID, fg, err := p.c.processInfo(context.Background(), "%5")
+		if err != nil || shellPID != 0 || len(fg) != 0 {
+			t.Fatalf("processInfo explicit zero = shellPID %d, fg %v, err %v; want 0, empty, nil", shellPID, fg, err)
+		}
+
+		p2, _, state2 := newFakeHerdrProvider(t)
+		setState(t, state2, "pane_empty_foreground_processes")
+		shellPID, fg, err = p2.c.processInfo(context.Background(), "%5")
+		if err != nil || shellPID != 4242 || len(fg) != 0 {
+			t.Fatalf("processInfo explicit empty list = shellPID %d, fg %v, err %v; want 4242, empty, nil", shellPID, fg, err)
+		}
+	})
+
+	t.Run("agent prompt", func(t *testing.T) {
+		p, _, state := newFakeHerdrProvider(t)
+		setState(t, state, "agent_prompt_transport_not_found")
+		if err := p.c.deliverNudge(context.Background(), "%5", "wake"); !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+			t.Fatalf("deliverNudge error = %v; want ErrRuntimeUnavailable", err)
+		}
+		if calls := fakeCalls(t, state); strings.Contains(calls, "pane run %5") {
+			t.Fatalf("transport failure triggered raw-pane fallback:\n%s", calls)
+		}
+	})
+
+	t.Run("empty envelope", func(t *testing.T) {
+		p, _, state := newFakeHerdrProvider(t)
+		setState(t, state, "agent_prompt_empty_envelope")
+		if err := p.c.deliverNudge(context.Background(), "%5", "wake"); !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+			t.Fatalf("deliverNudge empty envelope error = %v; want ErrRuntimeUnavailable", err)
+		}
+		if calls := fakeCalls(t, state); strings.Contains(calls, "pane run %5") {
+			t.Fatalf("empty envelope triggered raw-pane fallback:\n%s", calls)
+		}
+	})
+}
+
+func TestRequiredClientResponseShapesFailUnavailable(t *testing.T) {
+	t.Run("agent get", func(t *testing.T) {
+		for _, flag := range []string{"agent_get_missing_agent", "agent_get_null_agent", "agent_get_empty_pane"} {
+			t.Run(flag, func(t *testing.T) {
+				p, _, state := newFakeHerdrProvider(t)
+				setState(t, state, flag)
+				bindTestPane(t, p, "gastown__witness", bindModeAgent)
+				if _, present, err := p.c.getAgent(context.Background(), "gastown__witness"); present || !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+					t.Fatalf("getAgent = present %v, err %v; want unavailable decode failure", present, err)
+				}
+				if got := p.ObserveLiveness("gastown__witness", nil); !got.Running || !got.Alive {
+					t.Fatalf("ObserveLiveness = %+v on incomplete agent response; want fail-safe live", got)
+				}
+				if got, _ := p.GetMeta("gastown__witness", metaBoundPane); got != "%5" {
+					t.Fatalf("incomplete agent response cleared binding: %q", got)
+				}
+				if calls := fakeCalls(t, state); strings.Contains(calls, "pane close") {
+					t.Fatalf("incomplete agent response closed pane:\n%s", calls)
+				}
+			})
+		}
+	})
+
+	t.Run("agent start", func(t *testing.T) {
+		for _, flag := range []string{"agent_start_missing_agent", "agent_start_null_agent", "agent_start_empty_pane"} {
+			t.Run(flag, func(t *testing.T) {
+				p, _, state := newFakeHerdrProvider(t)
+				setState(t, state, flag)
+				if _, err := p.c.startAgentKind(context.Background(), "gastown__witness", "claude", "%5", nil); !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+					t.Fatalf("startAgentKind incomplete response error = %v; want ErrRuntimeUnavailable", err)
+				}
+			})
+		}
+	})
+
+	t.Run("agent list", func(t *testing.T) {
+		for _, flag := range []string{"agent_list_missing_agents", "agent_list_null_agents", "agent_list_empty_name", "agent_list_empty_pane"} {
+			t.Run(flag, func(t *testing.T) {
+				p, _, state := newFakeHerdrProvider(t)
+				setState(t, state, flag)
+				if _, err := p.ListRunning(""); !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+					t.Fatalf("ListRunning incomplete response error = %v; want ErrRuntimeUnavailable", err)
+				}
+			})
+		}
+		p, _, _ := newFakeHerdrProvider(t)
+		if got, err := p.c.listAgents(context.Background()); err != nil || len(got) != 0 {
+			t.Fatalf("listAgents explicit empty list = %v, %v; want empty success", got, err)
+		}
+	})
+
+	t.Run("placement", func(t *testing.T) {
+		for _, flag := range []string{"workspace_list_missing_workspaces", "workspace_list_null_workspaces", "workspace_list_empty_id", "workspace_list_missing_label"} {
+			t.Run(flag, func(t *testing.T) {
+				p, _, state := newFakeHerdrProvider(t)
+				setState(t, state, flag)
+				if _, err := p.c.findWorkspace(context.Background(), "rig"); !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+					t.Fatalf("findWorkspace incomplete response error = %v; want ErrRuntimeUnavailable", err)
+				}
+			})
+		}
+		for _, flag := range []string{"tab_list_missing_tabs", "tab_list_null_tabs", "tab_list_empty_id", "tab_list_missing_label"} {
+			t.Run(flag, func(t *testing.T) {
+				p, _, state := newFakeHerdrProvider(t)
+				setState(t, state, flag)
+				if _, err := p.c.listTabs(context.Background(), "w1"); !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+					t.Fatalf("listTabs incomplete response error = %v; want ErrRuntimeUnavailable", err)
+				}
+			})
+		}
+		p, _, state := newFakeHerdrProvider(t)
+		setState(t, state, "workspace_create_incomplete")
+		if _, _, _, err := p.c.workspaceCreate(context.Background(), "rig", "", nil); !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+			t.Fatalf("workspaceCreate incomplete response error = %v; want ErrRuntimeUnavailable", err)
+		}
+		p2, _, state2 := newFakeHerdrProvider(t)
+		setState(t, state2, "tab_create_incomplete")
+		if _, _, err := p2.c.tabCreate(context.Background(), "w1", "worker", "", nil); !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+			t.Fatalf("tabCreate incomplete response error = %v; want ErrRuntimeUnavailable", err)
+		}
+		p3, _, _ := newFakeHerdrProvider(t)
+		if got, err := p3.c.findWorkspace(context.Background(), "rig"); err != nil || got != "" {
+			t.Fatalf("findWorkspace explicit empty list = %q, %v; want empty success", got, err)
+		}
+		if got, err := p3.c.listTabs(context.Background(), "w1"); err != nil || len(got) != 0 {
+			t.Fatalf("listTabs explicit empty list = %v, %v; want empty success", got, err)
+		}
+		p4, _, state4 := newFakeHerdrProvider(t)
+		setState(t, state4, "workspace_list_empty_label")
+		if got, err := p4.c.findWorkspace(context.Background(), "rig"); err != nil || got != "" {
+			t.Fatalf("findWorkspace explicit empty label = %q, %v; want nonmatch success", got, err)
+		}
+		p5, _, state5 := newFakeHerdrProvider(t)
+		setState(t, state5, "tab_list_empty_label")
+		if got, err := p5.c.listTabs(context.Background(), "w1"); err != nil || len(got) != 1 || got[0].Label != "" {
+			t.Fatalf("listTabs explicit empty label = %v, %v; want one empty-label tab", got, err)
+		}
+	})
+}
+
+func TestNudgePreservesUnavailableAndTypedAbsence(t *testing.T) {
+	t.Run("resolution transport failure", func(t *testing.T) {
+		p, _, state := newFakeHerdrProvider(t)
+		setState(t, state, "agent_transport_not_found")
+		bindTestPane(t, p, "gastown__witness", bindModeAgent)
+
+		err := p.Nudge("gastown__witness", runtime.TextContent("wake"))
+		if !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+			t.Fatalf("Nudge error = %v; want ErrRuntimeUnavailable", err)
+		}
+		if errors.Is(err, runtime.ErrSessionNotFound) {
+			t.Fatalf("Nudge collapsed transport failure to ErrSessionNotFound: %v", err)
+		}
+		if calls := fakeCalls(t, state); strings.Contains(calls, "agent prompt") || strings.Contains(calls, "pane run") {
+			t.Fatalf("Nudge attempted delivery after failed resolution:\n%s", calls)
+		}
+	})
+
+	t.Run("delivery transport failure", func(t *testing.T) {
+		p, _, state := newFakeHerdrProvider(t)
+		setState(t, state, "registered")
+		setState(t, state, "agent_prompt_transport_not_found")
+
+		err := p.Nudge("gastown__witness", runtime.TextContent("wake"))
+		if !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+			t.Fatalf("Nudge error = %v; want ErrRuntimeUnavailable", err)
+		}
+		if errors.Is(err, runtime.ErrSessionNotFound) {
+			t.Fatalf("Nudge collapsed delivery failure to ErrSessionNotFound: %v", err)
+		}
+		if calls := fakeCalls(t, state); strings.Contains(calls, "pane run %5") {
+			t.Fatalf("transport failure triggered raw-pane fallback:\n%s", calls)
+		}
+	})
+
+	t.Run("typed absence", func(t *testing.T) {
+		p, _, _ := newFakeHerdrProvider(t)
+		if err := p.Nudge("gastown__missing", runtime.TextContent("wake")); !errors.Is(err, runtime.ErrSessionNotFound) {
+			t.Fatalf("Nudge missing session error = %v; want ErrSessionNotFound", err)
+		}
+	})
+
+	t.Run("pane disappears during delivery", func(t *testing.T) {
+		p, _, state := newFakeHerdrProvider(t)
+		setState(t, state, "registered")
+		setState(t, state, "agent_prompt_pane_gone")
+
+		err := p.Nudge("gastown__witness", runtime.TextContent("wake"))
+		if !errors.Is(err, runtime.ErrSessionNotFound) || errors.Is(err, runtime.ErrRuntimeUnavailable) {
+			t.Fatalf("Nudge delivery race error = %v; want ErrSessionNotFound only", err)
+		}
+		if got := herdrErrorCode(err); got != "pane_not_found" {
+			t.Fatalf("Nudge lost Herdr cause code: got %q, want pane_not_found", got)
+		}
+		if calls := fakeCalls(t, state); strings.Contains(calls, "pane run %5") {
+			t.Fatalf("pane disappearance triggered raw-pane fallback:\n%s", calls)
+		}
+	})
+
+	t.Run("agent disappears during fallback delivery", func(t *testing.T) {
+		p, _, state := newFakeHerdrProvider(t)
+		setState(t, state, "registered")
+		setState(t, state, "agent_prompt_agent_gone")
+		setState(t, state, "pane_run_agent_gone")
+
+		err := p.Nudge("gastown__witness", runtime.TextContent("wake"))
+		if !errors.Is(err, runtime.ErrSessionNotFound) || errors.Is(err, runtime.ErrRuntimeUnavailable) {
+			t.Fatalf("Nudge fallback race error = %v; want ErrSessionNotFound only", err)
+		}
+		if got := herdrErrorCode(err); got != "agent_not_found" {
+			t.Fatalf("Nudge lost Herdr cause code: got %q, want agent_not_found", got)
+		}
+	})
+}
+
+func TestStartAgentAdoptingPreservesHolderFailures(t *testing.T) {
+	tests := []struct {
+		name      string
+		flag      string
+		wantClose bool
+	}{
+		{name: "get", flag: "agent_transport_not_found"},
+		{name: "probe", flag: "pane_transport_not_found"},
+		{name: "close", flag: "pane_close_transport_not_found", wantClose: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p, _, state := newFakeHerdrProvider(t)
+			setState(t, state, "registered")
+			setState(t, state, "agent_start_name_taken_once")
+			setState(t, state, tt.flag)
+
+			_, adopted, err := p.startAgentAdopting(context.Background(), "gastown__witness", "claude", "%5", nil)
+			if !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+				t.Fatalf("startAgentAdopting error = %v; want ErrRuntimeUnavailable", err)
+			}
+			if adopted {
+				t.Error("adopted=true after failed holder observation/cleanup")
+			}
+			calls := fakeCalls(t, state)
+			if got := strings.Count(calls, "agent start "); got != 1 {
+				t.Fatalf("agent start calls = %d, want 1 (no retry):\n%s", got, calls)
+			}
+			if got := strings.Contains(calls, "pane close %5"); got != tt.wantClose {
+				t.Fatalf("pane close called = %v, want %v:\n%s", got, tt.wantClose, calls)
+			}
+		})
+	}
+}
+
+func TestStartAgentAdoptingRetriesAfterTypedPaneAbsence(t *testing.T) {
+	p, _, state := newFakeHerdrProvider(t)
+	setState(t, state, "registered")
+	setState(t, state, "agent_start_name_taken_once")
+	setState(t, state, "pane_close_gone")
+
+	got, adopted, err := p.startAgentAdopting(context.Background(), "gastown__witness", "claude", "%5", nil)
+	if err != nil || adopted || got.PaneID != "%5" {
+		t.Fatalf("startAgentAdopting = %+v, adopted=%v, err=%v; want fresh retry", got, adopted, err)
+	}
+	if calls := fakeCalls(t, state); strings.Count(calls, "agent start ") != 2 {
+		t.Fatalf("typed pane absence did not trigger exactly one retry:\n%s", calls)
+	}
+}
+
+func TestStopPreservesFailuresAndMetadata(t *testing.T) {
+	t.Run("resolution transport failure", func(t *testing.T) {
+		p, _, state := newFakeHerdrProvider(t)
+		bindTestPane(t, p, "gastown__witness", bindModeAgent)
+		setState(t, state, "agent_transport_not_found")
+
+		err := p.Stop("gastown__witness")
+		if !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+			t.Fatalf("Stop error = %v; want ErrRuntimeUnavailable", err)
+		}
+		if got, _ := p.GetMeta("gastown__witness", metaBoundPane); got != "%5" {
+			t.Fatalf("Stop cleared metadata after failed resolution: %q", got)
+		}
+		if calls := fakeCalls(t, state); strings.Contains(calls, "pane close") {
+			t.Fatalf("Stop attempted close without resolving a pane:\n%s", calls)
+		}
+	})
+
+	t.Run("reap close transport failure", func(t *testing.T) {
+		p, _, state := newFakeHerdrProvider(t)
+		bindTestPane(t, p, "gastown__witness", bindModeAgent)
+		setState(t, state, "pane_close_transport_not_found")
+
+		err := p.Stop("gastown__witness")
+		if !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+			t.Fatalf("Stop error = %v; want ErrRuntimeUnavailable", err)
+		}
+		if got, _ := p.GetMeta("gastown__witness", metaBoundPane); got != "%5" {
+			t.Fatalf("Stop cleared metadata after failed close: %q", got)
+		}
+	})
+
+	t.Run("running pane close transport failure", func(t *testing.T) {
+		p, _, state := newFakeHerdrProvider(t)
+		bindTestPane(t, p, "gastown__witness", bindModeAgent)
+		setState(t, state, "busy")
+		setState(t, state, "pane_close_transport_not_found")
+
+		err := p.Stop("gastown__witness")
+		if !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+			t.Fatalf("Stop error = %v; want ErrRuntimeUnavailable", err)
+		}
+		if got, _ := p.GetMeta("gastown__witness", metaBoundPane); got != "%5" {
+			t.Fatalf("Stop cleared metadata after failed close: %q", got)
+		}
+	})
+
+	t.Run("typed pane absence is idempotent", func(t *testing.T) {
+		p, _, state := newFakeHerdrProvider(t)
+		bindTestPane(t, p, "gastown__witness", bindModeAgent)
+		setState(t, state, "busy")
+		setState(t, state, "pane_close_gone")
+
+		if err := p.Stop("gastown__witness"); err != nil {
+			t.Fatalf("Stop typed pane_not_found: %v", err)
+		}
+		if got, _ := p.GetMeta("gastown__witness", metaBoundPane); got != "" {
+			t.Fatalf("Stop retained metadata after confirmed pane absence: %q", got)
+		}
+	})
+}
+
+func TestWaitPaneLaunchedRetriesTransportTextNotFound(t *testing.T) {
+	p, _, state := newFakeHerdrProvider(t)
+	setState(t, state, "pane_transport_not_found_once")
+	raw := "python3 worker.py --queue main"
+	if err := os.WriteFile(filepath.Join(state, "rawcmd"), []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	p.waitPaneLaunched(context.Background(), "%5", raw)
+	if calls := fakeCalls(t, state); strings.Count(calls, "pane process-info --pane %5") < 2 {
+		t.Fatalf("waitPaneLaunched inferred absence from transport prose:\n%s", calls)
+	}
+}
+
 // The storm-killer: with no registry name but the bound pane busy running the
 // agent, IsRunning must stay true so the reconciler never re-issues Start.
 func TestIsRunningSurvivesNameClearViaPaneBinding(t *testing.T) {
@@ -171,6 +808,28 @@ func TestIsRunningFalseWhenNameClearedAndNoBinding(t *testing.T) {
 	p, _, _ := newFakeHerdrProvider(t)
 	if p.IsRunning("gastown__witness") {
 		t.Fatal("IsRunning = true with no live name and no pane binding")
+	}
+}
+
+func TestIsRunningAndStartFailSafeOnObservationFailure(t *testing.T) {
+	for _, flag := range []string{"agent_transport_not_found", "agent_get_missing_agent"} {
+		t.Run(flag, func(t *testing.T) {
+			p, session, state := newFakeHerdrProvider(t)
+			listenHerdrSocket(t, session)
+			setState(t, state, flag)
+
+			if !p.IsRunning("gastown__witness") {
+				t.Fatal("IsRunning = false on observation failure; duplicate spawn would be allowed")
+			}
+			err := p.Start(context.Background(), "gastown__witness", runtime.Config{Command: "claude"})
+			if !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+				t.Fatalf("Start error = %v; want ErrRuntimeUnavailable", err)
+			}
+			calls := fakeCalls(t, state)
+			if strings.Contains(calls, "workspace") || strings.Contains(calls, "tab create") || strings.Contains(calls, "agent start") {
+				t.Fatalf("Start placed/spawned after failed existence observation:\n%s", calls)
+			}
+		})
 	}
 }
 
@@ -304,10 +963,7 @@ func TestStartRecyclesAllStaleTabs(t *testing.T) {
 	p, session, state := newFakeHerdrProvider(t)
 	listenHerdrSocket(t, session)
 	setState(t, state, "stale_tabs")
-	// An existing workspace forces the findTab path (workspace list must hit).
-	oldWorkspaceList := "workspace_list)\n  : > \"$STATE/placement_attempted\"\n  printf '%s' '{\"result\":{\"workspaces\":[]}}' ;;"
-	newWorkspaceList := "workspace_list)\n  printf '%s' '{\"result\":{\"workspaces\":[{\"workspace_id\":\"w1\",\"label\":\"gastown\"}]}}' ;;"
-	rewriteFake(t, p, oldWorkspaceList, newWorkspaceList)
+	setState(t, state, "workspace_exists") // forces the findTab path
 
 	if err := p.Start(context.Background(), "gastown__witness", runtime.Config{Command: "claude"}); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -542,5 +1198,35 @@ func TestObserveLivenessReapsRegisteredAgentAtBareShell(t *testing.T) {
 	}
 	if got, _ := p.GetMeta("gastown__worker-1", metaBoundPane); got != "" {
 		t.Fatalf("bare-shell registry binding survived reap: %q", got)
+	}
+}
+
+func TestObserveLivenessRetainsRegisteredBindingWhenReapFails(t *testing.T) {
+	p, _, state := newFakeHerdrProvider(t)
+	setState(t, state, "registered")
+	setState(t, state, "pane_close_transport_not_found")
+	bindTestPane(t, p, "gastown__worker-1", bindModeAgent)
+
+	if got := p.ObserveLiveness("gastown__worker-1", nil); !got.Running || !got.Alive {
+		t.Fatalf("ObserveLiveness = %+v after close transport failure; want fail-safe live", got)
+	}
+	if got, _ := p.GetMeta("gastown__worker-1", metaBoundPane); got != "%5" {
+		t.Fatalf("close transport failure cleared stable binding: %q", got)
+	}
+	if calls := fakeCalls(t, state); strings.Count(calls, "pane close %5") != 1 {
+		t.Fatalf("first observation close calls != 1:\n%s", calls)
+	}
+
+	if err := os.Remove(filepath.Join(state, "pane_close_transport_not_found")); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.ObserveLiveness("gastown__worker-1", nil); got.Running || got.Alive {
+		t.Fatalf("ObserveLiveness = %+v after close recovered; want dead", got)
+	}
+	if got, _ := p.GetMeta("gastown__worker-1", metaBoundPane); got != "" {
+		t.Fatalf("successful retry retained stale binding: %q", got)
+	}
+	if calls := fakeCalls(t, state); strings.Count(calls, "pane close %5") != 2 {
+		t.Fatalf("recovery did not retry close exactly once:\n%s", calls)
 	}
 }

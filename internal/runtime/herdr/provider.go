@@ -89,7 +89,11 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 	if err := p.ConfigureServer(); err != nil {
 		return fmt.Errorf("herdr: configure server: %w", err)
 	}
-	if p.IsRunning(name) {
+	_, running, err := resolveBinding(p.lookupOps(ctx, name))
+	if err != nil {
+		return fmt.Errorf("herdr: inspect existing session %q: %w", name, err)
+	}
+	if running {
 		return runtime.ErrSessionExists
 	}
 	// Step 0: pre_start — workDir/worktree preparation, and the carrier for
@@ -409,10 +413,17 @@ func (p *Provider) runSetupCommand(ctx context.Context, cmd string, env map[stri
 func (p *Provider) Stop(name string) error {
 	ctx := context.Background()
 	pid, err := p.paneID(ctx, name)
-	if err == nil && pid != "" {
-		_ = p.c.closePane(ctx, pid)
+	if err != nil {
+		return fmt.Errorf("herdr stop %q: resolve pane: %w", name, err)
 	}
-	_ = p.clearMeta(name)
+	if pid != "" {
+		if err := p.c.closePane(ctx, pid); err != nil && herdrErrorCode(err) != "pane_not_found" {
+			return fmt.Errorf("herdr stop %q: close pane %q: %w", name, pid, err)
+		}
+	}
+	if err := p.clearMeta(name); err != nil {
+		return fmt.Errorf("herdr stop %q: clear metadata: %w", name, err)
+	}
 	return nil
 }
 
@@ -434,7 +445,10 @@ func (p *Provider) Interrupt(name string) error {
 // restarts still happen.
 func (p *Provider) IsRunning(name string) bool {
 	_, running, err := resolveBinding(p.lookupOps(context.Background(), name))
-	return err == nil && running
+	if err != nil {
+		return true // bool API has no uncertainty channel; fail safe against duplicate spawn
+	}
+	return running
 }
 
 // IsAttached reports false: herdr 0.7.1 exposes no clean attach-state query.
@@ -509,9 +523,12 @@ func (p *Provider) startAgentAdopting(ctx context.Context, name, kind, paneID st
 	started, startErr := p.c.startAgentKind(ctx, hn, kind, paneID, args)
 	return resolveAgentNameTaken(started, startErr, agentStartOps{
 		getAgent: func() (agentInfo, bool, error) { return p.c.getAgent(ctx, herdrAgentName(name)) },
-		paneAlive: func(holderPane string) bool {
+		paneAlive: func(holderPane string) (bool, error) {
 			probe, perr := p.probePane(ctx, holderPane)
-			return perr == nil && probe.Exists && probe.Busy
+			if perr != nil {
+				return false, perr
+			}
+			return probe.Exists && probe.Busy, nil
 		},
 		closePane:  func(holderPane string) error { return p.c.closePane(ctx, holderPane) },
 		retryStart: func() (agentInfo, error) { return p.c.startAgentKind(ctx, hn, kind, paneID, args) },
@@ -562,7 +579,7 @@ func (p *Provider) waitPaneLaunched(ctx context.Context, paneID, raw string) {
 	for time.Now().Before(deadline) {
 		shellPID, fg, err := p.c.processInfo(ctx, paneID)
 		switch {
-		case err != nil && (strings.Contains(err.Error(), "not_found") || strings.Contains(err.Error(), "not found")):
+		case err != nil && herdrErrorCode(err) == "pane_not_found":
 			return // pane already gone: the command ran and exited
 		case err == nil && shellPID != 0 && (paneRunsCommand(fg, raw) || paneRootReplaced(shellPID, fg)):
 			return
@@ -639,16 +656,24 @@ func (p *Provider) ObserveLiveness(name string, _ []string) runtime.Liveness {
 	}
 	ctx := context.Background()
 	info, present, err := p.c.getAgent(ctx, herdrAgentName(name))
-	if err == nil && !present {
+	if err != nil {
+		// ObserveLiveness has no error channel. A failed observation is unknown,
+		// not evidence that the runtime disappeared; fail safe so sweep/reconcile
+		// cannot close a live session during a transient Herdr outage.
+		return runtime.Liveness{Running: true, Alive: true}
+	}
+	if !present {
 		// Name absent — fall back to the bound pane before declaring the
 		// session gone: raw shell sessions never register a name at all, and
 		// herdr ≥0.7.4 clears a registered name on occupant change. A binding
 		// that resolves as running means the session is up even though no
 		// agent_status is readable; report alive, matching
 		// agentAliveFromStatus's fail-safe direction. A confirmed-gone pane
-		// clears the stale binding; a transport failure clears nothing and
-		// falls through to not-running (as a failed name query already does).
-		if _, running, perr := resolveBinding(p.lookupOps(ctx, name)); perr == nil && running {
+		// clears the stale binding; a transport failure proves nothing and must
+		// fail safe toward live because this interface cannot return the error.
+		if _, running, perr := resolveBinding(p.lookupOps(ctx, name)); perr != nil {
+			return runtime.Liveness{Running: true, Alive: true}
+		} else if running {
 			if aerr := p.recordObservedActivity(name, "bound-running"); aerr != nil {
 				fmt.Fprintf(os.Stderr, "herdr: recording bound activity for %q: %v\n", name, aerr) //nolint:errcheck // best-effort observability
 			}
@@ -668,10 +693,14 @@ func (p *Provider) ObserveLiveness(name string, _ []string) runtime.Liveness {
 		// same row and burns its restart budget without ever creating a new
 		// process. Reap a confirmed-missing pane or one that has returned to its
 		// bare shell prompt; Herdr's close operation also releases the registry
-		// name. The sidecar binding cannot be trusted again even if close itself
-		// fails.
+		// name. A close failure proves cleanup did not land: retain the stable
+		// binding and fail safe live so the next observation retries rather than
+		// stranding the pane or racing a replacement against the same name lease.
 		if cerr := p.c.closePane(ctx, info.PaneID); cerr != nil {
-			fmt.Fprintf(os.Stderr, "herdr: reaping stale registered pane %q for %q: %v\n", info.PaneID, name, cerr) //nolint:errcheck // liveness remains missing; next tick retries
+			if herdrErrorCode(cerr) != "pane_not_found" {
+				fmt.Fprintf(os.Stderr, "herdr: reaping stale registered pane %q for %q: %v\n", info.PaneID, name, cerr) //nolint:errcheck // next tick retries through the retained binding
+				return runtime.Liveness{Running: true, Alive: true}
+			}
 		}
 		p.clearPaneBinding(name)
 	}
@@ -733,11 +762,17 @@ func agentAliveFromStatus(status string) bool {
 func (p *Provider) Nudge(name string, content []runtime.ContentBlock) error {
 	ctx := context.Background()
 	pid, err := p.paneID(ctx, name)
-	if err != nil || pid == "" {
+	if err != nil {
+		return fmt.Errorf("herdr nudge %q: resolve pane: %w", name, err)
+	}
+	if pid == "" {
 		return runtime.ErrSessionNotFound
 	}
 	if err := p.c.deliverNudge(ctx, pid, runtime.FlattenText(content)); err != nil {
-		return err
+		if code := herdrErrorCode(err); code == "pane_not_found" || code == "agent_not_found" {
+			return fmt.Errorf("herdr nudge %q: %w: %w", name, runtime.ErrSessionNotFound, err)
+		}
+		return fmt.Errorf("herdr nudge %q: %w", name, err)
 	}
 	return nil
 }

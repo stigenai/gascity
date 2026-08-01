@@ -84,6 +84,12 @@ func IsSessionGone(err error) bool {
 	if err == nil {
 		return false
 	}
+	// Unavailability is uncertainty, never proof of absence. Check it before
+	// both the typed not-found sentinel and legacy message fallbacks because a
+	// wrapped transport error can legitimately contain prose such as "not found".
+	if errors.Is(err, ErrRuntimeUnavailable) {
+		return false
+	}
 	if errors.Is(err, ErrSessionNotFound) {
 		return true
 	}

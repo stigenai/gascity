@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/gastownhall/gascity/internal/runtime"
 )
 
 // wrapTaken builds an error shaped exactly like client.run's output for a
@@ -70,7 +72,7 @@ func TestResolveAgentNameTakenAdoptsLiveHolder(t *testing.T) {
 	reaped, retried := false, false
 	got, adopted, err := resolveAgentNameTaken(agentInfo{}, wrapTaken(), agentStartOps{
 		getAgent:   func() (agentInfo, bool, error) { return existing, true, nil },
-		paneAlive:  func(paneID string) bool { return paneID == "w3F:pW" },
+		paneAlive:  func(paneID string) (bool, error) { return paneID == "w3F:pW", nil },
 		closePane:  func(string) error { reaped = true; return nil },
 		retryStart: func() (agentInfo, error) { retried = true; return agentInfo{}, nil },
 	})
@@ -101,7 +103,7 @@ func TestResolveAgentNameTakenReapsStaleThenRetries(t *testing.T) {
 	retries := 0
 	got, adopted, err := resolveAgentNameTaken(agentInfo{}, wrapTaken(), agentStartOps{
 		getAgent:   func() (agentInfo, bool, error) { return stale, true, nil },
-		paneAlive:  func(string) bool { return false },
+		paneAlive:  func(string) (bool, error) { return false, nil },
 		closePane:  func(paneID string) error { reapedPane = paneID; return nil },
 		retryStart: func() (agentInfo, error) { retries++; return fresh, nil },
 	})
@@ -122,8 +124,91 @@ func TestResolveAgentNameTakenReapsStaleThenRetries(t *testing.T) {
 	}
 }
 
-// agent_name_taken but the holder can't be inspected (getAgent errors or
-// reports absent) → surface the original error rather than guessing.
+func TestResolveAgentNameTakenFailuresAbortWithoutRetry(t *testing.T) {
+	unavailable := fmt.Errorf("transport target not found: %w", runtime.ErrRuntimeUnavailable)
+	tests := []struct {
+		name      string
+		getAgent  func() (agentInfo, bool, error)
+		paneAlive func(string) (bool, error)
+		closePane func(string) error
+		wantClose bool
+	}{
+		{
+			name:     "get holder",
+			getAgent: func() (agentInfo, bool, error) { return agentInfo{}, false, unavailable },
+		},
+		{
+			name:     "probe holder",
+			getAgent: func() (agentInfo, bool, error) { return agentInfo{PaneID: "w3F:pW"}, true, nil },
+			paneAlive: func(string) (bool, error) {
+				return false, unavailable
+			},
+		},
+		{
+			name:      "close stale holder",
+			getAgent:  func() (agentInfo, bool, error) { return agentInfo{PaneID: "w3F:pW"}, true, nil },
+			paneAlive: func(string) (bool, error) { return false, nil },
+			closePane: func(string) error { return unavailable },
+			wantClose: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			closed, retried := false, false
+			closePane := func(string) error {
+				closed = true
+				if tt.closePane != nil {
+					return tt.closePane("")
+				}
+				return nil
+			}
+			_, adopted, err := resolveAgentNameTaken(agentInfo{}, wrapTaken(), agentStartOps{
+				getAgent:  tt.getAgent,
+				paneAlive: tt.paneAlive,
+				closePane: closePane,
+				retryStart: func() (agentInfo, error) {
+					retried = true
+					return agentInfo{}, nil
+				},
+			})
+			if !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+				t.Fatalf("error = %v; want ErrRuntimeUnavailable", err)
+			}
+			if adopted {
+				t.Error("adopted=true after failed holder observation/cleanup")
+			}
+			if closed != tt.wantClose {
+				t.Errorf("closePane called = %v, want %v", closed, tt.wantClose)
+			}
+			if retried {
+				t.Error("retryStart called after failed holder observation/cleanup")
+			}
+		})
+	}
+}
+
+func TestResolveAgentNameTakenRetriesAfterTypedPaneAbsence(t *testing.T) {
+	fresh := agentInfo{Name: "x", PaneID: "w3F:pNEW"}
+	retries := 0
+	got, adopted, err := resolveAgentNameTaken(agentInfo{}, wrapTaken(), agentStartOps{
+		getAgent:  func() (agentInfo, bool, error) { return agentInfo{PaneID: "w3F:pOLD"}, true, nil },
+		paneAlive: func(string) (bool, error) { return false, nil },
+		closePane: func(string) error {
+			return fmt.Errorf("close stale pane: %w", &herdrError{Code: "pane_not_found", Message: "pane gone"})
+		},
+		retryStart: func() (agentInfo, error) {
+			retries++
+			return fresh, nil
+		},
+	})
+	if err != nil || adopted || got != fresh || retries != 1 {
+		t.Fatalf("resolveAgentNameTaken = %+v, adopted=%v, err=%v, retries=%d; want fresh retry", got, adopted, err, retries)
+	}
+}
+
+// agent_name_taken but the holder is positively absent → surface the original
+// collision rather than guessing. Query failures are covered separately above
+// and surface ErrRuntimeUnavailable.
 func TestResolveAgentNameTakenUninspectableHolderSurfacesOriginal(t *testing.T) {
 	orig := wrapTaken()
 	_, adopted, err := resolveAgentNameTaken(agentInfo{}, orig, agentStartOps{

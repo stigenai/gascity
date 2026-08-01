@@ -41,7 +41,7 @@ func opsForRec(t *testing.T, agentHit bool, agentErr error, bound, mode string, 
 		boundMode:    func() string { return mode },
 		boundAge:     func() time.Duration { return time.Hour }, // long past any launch window
 		probePane:    func(string) (paneProbe, error) { return probe, probeErr },
-		reapPane:     func(paneID string) { rec.reaped = paneID },
+		reapPane:     func(paneID string) error { rec.reaped = paneID; return nil },
 		clearBinding: func() { rec.cleared = true },
 	}
 }
@@ -97,6 +97,26 @@ func TestResolveBindingReapsExitedAgentPane(t *testing.T) {
 	}
 	if !rec.cleared {
 		t.Error("exited agent binding not cleared")
+	}
+}
+
+func TestResolveBindingReapFailureKeepsBinding(t *testing.T) {
+	rec := &resolveOpsRec{}
+	closeErr := errors.New("close transport unavailable")
+	ops := opsForRec(t, false, nil, "%5", bindModeAgent, paneProbe{Exists: true}, nil, rec)
+	ops.reapPane = func(paneID string) error {
+		rec.reaped = paneID
+		return closeErr
+	}
+	pane, running, err := resolveBinding(ops)
+	if pane != "" || running || !errors.Is(err, closeErr) {
+		t.Fatalf("resolveBinding = %q, %v, %v; want close error", pane, running, err)
+	}
+	if rec.reaped != "%5" {
+		t.Errorf("exited agent pane not reaped (reaped=%q)", rec.reaped)
+	}
+	if rec.cleared {
+		t.Error("exited agent binding cleared after close failure")
 	}
 }
 

@@ -1,5 +1,7 @@
 package herdr
 
+import "fmt"
+
 // agentStartOps are the herdr operations resolveAgentNameTaken needs to recover
 // from an agent_name_taken rejection. They are injected as closures so the
 // recovery decision is unit-testable without a live herdr server.
@@ -7,7 +9,9 @@ type agentStartOps struct {
 	// getAgent fetches the agent currently holding the contested name.
 	getAgent func() (agentInfo, bool, error)
 	// paneAlive reports whether the holder's pane still runs the agent process.
-	paneAlive func(paneID string) bool
+	// Observation failures are returned separately; false is reserved for a
+	// positively observed stale/absent holder.
+	paneAlive func(paneID string) (bool, error)
 	// closePane reaps a stale holder pane.
 	closePane func(paneID string) error
 	// retryStart re-issues the original agent start after a stale holder is reaped.
@@ -26,8 +30,9 @@ type agentStartOps struct {
 // process is alive it is adopted (returned as-is with adopted=true, no new pane,
 // no retry) so the caller can skip re-priming a running agent; if the holder is
 // a stale pane it is reaped and the start is retried exactly once (adopted=false,
-// a fresh agent). If the holder cannot be inspected, the original error is
-// surfaced rather than guessing.
+// a fresh agent). An absent/incomplete holder preserves the original collision;
+// an observation or close failure is surfaced directly, with no destructive
+// close/retry based on uncertainty.
 func resolveAgentNameTaken(startInfo agentInfo, startErr error, ops agentStartOps) (info agentInfo, adopted bool, err error) {
 	if startErr == nil {
 		return startInfo, false, nil
@@ -36,13 +41,22 @@ func resolveAgentNameTaken(startInfo agentInfo, startErr error, ops agentStartOp
 		return agentInfo{}, false, startErr
 	}
 	existing, ok, gerr := ops.getAgent()
-	if gerr != nil || !ok {
+	if gerr != nil {
+		return agentInfo{}, false, fmt.Errorf("inspect agent_name_taken holder: %w", gerr)
+	}
+	if !ok || existing.PaneID == "" {
 		return agentInfo{}, false, startErr
 	}
-	if ops.paneAlive(existing.PaneID) {
+	alive, perr := ops.paneAlive(existing.PaneID)
+	if perr != nil {
+		return agentInfo{}, false, fmt.Errorf("probe agent_name_taken holder: %w", perr)
+	}
+	if alive {
 		return existing, true, nil // adopt the live holder; no reap, no retry
 	}
-	_ = ops.closePane(existing.PaneID) // reap the stale holder (best effort)
-	fresh, rerr := ops.retryStart()    // bounded: exactly one retry
+	if cerr := ops.closePane(existing.PaneID); cerr != nil && herdrErrorCode(cerr) != "pane_not_found" {
+		return agentInfo{}, false, fmt.Errorf("close stale agent_name_taken holder: %w", cerr)
+	}
+	fresh, rerr := ops.retryStart() // bounded: exactly one retry
 	return fresh, false, rerr
 }
