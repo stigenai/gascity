@@ -2477,12 +2477,12 @@ run_bd_init_pinned() {
     # Tell bd not to start its own server even if shared-server mode is inherited.
     if [ "$force_init" = "true" ]; then
         run_bd_pinned "$dir" init --force --quiet --server --external -p "$prefix" --database "$dolt_database" --skip-hooks --skip-agents \
-            --server-host "$host" --server-port "$DOLT_PORT" "$dir" || die "bd init failed for $dir"
+            --server-host "$host" --server-port "$DOLT_PORT" --server-user "$DOLT_USER" "$dir" || die "bd init failed for $dir"
         return 0
     fi
 
     run_bd_pinned "$dir" init --quiet --server --external -p "$prefix" --database "$dolt_database" --skip-hooks --skip-agents \
-        --server-host "$host" --server-port "$DOLT_PORT" "$dir" || die "bd init failed for $dir"
+        --server-host "$host" --server-port "$DOLT_PORT" --server-user "$DOLT_USER" "$dir" || die "bd init failed for $dir"
 }
 
 run_bd_doltlite() {

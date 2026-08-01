@@ -13,6 +13,38 @@ import (
 
 var bdConfigSetPattern = regexp.MustCompile(`bd[a-zA-Z_]*[[:space:]]+.*config[[:space:]]+set`)
 
+func TestGcBeadsBdInitPassesServerUserWithoutPuttingPasswordInArgv(t *testing.T) {
+	root := repoRootForLint(t)
+	scriptPath := filepath.Join(root, "examples", "bd", "assets", "scripts", "gc-beads-bd.sh")
+	data, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read script: %v", err)
+	}
+
+	initFn := extractShellFunction(t, string(data), "run_bd_init_pinned")
+	initCalls := regexp.MustCompile(`(?s)run_bd_pinned "\$dir" init .*?\|\| die`).FindAllString(initFn, -1)
+	if len(initCalls) != 2 {
+		t.Fatalf("run_bd_init_pinned init calls = %d, want force and non-force calls:\n%s", len(initCalls), initFn)
+	}
+	forceCalls := 0
+	for _, call := range initCalls {
+		if strings.Contains(call, " init --force ") {
+			forceCalls++
+		}
+		if !strings.Contains(call, `--server-user "$DOLT_USER"`) {
+			t.Fatalf("bd init must pass the authenticated non-root user explicitly:\n%s", call)
+		}
+		for _, secretArg := range []string{"DOLT_PASSWORD", "BEADS_DOLT_PASSWORD", "--password"} {
+			if strings.Contains(call, secretArg) {
+				t.Fatalf("bd init must keep the Dolt password out of process argv; found %q:\n%s", secretArg, call)
+			}
+		}
+	}
+	if forceCalls != 1 {
+		t.Fatalf("run_bd_init_pinned forced calls = %d, want one forced and one normal call:\n%s", forceCalls, initFn)
+	}
+}
+
 // TestGcBeadsBdNoBdConfigSet enforces the perf-fix from ga-5mym: the
 // gc-beads-bd init script must never invoke `bd config set` (directly or
 // through the run_bd_* wrappers). bd >= 1.0.3 makes that call cost 18-50s
