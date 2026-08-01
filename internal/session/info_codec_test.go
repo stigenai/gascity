@@ -123,6 +123,7 @@ func infoFromPersistedBeadFrozen(b beads.Bead) Info {
 		WakeMode:                       b.Metadata["wake_mode"],
 		SleepIntent:                    b.Metadata["sleep_intent"],
 		InstanceToken:                  b.Metadata["instance_token"],
+		AsyncStartCleanupObligation:    b.Metadata[AsyncStartCleanupObligationMetadataKey],
 		DetachedAt:                     b.Metadata["detached_at"],
 		CurrentlyProcessingBeadID:      b.Metadata[CurrentBeadIDKey],
 		CoreHashBreakdown:              b.Metadata["core_hash_breakdown"],

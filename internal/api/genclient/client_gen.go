@@ -4625,6 +4625,14 @@ type SessionUnknownStatePayload struct {
 	State string `json:"state"`
 }
 
+// ShutdownCleanupIncompletePayload defines model for ShutdownCleanupIncompletePayload.
+type ShutdownCleanupIncompletePayload struct {
+	Error                    string `json:"error"`
+	InstanceTokenFingerprint string `json:"instance_token_fingerprint"`
+	SessionId                string `json:"session_id"`
+	SessionName              string `json:"session_name"`
+}
+
 // SlingInputBody defines model for SlingInputBody.
 type SlingInputBody struct {
 	// AttachedBeadId Bead ID to attach a formula to.
@@ -5379,6 +5387,21 @@ type TypedEventStreamEnvelopeCityUnregisterRequested struct {
 	Ts        time.Time                `json:"ts"`
 	Type      string                   `json:"type"`
 	Workflow  *WorkflowEventProjection `json:"workflow,omitempty"`
+}
+
+// TypedEventStreamEnvelopeControllerShutdownCleanupIncomplete defines model for TypedEventStreamEnvelopeControllerShutdownCleanupIncomplete.
+type TypedEventStreamEnvelopeControllerShutdownCleanupIncomplete struct {
+	Actor     string                           `json:"actor"`
+	Message   *string                          `json:"message,omitempty"`
+	Payload   ShutdownCleanupIncompletePayload `json:"payload"`
+	RunId     *string                          `json:"run_id,omitempty"`
+	Seq       int64                            `json:"seq"`
+	SessionId *string                          `json:"session_id,omitempty"`
+	StepId    *string                          `json:"step_id,omitempty"`
+	Subject   *string                          `json:"subject,omitempty"`
+	Ts        time.Time                        `json:"ts"`
+	Type      string                           `json:"type"`
+	Workflow  *WorkflowEventProjection         `json:"workflow,omitempty"`
 }
 
 // TypedEventStreamEnvelopeControllerStarted defines model for TypedEventStreamEnvelopeControllerStarted.
@@ -6567,6 +6590,22 @@ type TypedTaggedEventStreamEnvelopeCityUnregisterRequested struct {
 	Ts        time.Time                `json:"ts"`
 	Type      string                   `json:"type"`
 	Workflow  *WorkflowEventProjection `json:"workflow,omitempty"`
+}
+
+// TypedTaggedEventStreamEnvelopeControllerShutdownCleanupIncomplete defines model for TypedTaggedEventStreamEnvelopeControllerShutdownCleanupIncomplete.
+type TypedTaggedEventStreamEnvelopeControllerShutdownCleanupIncomplete struct {
+	Actor     string                           `json:"actor"`
+	City      string                           `json:"city"`
+	Message   *string                          `json:"message,omitempty"`
+	Payload   ShutdownCleanupIncompletePayload `json:"payload"`
+	RunId     *string                          `json:"run_id,omitempty"`
+	Seq       int64                            `json:"seq"`
+	SessionId *string                          `json:"session_id,omitempty"`
+	StepId    *string                          `json:"step_id,omitempty"`
+	Subject   *string                          `json:"subject,omitempty"`
+	Ts        time.Time                        `json:"ts"`
+	Type      string                           `json:"type"`
+	Workflow  *WorkflowEventProjection         `json:"workflow,omitempty"`
 }
 
 // TypedTaggedEventStreamEnvelopeControllerStarted defines model for TypedTaggedEventStreamEnvelopeControllerStarted.
@@ -10045,6 +10084,32 @@ func (t *EventPayload) MergeSessionUnknownStatePayload(v SessionUnknownStatePayl
 	return err
 }
 
+// AsShutdownCleanupIncompletePayload returns the union data inside the EventPayload as a ShutdownCleanupIncompletePayload
+func (t EventPayload) AsShutdownCleanupIncompletePayload() (ShutdownCleanupIncompletePayload, error) {
+	var body ShutdownCleanupIncompletePayload
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromShutdownCleanupIncompletePayload overwrites any union data inside the EventPayload as the provided ShutdownCleanupIncompletePayload
+func (t *EventPayload) FromShutdownCleanupIncompletePayload(v ShutdownCleanupIncompletePayload) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeShutdownCleanupIncompletePayload performs a merge with any union data inside the EventPayload, using the provided ShutdownCleanupIncompletePayload
+func (t *EventPayload) MergeShutdownCleanupIncompletePayload(v ShutdownCleanupIncompletePayload) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
 // AsStoreDiskCriticalPayload returns the union data inside the EventPayload as a StoreDiskCriticalPayload
 func (t EventPayload) AsStoreDiskCriticalPayload() (StoreDiskCriticalPayload, error) {
 	var body StoreDiskCriticalPayload
@@ -12396,6 +12461,34 @@ func (t *TypedEventStreamEnvelope) MergeTypedEventStreamEnvelopeCityUnregisterRe
 	return err
 }
 
+// AsTypedEventStreamEnvelopeControllerShutdownCleanupIncomplete returns the union data inside the TypedEventStreamEnvelope as a TypedEventStreamEnvelopeControllerShutdownCleanupIncomplete
+func (t TypedEventStreamEnvelope) AsTypedEventStreamEnvelopeControllerShutdownCleanupIncomplete() (TypedEventStreamEnvelopeControllerShutdownCleanupIncomplete, error) {
+	var body TypedEventStreamEnvelopeControllerShutdownCleanupIncomplete
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTypedEventStreamEnvelopeControllerShutdownCleanupIncomplete overwrites any union data inside the TypedEventStreamEnvelope as the provided TypedEventStreamEnvelopeControllerShutdownCleanupIncomplete
+func (t *TypedEventStreamEnvelope) FromTypedEventStreamEnvelopeControllerShutdownCleanupIncomplete(v TypedEventStreamEnvelopeControllerShutdownCleanupIncomplete) error {
+	v.Type = "controller.shutdown_cleanup_incomplete"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTypedEventStreamEnvelopeControllerShutdownCleanupIncomplete performs a merge with any union data inside the TypedEventStreamEnvelope, using the provided TypedEventStreamEnvelopeControllerShutdownCleanupIncomplete
+func (t *TypedEventStreamEnvelope) MergeTypedEventStreamEnvelopeControllerShutdownCleanupIncomplete(v TypedEventStreamEnvelopeControllerShutdownCleanupIncomplete) error {
+	v.Type = "controller.shutdown_cleanup_incomplete"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
 // AsTypedEventStreamEnvelopeControllerStarted returns the union data inside the TypedEventStreamEnvelope as a TypedEventStreamEnvelopeControllerStarted
 func (t TypedEventStreamEnvelope) AsTypedEventStreamEnvelopeControllerStarted() (TypedEventStreamEnvelopeControllerStarted, error) {
 	var body TypedEventStreamEnvelopeControllerStarted
@@ -14258,6 +14351,8 @@ func (t TypedEventStreamEnvelope) ValueByDiscriminator() (interface{}, error) {
 		return t.AsTypedEventStreamEnvelopeCitySuspended()
 	case "city.unregister_requested":
 		return t.AsTypedEventStreamEnvelopeCityUnregisterRequested()
+	case "controller.shutdown_cleanup_incomplete":
+		return t.AsTypedEventStreamEnvelopeControllerShutdownCleanupIncomplete()
 	case "controller.started":
 		return t.AsTypedEventStreamEnvelopeControllerStarted()
 	case "controller.stopped":
@@ -14755,6 +14850,34 @@ func (t *TypedTaggedEventStreamEnvelope) FromTypedTaggedEventStreamEnvelopeCityU
 // MergeTypedTaggedEventStreamEnvelopeCityUnregisterRequested performs a merge with any union data inside the TypedTaggedEventStreamEnvelope, using the provided TypedTaggedEventStreamEnvelopeCityUnregisterRequested
 func (t *TypedTaggedEventStreamEnvelope) MergeTypedTaggedEventStreamEnvelopeCityUnregisterRequested(v TypedTaggedEventStreamEnvelopeCityUnregisterRequested) error {
 	v.Type = "city.unregister_requested"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsTypedTaggedEventStreamEnvelopeControllerShutdownCleanupIncomplete returns the union data inside the TypedTaggedEventStreamEnvelope as a TypedTaggedEventStreamEnvelopeControllerShutdownCleanupIncomplete
+func (t TypedTaggedEventStreamEnvelope) AsTypedTaggedEventStreamEnvelopeControllerShutdownCleanupIncomplete() (TypedTaggedEventStreamEnvelopeControllerShutdownCleanupIncomplete, error) {
+	var body TypedTaggedEventStreamEnvelopeControllerShutdownCleanupIncomplete
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTypedTaggedEventStreamEnvelopeControllerShutdownCleanupIncomplete overwrites any union data inside the TypedTaggedEventStreamEnvelope as the provided TypedTaggedEventStreamEnvelopeControllerShutdownCleanupIncomplete
+func (t *TypedTaggedEventStreamEnvelope) FromTypedTaggedEventStreamEnvelopeControllerShutdownCleanupIncomplete(v TypedTaggedEventStreamEnvelopeControllerShutdownCleanupIncomplete) error {
+	v.Type = "controller.shutdown_cleanup_incomplete"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTypedTaggedEventStreamEnvelopeControllerShutdownCleanupIncomplete performs a merge with any union data inside the TypedTaggedEventStreamEnvelope, using the provided TypedTaggedEventStreamEnvelopeControllerShutdownCleanupIncomplete
+func (t *TypedTaggedEventStreamEnvelope) MergeTypedTaggedEventStreamEnvelopeControllerShutdownCleanupIncomplete(v TypedTaggedEventStreamEnvelopeControllerShutdownCleanupIncomplete) error {
+	v.Type = "controller.shutdown_cleanup_incomplete"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -16627,6 +16750,8 @@ func (t TypedTaggedEventStreamEnvelope) ValueByDiscriminator() (interface{}, err
 		return t.AsTypedTaggedEventStreamEnvelopeCitySuspended()
 	case "city.unregister_requested":
 		return t.AsTypedTaggedEventStreamEnvelopeCityUnregisterRequested()
+	case "controller.shutdown_cleanup_incomplete":
+		return t.AsTypedTaggedEventStreamEnvelopeControllerShutdownCleanupIncomplete()
 	case "controller.started":
 		return t.AsTypedTaggedEventStreamEnvelopeControllerStarted()
 	case "controller.stopped":

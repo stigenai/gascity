@@ -2433,6 +2433,9 @@
             "$ref": "#/components/schemas/SessionUnknownStatePayload"
           },
           {
+            "$ref": "#/components/schemas/ShutdownCleanupIncompletePayload"
+          },
+          {
             "$ref": "#/components/schemas/StoreDiskCriticalPayload"
           },
           {
@@ -10644,6 +10647,30 @@
         ],
         "type": "object"
       },
+      "ShutdownCleanupIncompletePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "instance_token_fingerprint": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "session_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "session_name",
+          "instance_token_fingerprint",
+          "error"
+        ],
+        "type": "object"
+      },
       "SlingInputBody": {
         "additionalProperties": false,
         "properties": {
@@ -11871,6 +11898,7 @@
             "city.resumed": "#/components/schemas/TypedEventStreamEnvelopeCityResumed",
             "city.suspended": "#/components/schemas/TypedEventStreamEnvelopeCitySuspended",
             "city.unregister_requested": "#/components/schemas/TypedEventStreamEnvelopeCityUnregisterRequested",
+            "controller.shutdown_cleanup_incomplete": "#/components/schemas/TypedEventStreamEnvelopeControllerShutdownCleanupIncomplete",
             "controller.started": "#/components/schemas/TypedEventStreamEnvelopeControllerStarted",
             "controller.stopped": "#/components/schemas/TypedEventStreamEnvelopeControllerStopped",
             "convoy.closed": "#/components/schemas/TypedEventStreamEnvelopeConvoyClosed",
@@ -11977,6 +12005,9 @@
           },
           {
             "$ref": "#/components/schemas/TypedEventStreamEnvelopeCityUnregisterRequested"
+          },
+          {
+            "$ref": "#/components/schemas/TypedEventStreamEnvelopeControllerShutdownCleanupIncomplete"
           },
           {
             "$ref": "#/components/schemas/TypedEventStreamEnvelopeControllerStarted"
@@ -12839,6 +12870,57 @@
         "title": "TypedEventStreamEnvelope city.unregister_requested",
         "type": "object"
       },
+      "TypedEventStreamEnvelopeControllerShutdownCleanupIncomplete": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/ShutdownCleanupIncompletePayload"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "seq": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "step_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "const": "controller.shutdown_cleanup_incomplete",
+            "type": "string"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/WorkflowEventProjection"
+          }
+        },
+        "required": [
+          "seq",
+          "type",
+          "ts",
+          "actor",
+          "payload"
+        ],
+        "title": "TypedEventStreamEnvelope controller.shutdown_cleanup_incomplete",
+        "type": "object"
+      },
       "TypedEventStreamEnvelopeControllerStarted": {
         "additionalProperties": false,
         "properties": {
@@ -13112,6 +13194,7 @@
                 "convoy.closed",
                 "controller.started",
                 "controller.stopped",
+                "controller.shutdown_cleanup_incomplete",
                 "city.suspended",
                 "city.resumed",
                 "request.result.city.create",
@@ -16249,6 +16332,7 @@
             "city.resumed": "#/components/schemas/TypedTaggedEventStreamEnvelopeCityResumed",
             "city.suspended": "#/components/schemas/TypedTaggedEventStreamEnvelopeCitySuspended",
             "city.unregister_requested": "#/components/schemas/TypedTaggedEventStreamEnvelopeCityUnregisterRequested",
+            "controller.shutdown_cleanup_incomplete": "#/components/schemas/TypedTaggedEventStreamEnvelopeControllerShutdownCleanupIncomplete",
             "controller.started": "#/components/schemas/TypedTaggedEventStreamEnvelopeControllerStarted",
             "controller.stopped": "#/components/schemas/TypedTaggedEventStreamEnvelopeControllerStopped",
             "convoy.closed": "#/components/schemas/TypedTaggedEventStreamEnvelopeConvoyClosed",
@@ -16355,6 +16439,9 @@
           },
           {
             "$ref": "#/components/schemas/TypedTaggedEventStreamEnvelopeCityUnregisterRequested"
+          },
+          {
+            "$ref": "#/components/schemas/TypedTaggedEventStreamEnvelopeControllerShutdownCleanupIncomplete"
           },
           {
             "$ref": "#/components/schemas/TypedTaggedEventStreamEnvelopeControllerStarted"
@@ -17269,6 +17356,61 @@
         "title": "TypedTaggedEventStreamEnvelope city.unregister_requested",
         "type": "object"
       },
+      "TypedTaggedEventStreamEnvelopeControllerShutdownCleanupIncomplete": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "type": "string"
+          },
+          "city": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/ShutdownCleanupIncompletePayload"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "seq": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "step_id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "ts": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "type": {
+            "const": "controller.shutdown_cleanup_incomplete",
+            "type": "string"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/WorkflowEventProjection"
+          }
+        },
+        "required": [
+          "seq",
+          "type",
+          "ts",
+          "actor",
+          "payload",
+          "city"
+        ],
+        "title": "TypedTaggedEventStreamEnvelope controller.shutdown_cleanup_incomplete",
+        "type": "object"
+      },
       "TypedTaggedEventStreamEnvelopeControllerStarted": {
         "additionalProperties": false,
         "properties": {
@@ -17561,6 +17703,7 @@
                 "convoy.closed",
                 "controller.started",
                 "controller.stopped",
+                "controller.shutdown_cleanup_incomplete",
                 "city.suspended",
                 "city.resumed",
                 "request.result.city.create",

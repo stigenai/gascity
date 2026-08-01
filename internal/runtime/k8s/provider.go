@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/kubernetes"
@@ -25,10 +26,14 @@ import (
 	"github.com/gastownhall/gascity/internal/runtime"
 )
 
+const runningPodSnapshotTimeout = 5 * time.Second
+
 // Compile-time interface checks.
 var (
-	_ runtime.Provider     = (*Provider)(nil)
-	_ runtime.ExecProvider = (*Provider)(nil)
+	_ runtime.Provider                        = (*Provider)(nil)
+	_ runtime.ExecProvider                    = (*Provider)(nil)
+	_ runtime.FreshRunningSessionLister       = (*Provider)(nil)
+	_ runtime.InstanceTokenFencedStopProvider = (*Provider)(nil)
 )
 
 // Provider is a native Kubernetes session provider using client-go.
@@ -53,10 +58,17 @@ type Provider struct {
 	priorityClassName  string              // GC_K8S_PRIORITY_CLASS_NAME
 	postStartSettle    time.Duration       // settle time before post-start liveness check
 	stderr             io.Writer           // warning output (default os.Stderr)
-	runningPodCacheMu  sync.Mutex
-	runningPodCache    map[string]string
+	runningPodCacheMu  sync.RWMutex
+	runningPodCache    *runningPodState
 	runningPodCacheAt  time.Time
 	runningPodCacheTTL time.Duration
+	runningPodCacheGen uint64
+	runningPodFlight   singleflight.Group
+}
+
+type runningPodState struct {
+	bySession         map[string]string
+	agentSessionNames []string
 }
 
 type schedulingFields struct {
@@ -205,7 +217,10 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 			// Stale pod — tmux dead and past grace period, recreate.
 		}
 		// Clean up existing pod.
-		if delErr := p.ops.deletePod(ctx, pod.Name, pod.UID, 5); delErr != nil && !apierrors.IsNotFound(delErr) {
+		p.invalidateRunningPodSnapshot()
+		delErr := p.ops.deletePod(ctx, pod.Name, pod.UID, 5)
+		p.invalidateRunningPodSnapshot()
+		if delErr != nil && !apierrors.IsNotFound(delErr) {
 			return fmt.Errorf("deleting existing pod %q for session %q: %w", pod.Name, name, delErr)
 		}
 		if waitErr := waitForDeletion(ctx, p.ops, pod.Name, 30*time.Second); waitErr != nil {
@@ -218,7 +233,9 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 	if err != nil {
 		return fmt.Errorf("building pod for session %q: %w", name, err)
 	}
+	p.invalidateRunningPodSnapshot()
 	createdPod, err := p.ops.createPod(ctx, pod)
+	p.invalidateRunningPodSnapshot()
 	if err != nil {
 		return fmt.Errorf("creating pod for session %q: %w", name, err)
 	}
@@ -233,7 +250,9 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 	cleanup := func(_ string) {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		p.invalidateRunningPodSnapshot()
 		_ = p.ops.deletePod(cleanupCtx, podName, podUID, 5)
+		p.invalidateRunningPodSnapshot()
 	}
 
 	ctrlCity := cfg.Env["GC_CITY"]
@@ -317,6 +336,12 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 				runtime.ErrSessionDiedDuringStartup, name, tmuxErr)
 		}
 	}
+
+	// A snapshot taken during the startup sequence cannot serve the initial
+	// nudge or post-Start observation. Mutation attempts already establish their
+	// pre-call boundaries; this terminal invalidation also drops any observation
+	// populated while the pod was still initializing.
+	p.invalidateRunningPodSnapshot()
 
 	// Send initial nudge if configured (matches tmux adapter step 6).
 	if cfg.Nudge != "" {
@@ -452,9 +477,17 @@ func (p *Provider) Stop(name string) error {
 		}
 		return fmt.Errorf("k8s stop %q: listing pods: %w", name, err)
 	}
+	// The targeted list is authoritative even when it is empty. Establish the
+	// generation boundary before mutation, not after return: a delete may commit
+	// and still report an error, and concurrent readers must not join the old
+	// singleflight while that call is blocked.
+	p.invalidateRunningPodSnapshot()
 	var errs []error
 	for i := range pods {
-		if delErr := p.ops.deletePod(ctx, pods[i].Name, pods[i].UID, 5); delErr != nil && !apierrors.IsNotFound(delErr) {
+		p.invalidateRunningPodSnapshot()
+		delErr := p.ops.deletePod(ctx, pods[i].Name, pods[i].UID, 5)
+		p.invalidateRunningPodSnapshot()
+		if delErr != nil && !apierrors.IsNotFound(delErr) {
 			errs = append(errs, fmt.Errorf("deleting pod %q: %w", pods[i].Name, delErr))
 		}
 	}
@@ -462,6 +495,68 @@ func (p *Provider) Stop(name string) error {
 		return fmt.Errorf("k8s stop %q: %w", name, errors.Join(errs...))
 	}
 	return nil
+}
+
+// StopIfInstanceToken destroys only pod objects whose immutable pod-spec token
+// exactly equals expectedToken. The token comparison and delete targets come
+// from one authoritative LIST; every delete carries the captured UID as a
+// Kubernetes precondition, so a same-name replacement created after the LIST
+// cannot be removed by this operation.
+func (p *Provider) StopIfInstanceToken(name, expectedToken string) error {
+	expectedToken = strings.TrimSpace(expectedToken)
+	if expectedToken == "" {
+		return fmt.Errorf("k8s fenced stop %q: %w: empty expected token", name, runtime.ErrRuntimeUnavailable)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	label := SanitizeLabel(name)
+	pods, err := p.ops.listPods(ctx, "gc-session="+label, "")
+	if err != nil {
+		return fmt.Errorf("k8s fenced stop %q: %w: listing pods: %w", name, runtime.ErrRuntimeUnavailable, err)
+	}
+	if len(pods) == 0 {
+		return fmt.Errorf("k8s fenced stop %q: %w", name, runtime.ErrSessionNotFound)
+	}
+
+	matched := make([]corev1.Pod, 0, len(pods))
+	definiteMismatch := false
+	identityUncertain := false
+	for i := range pods {
+		token, ok := immutablePodInstanceToken(&pods[i])
+		if !ok {
+			identityUncertain = true
+			continue
+		}
+		if token != expectedToken {
+			definiteMismatch = true
+			continue
+		}
+		matched = append(matched, pods[i])
+	}
+	if len(matched) == 0 {
+		if identityUncertain {
+			return fmt.Errorf("k8s fenced stop %q: %w: immutable instance token unavailable or ambiguous", name, runtime.ErrRuntimeUnavailable)
+		}
+		if definiteMismatch {
+			return fmt.Errorf("k8s fenced stop %q: %w", name, runtime.ErrInstanceTokenMismatch)
+		}
+		return fmt.Errorf("k8s fenced stop %q: %w: no verifiable pod identity", name, runtime.ErrRuntimeUnavailable)
+	}
+
+	var errs []error
+	for i := range matched {
+		pod := &matched[i]
+		p.invalidateRunningPodSnapshot()
+		deleteErr := p.ops.deletePod(ctx, pod.Name, pod.UID, 5)
+		p.invalidateRunningPodSnapshot()
+		// NotFound and UID-precondition conflicts both prove that this captured
+		// immutable object is gone. A replacement, if any, remains untouched.
+		if deleteErr == nil || apierrors.IsNotFound(deleteErr) || apierrors.IsConflict(deleteErr) {
+			continue
+		}
+		errs = append(errs, fmt.Errorf("deleting token-matched pod %q (%s): %w", pod.Name, pod.UID, deleteErr))
+	}
+	return errors.Join(errs...)
 }
 
 // Interrupt sends Ctrl-C to the tmux session inside the pod.
@@ -587,6 +682,35 @@ func (p *Provider) SetMeta(name, key, value string) error {
 // GetMeta retrieves a metadata value from the tmux environment.
 func (p *Provider) GetMeta(name, key string) (string, error) {
 	ctx := context.Background()
+	// The instance token is immutable pod-spec identity and is available before
+	// tmux starts. Read it from the authoritative object so shutdown cleanup can
+	// fence a Pending/initializing pod without treating an exec failure or an
+	// empty tmux environment as permission to delete.
+	if key == "GC_INSTANCE_TOKEN" {
+		label := SanitizeLabel(name)
+		pods, err := p.ops.listPods(ctx, "gc-session="+label, "")
+		if err != nil {
+			return "", interactionError("get metadata", name, fmt.Errorf("%w: list pod for session %q: %w", runtime.ErrRuntimeUnavailable, name, err))
+		}
+		if len(pods) == 0 {
+			return "", interactionError("get metadata", name, fmt.Errorf("%w: no pod for session %q", runtime.ErrSessionNotFound, name))
+		}
+		var observed string
+		for i := range pods {
+			token, ok := immutablePodInstanceToken(&pods[i])
+			if !ok {
+				return "", nil
+			}
+			if observed == "" {
+				observed = token
+				continue
+			}
+			if observed != token {
+				return "", interactionError("get metadata", name, fmt.Errorf("%w: multiple pod incarnations have different immutable tokens", runtime.ErrRuntimeUnavailable))
+			}
+		}
+		return observed, nil
+	}
 	podName, err := p.findPod(ctx, name)
 	if err != nil {
 		return "", interactionError("get metadata", name, err)
@@ -629,6 +753,31 @@ func (p *Provider) GetMeta(name, key string) (string, error) {
 	)
 }
 
+func immutablePodInstanceToken(pod *corev1.Pod) (string, bool) {
+	if pod == nil {
+		return "", false
+	}
+	var token string
+	found := false
+	for i := range pod.Spec.Containers {
+		if pod.Spec.Containers[i].Name != "agent" {
+			continue
+		}
+		for _, env := range pod.Spec.Containers[i].Env {
+			if env.Name != "GC_INSTANCE_TOKEN" {
+				continue
+			}
+			candidate := strings.TrimSpace(env.Value)
+			if candidate == "" || (found && candidate != token) {
+				return "", false
+			}
+			token = candidate
+			found = true
+		}
+	}
+	return token, found
+}
+
 func isTmuxUnknownVariable(err error, key string) bool {
 	if err == nil || strings.TrimSpace(key) == "" {
 		return false
@@ -656,27 +805,56 @@ func (p *Provider) Peek(name string, lines int) (string, error) {
 
 // ListRunning returns names of all running sessions with the given prefix.
 func (p *Provider) ListRunning(prefix string) ([]string, error) {
-	ctx := context.Background()
-	pods, err := p.ops.listPods(ctx, "app=gc-agent", "status.phase=Running")
+	ctx, cancel := context.WithTimeout(context.Background(), runningPodSnapshotTimeout)
+	defer cancel()
+
+	if p.runningPodCacheTTL <= 0 {
+		return p.listRunningFresh(ctx, prefix)
+	}
+
+	snapshot, err := p.runningPodSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
 	var names []string
-	for i := range pods {
-		pod := &pods[i]
-		// Prefer annotation (raw name) over label (sanitized).
-		name := pod.Annotations["gc-session-name"]
-		if name == "" {
-			name = pod.Labels["gc-session"]
-		}
-		if name == "" {
-			continue
-		}
+	for _, name := range snapshot.agentSessionNames {
 		if prefix == "" || strings.HasPrefix(name, prefix) {
 			names = append(names, name)
 		}
 	}
 	return names, nil
+}
+
+// ListRunningFresh bypasses the short-lived observation snapshot for lifecycle
+// decisions that must see pods which became Running after an earlier list.
+func (p *Provider) ListRunningFresh(prefix string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), runningPodSnapshotTimeout)
+	defer cancel()
+	return p.listRunningFresh(ctx, prefix)
+}
+
+func (p *Provider) listRunningFresh(ctx context.Context, prefix string) ([]string, error) {
+	pods, err := p.ops.listPods(ctx, "app=gc-agent", "status.phase=Running")
+	if err != nil {
+		return nil, err
+	}
+	return runningSessionNames(pods, prefix), nil
+}
+
+func runningSessionNames(pods []corev1.Pod, prefix string) []string {
+	var names []string
+	for i := range pods {
+		pod := &pods[i]
+		// Prefer annotation (raw name) over label (sanitized).
+		name := strings.TrimSpace(pod.Annotations["gc-session-name"])
+		if name == "" {
+			name = strings.TrimSpace(pod.Labels["gc-session"])
+		}
+		if name != "" && (prefix == "" || strings.HasPrefix(name, prefix)) {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // GetLastActivity returns the time of the last I/O in the tmux session.
@@ -839,16 +1017,45 @@ func (p *Provider) findRunningPod(ctx context.Context, name string) (string, err
 // short-lived namespace snapshot preserves current state while reducing the
 // hot path to a single LIST shared by all session names.
 func (p *Provider) findRunningPodFromSnapshot(ctx context.Context, name string) (string, error) {
-	p.runningPodCacheMu.Lock()
-	defer p.runningPodCacheMu.Unlock()
+	snapshot, err := p.runningPodSnapshot(ctx)
+	if err != nil {
+		return "", err
+	}
 
-	now := time.Now()
-	if p.runningPodCache == nil || now.Sub(p.runningPodCacheAt) >= p.runningPodCacheTTL {
-		pods, err := p.ops.listPods(ctx, "", "status.phase=Running")
-		if err != nil {
-			return "", err
+	podName := snapshot.bySession[name]
+	if podName == "" {
+		// Labels are sanitized for Kubernetes, while annotations preserve the
+		// original runtime name. Legacy pods may have only the label.
+		podName = snapshot.bySession[SanitizeLabel(name)]
+	}
+	if podName == "" {
+		return "", fmt.Errorf("no running pod for session %q", name)
+	}
+	return podName, nil
+}
+
+// runningPodSnapshot returns one short-lived namespace snapshot shared by
+// every list and per-session lookup in a controller burst. Refresh failures
+// are coalesced but never cached, and the shared Kubernetes request has its
+// own bound so it does not inherit the winning caller's lifetime.
+func (p *Provider) runningPodSnapshot(ctx context.Context) (*runningPodState, error) {
+	if snapshot, ok := p.cachedRunningPodSnapshot(time.Now()); ok {
+		return snapshot, nil
+	}
+
+	result := p.runningPodFlight.DoChan("refresh", func() (any, error) {
+		snapshot, ok, generation := p.cachedRunningPodSnapshotForRefresh(time.Now())
+		if ok {
+			return snapshot, nil
 		}
-		cache := make(map[string]string, len(pods))
+
+		refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runningPodSnapshotTimeout)
+		defer cancel()
+		pods, err := p.ops.listPods(refreshCtx, "", "status.phase=Running")
+		if err != nil {
+			return nil, err
+		}
+		snapshot = &runningPodState{bySession: make(map[string]string, len(pods))}
 		for i := range pods {
 			sessionName := strings.TrimSpace(pods[i].Annotations["gc-session-name"])
 			if sessionName == "" {
@@ -857,24 +1064,68 @@ func (p *Provider) findRunningPodFromSnapshot(ctx context.Context, name string) 
 			if sessionName == "" {
 				continue
 			}
-			if _, exists := cache[sessionName]; !exists {
-				cache[sessionName] = pods[i].Name
+			if _, exists := snapshot.bySession[sessionName]; !exists {
+				snapshot.bySession[sessionName] = pods[i].Name
+			}
+			if pods[i].Labels["app"] == "gc-agent" {
+				snapshot.agentSessionNames = append(snapshot.agentSessionNames, sessionName)
 			}
 		}
-		p.runningPodCache = cache
-		p.runningPodCacheAt = now
-	}
 
-	podName := p.runningPodCache[name]
-	if podName == "" {
-		// Labels are sanitized for Kubernetes, while annotations preserve the
-		// original runtime name. Legacy pods may have only the label.
-		podName = p.runningPodCache[SanitizeLabel(name)]
+		p.runningPodCacheMu.Lock()
+		if p.runningPodCacheGen == generation {
+			p.runningPodCache = snapshot
+			p.runningPodCacheAt = time.Now()
+		}
+		p.runningPodCacheMu.Unlock()
+		return snapshot, nil
+	})
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case refresh := <-result:
+		if refresh.Err != nil {
+			return nil, refresh.Err
+		}
+		snapshot, ok := refresh.Val.(*runningPodState)
+		if !ok {
+			return nil, fmt.Errorf("running-pod snapshot returned %T", refresh.Val)
+		}
+		return snapshot, nil
 	}
-	if podName == "" {
-		return "", fmt.Errorf("no running pod for session %q", name)
+}
+
+func (p *Provider) cachedRunningPodSnapshot(now time.Time) (*runningPodState, bool) {
+	p.runningPodCacheMu.RLock()
+	defer p.runningPodCacheMu.RUnlock()
+	if p.runningPodCache == nil || now.Sub(p.runningPodCacheAt) >= p.runningPodCacheTTL {
+		return nil, false
 	}
-	return podName, nil
+	return p.runningPodCache, true
+}
+
+func (p *Provider) cachedRunningPodSnapshotForRefresh(now time.Time) (*runningPodState, bool, uint64) {
+	p.runningPodCacheMu.RLock()
+	defer p.runningPodCacheMu.RUnlock()
+	if p.runningPodCache == nil || now.Sub(p.runningPodCacheAt) >= p.runningPodCacheTTL {
+		return nil, false, p.runningPodCacheGen
+	}
+	return p.runningPodCache, true, p.runningPodCacheGen
+}
+
+// invalidateRunningPodSnapshot establishes a mutation generation boundary.
+// Forget runs while the cache lock is held so a post-mutation caller cannot
+// join the pre-mutation singleflight. A pre-mutation refresh may still return to
+// its original callers, but its generation check prevents it from republishing
+// stale state into the cache.
+func (p *Provider) invalidateRunningPodSnapshot() {
+	p.runningPodCacheMu.Lock()
+	p.runningPodCacheGen++
+	p.runningPodCache = nil
+	p.runningPodCacheAt = time.Time{}
+	p.runningPodFlight.Forget("refresh")
+	p.runningPodCacheMu.Unlock()
 }
 
 // findPod finds a pod by session label (any phase).

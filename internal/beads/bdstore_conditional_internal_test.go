@@ -1,6 +1,7 @@
 package beads
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -875,6 +877,51 @@ func TestCompareAndSetMetadataKeyWin(t *testing.T) {
 	}
 	if !argvContains(w.writeArgv, "update", "--set-metadata", "k=first", conditionalWriteFlag, "1") {
 		t.Fatalf("CAS fenced update argv missing expected flags: %v", w.writeArgv)
+	}
+}
+
+func TestCompareAndSetMetadataKeyContextBoundsBlockedReadWithoutLateWrite(t *testing.T) {
+	w := &scriptedBd{id: "ga-1", revision: 1, status: "open", metadata: map[string]string{"k": "start"}}
+	readStarted := make(chan struct{})
+	var readOnce sync.Once
+	var writeCalls atomic.Int32
+	contextRunner := func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		if len(args) >= 2 && args[1] == "--help" {
+			return w.runner(dir, name, args...)
+		}
+		if len(args) > 0 && args[0] == "show" {
+			readOnce.Do(func() { close(readStarted) })
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		writeCalls.Add(1)
+		return w.runner(dir, name, args...)
+	}
+	s := NewBdStore("/city", w.runner, WithBdStoreContextCommandRunner(contextRunner))
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	swapped, err := s.CompareAndSetMetadataKeyContext(ctx, "ga-1", "k", "start", "next")
+	elapsed := time.Since(started)
+	if swapped || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("context CAS = (%t,%v), want false/deadline exceeded", swapped, err)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("context CAS returned after %s, want bounded by caller deadline", elapsed)
+	}
+	select {
+	case <-readStarted:
+	default:
+		t.Fatal("context CAS did not reach the blocked read")
+	}
+	if got := writeCalls.Load(); got != 0 {
+		t.Fatalf("writes after blocked read = %d, want 0", got)
+	}
+	w.mu.Lock()
+	got := w.metadata["k"]
+	w.mu.Unlock()
+	if got != "start" {
+		t.Fatalf("metadata after deadline = %q, want start", got)
 	}
 }
 

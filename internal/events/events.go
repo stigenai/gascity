@@ -107,6 +107,11 @@ const (
 	ConvoyClosed            = "convoy.closed"
 	ControllerStarted       = "controller.started"
 	ControllerStopped       = "controller.stopped"
+	// ShutdownCleanupIncomplete fires when a non-preserve controller shutdown
+	// cannot durably arm one async-start journal before its bounded deadline.
+	// The exact runtime is preserved and the token is represented only by a
+	// non-reversible fingerprint in the typed payload.
+	ShutdownCleanupIncomplete = "controller.shutdown_cleanup_incomplete"
 	// SupervisorStarted fires once per supervisor startup, after the
 	// instance lock is acquired. Its payload classifies how the previous
 	// supervisor instance exited (clean, crash, or unknown), derived from
@@ -261,7 +266,7 @@ var KnownEventTypes = []string{
 	MailSent, MailRead, MailArchived, MailMarkedRead, MailMarkedUnread,
 	MailReplied, MailDeleted,
 	ConvoyCreated, ConvoyClosed,
-	ControllerStarted, ControllerStopped,
+	ControllerStarted, ControllerStopped, ShutdownCleanupIncomplete,
 	CitySuspended, CityResumed,
 	RequestResultCityCreate, RequestResultCityUnregister,
 	RequestResultSessionCreate, RequestResultSessionMessage,

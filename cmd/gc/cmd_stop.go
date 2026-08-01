@@ -361,6 +361,10 @@ func teardownServerForStop(sp runtime.Provider, stderr io.Writer) {
 }
 
 func markCityStopSessionSleepReason(sessFront *session.Store, stderr io.Writer) {
+	markCityStopSessionSleepReasonExcept(sessFront, stderr, nil)
+}
+
+func markCityStopSessionSleepReasonExcept(sessFront *session.Store, stderr io.Writer, preserveSessionIDs map[string]struct{}) {
 	if !sessFront.Backed() {
 		return
 	}
@@ -375,6 +379,9 @@ func markCityStopSessionSleepReason(sessFront *session.Store, stderr io.Writer) 
 		return
 	}
 	for _, info := range sessions {
+		if _, preserve := preserveSessionIDs[info.ID]; preserve {
+			continue
+		}
 		if sessionMetadataStateInfo(info) != "active" {
 			continue
 		}

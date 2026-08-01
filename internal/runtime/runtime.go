@@ -67,6 +67,18 @@ var ErrExecUnsupported = errors.New("runtime does not implement the exec op")
 // separate signals for separate call paths.
 var ErrRuntimeUnavailable = errors.New("runtime unavailable: liveness observation failed")
 
+// ErrInstanceTokenMismatch reports that a destructive operation observed a
+// live runtime incarnation whose immutable token differs from the caller's
+// expected token. The caller must treat this as proof that the old incarnation
+// no longer owns the name and must not destroy the replacement.
+var ErrInstanceTokenMismatch = errors.New("runtime instance token mismatch")
+
+// ErrFencedStopUnsupported reports that a provider cannot bind an immutable
+// instance-token comparison to the exact runtime objects it destroys. Callers
+// requiring a destructive identity fence must fail closed rather than falling
+// back to a separate GetMeta+Stop sequence.
+var ErrFencedStopUnsupported = errors.New("runtime does not support token-fenced stop")
+
 // ErrRelaunchUnsupported reports that the underlying runtime cannot relaunch the
 // agent in a warm box (it is not a [RelaunchProvider], or is conjoined like
 // subprocess/acp/t3bridge). Composite/wrapping providers return it from their
@@ -248,6 +260,27 @@ type Provider interface {
 	Capabilities() ProviderCapabilities
 }
 
+// FreshRunningSessionLister is an optional lifecycle capability for providers
+// whose ordinary running-session inventory may be backed by a short-lived
+// observation cache. ListRunningFresh must bypass that cache so destructive
+// lifecycle decisions cannot miss a session that became running after an
+// earlier observation. Its prefix semantics match [Provider.ListRunning].
+//
+// Callers should use [ListRunningFresh] so providers without an observation
+// cache retain the ordinary Provider behavior.
+type FreshRunningSessionLister interface {
+	ListRunningFresh(prefix string) ([]string, error)
+}
+
+// ListRunningFresh requests uncached running-session inventory when the
+// provider exposes that capability, and otherwise falls back to ListRunning.
+func ListRunningFresh(provider Provider, prefix string) ([]string, error) {
+	if fresh, ok := provider.(FreshRunningSessionLister); ok {
+		return fresh.ListRunningFresh(prefix)
+	}
+	return provider.ListRunning(prefix)
+}
+
 // PendingInteraction describes a blocking interaction raised by a session.
 // This is an optional capability exposed by providers that support
 // structured approvals, questions, or other turn-blocking prompts.
@@ -319,6 +352,43 @@ type DialogProvider interface {
 // the active session provider before session creation starts mutating state.
 type TransportCapabilityProvider interface {
 	SupportsTransport(transport string) bool
+}
+
+// InstanceTokenFencedStopProvider is an optional extension for providers that
+// can compare an expected immutable instance token and stop only the exact
+// runtime objects carrying that token as one backend operation. Implementations
+// must protect same-name replacements: for object stores such as Kubernetes,
+// this means deleting captured immutable UIDs with preconditions rather than
+// re-listing by name after the comparison.
+//
+// A missing runtime returns ErrSessionNotFound; a definite different token
+// returns ErrInstanceTokenMismatch; absence or ambiguity of immutable identity
+// is an error and must not destroy anything.
+type InstanceTokenFencedStopProvider interface {
+	StopIfInstanceToken(name, expectedToken string) error
+}
+
+// InstanceTokenFencedStopResolver is implemented by routing providers whose
+// atomic-stop capability depends on the selected route. A router must return
+// false when route selection or the routed provider's capability is uncertain;
+// callers then preserve the runtime rather than arming destructive cleanup.
+type InstanceTokenFencedStopResolver interface {
+	ResolveInstanceTokenFencedStop(name string) (InstanceTokenFencedStopProvider, bool)
+}
+
+// ResolveInstanceTokenFencedStop returns the atomic token-stop implementation
+// for name. Direct providers resolve by interface assertion; route-aware
+// providers decide against the selected backend. There is no probe-plus-Stop
+// fallback because that would introduce a same-name replacement TOCTOU race.
+func ResolveInstanceTokenFencedStop(provider Provider, name string) (InstanceTokenFencedStopProvider, bool) {
+	if provider == nil {
+		return nil, false
+	}
+	if resolver, ok := provider.(InstanceTokenFencedStopResolver); ok {
+		return resolver.ResolveInstanceTokenFencedStop(name)
+	}
+	fenced, ok := provider.(InstanceTokenFencedStopProvider)
+	return fenced, ok
 }
 
 // ImmediateNudgeProvider is an optional extension for runtimes that can inject

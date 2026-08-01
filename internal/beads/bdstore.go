@@ -28,6 +28,12 @@ const (
 // The dir argument sets the working directory; name and args specify the command.
 type CommandRunner func(dir, name string, args ...string) ([]byte, error)
 
+// ContextCommandRunner executes one command under a caller-owned context. A
+// return caused by ctx cancellation must mean the command can no longer mutate
+// its backend; implementations must not abandon an untracked worker that may
+// commit later.
+type ContextCommandRunner func(ctx context.Context, dir, name string, args ...string) ([]byte, error)
+
 var (
 	bdCommandTimeout = 120 * time.Second
 	// bdReadCommandTimeout bounds bd read-only subcommands (count, list,
@@ -72,6 +78,14 @@ func ExecCommandRunnerWithEnv(env map[string]string) CommandRunner {
 // slow or stuck bd child cannot outlast that budget.
 func ExecCommandRunnerWithEnvContext(ctx context.Context, env map[string]string) CommandRunner {
 	return execCommandRunnerWithEnv(ctx, env)
+}
+
+// ExecContextCommandRunnerWithEnv returns a ContextCommandRunner that binds
+// each subprocess to the context supplied at call time.
+func ExecContextCommandRunnerWithEnv(env map[string]string) ContextCommandRunner {
+	return func(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
+		return ExecCommandRunnerWithEnvContext(ctx, env)(dir, name, args...)
+	}
 }
 
 func execCommandRunnerWithEnv(parent context.Context, env map[string]string) CommandRunner {
@@ -292,10 +306,11 @@ type PurgeResult struct {
 // BdStore implements Store by shelling out to the bd CLI (beads v0.55.1+).
 // It delegates all persistence to bd's embedded Dolt database.
 type BdStore struct {
-	dir         string          // city root directory (where .beads/ lives)
-	runner      CommandRunner   // injectable for testing
-	purgeRunner PurgeRunnerFunc // injectable for testing; nil uses exec default
-	idPrefix    string          // bead ID prefix owned by this store, without trailing "-"
+	dir         string               // city root directory (where .beads/ lives)
+	runner      CommandRunner        // injectable for testing
+	ctxRunner   ContextCommandRunner // optional caller-deadline-bound runner
+	purgeRunner PurgeRunnerFunc      // injectable for testing; nil uses exec default
+	idPrefix    string               // bead ID prefix owned by this store, without trailing "-"
 
 	listSkipLabelsEnabled bool // whether bd list may receive --skip-labels
 
@@ -340,6 +355,16 @@ type BdStoreOption func(*BdStore)
 func WithBdStoreListSkipLabels(enabled bool) BdStoreOption {
 	return func(s *BdStore) {
 		s.listSkipLabelsEnabled = enabled
+	}
+}
+
+// WithBdStoreContextCommandRunner installs the runner used by deadline-bound
+// conditional metadata CAS. Stores without this option fail that optional
+// capability closed instead of running the synchronous runner in a goroutine
+// that could commit after its caller timed out.
+func WithBdStoreContextCommandRunner(runner ContextCommandRunner) BdStoreOption {
+	return func(s *BdStore) {
+		s.ctxRunner = runner
 	}
 }
 

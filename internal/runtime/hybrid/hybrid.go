@@ -18,14 +18,17 @@ type Provider struct {
 }
 
 var (
-	_ runtime.Provider                      = (*Provider)(nil)
-	_ runtime.DeadRuntimeSessionChecker     = (*Provider)(nil)
-	_ runtime.InteractionProvider           = (*Provider)(nil)
-	_ runtime.InterruptBoundaryWaitProvider = (*Provider)(nil)
-	_ runtime.InterruptedTurnResetProvider  = (*Provider)(nil)
-	_ runtime.RelaunchProvider              = (*Provider)(nil)
-	_ runtime.LivenessObserver              = (*Provider)(nil)
-	_ runtime.ServerLifecycleProvider       = (*Provider)(nil)
+	_ runtime.Provider                        = (*Provider)(nil)
+	_ runtime.DeadRuntimeSessionChecker       = (*Provider)(nil)
+	_ runtime.InteractionProvider             = (*Provider)(nil)
+	_ runtime.InterruptBoundaryWaitProvider   = (*Provider)(nil)
+	_ runtime.InterruptedTurnResetProvider    = (*Provider)(nil)
+	_ runtime.RelaunchProvider                = (*Provider)(nil)
+	_ runtime.LivenessObserver                = (*Provider)(nil)
+	_ runtime.ServerLifecycleProvider         = (*Provider)(nil)
+	_ runtime.FreshRunningSessionLister       = (*Provider)(nil)
+	_ runtime.InstanceTokenFencedStopProvider = (*Provider)(nil)
+	_ runtime.InstanceTokenFencedStopResolver = (*Provider)(nil)
 )
 
 // New creates a hybrid provider. isRemote returns true for sessions
@@ -67,6 +70,23 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 // Stop delegates to the routed backend.
 func (p *Provider) Stop(name string) error {
 	return p.route(name).Stop(name)
+}
+
+// StopIfInstanceToken preserves the routed backend's atomic identity fence.
+// It never degrades to a separate metadata probe and name-based Stop.
+func (p *Provider) StopIfInstanceToken(name, expectedToken string) error {
+	provider, ok := p.ResolveInstanceTokenFencedStop(name)
+	if !ok {
+		return runtime.ErrFencedStopUnsupported
+	}
+	return provider.StopIfInstanceToken(name, expectedToken)
+}
+
+// ResolveInstanceTokenFencedStop resolves the optional atomic stop against the
+// selected backend. A hybrid must not advertise its remote Kubernetes fence as
+// proof that an unrelated local route is also safe.
+func (p *Provider) ResolveInstanceTokenFencedStop(name string) (runtime.InstanceTokenFencedStopProvider, bool) {
+	return runtime.ResolveInstanceTokenFencedStop(p.route(name), name)
 }
 
 // Interrupt delegates to the routed backend.
@@ -206,6 +226,17 @@ func (p *Provider) Peek(name string, lines int) (string, error) {
 func (p *Provider) ListRunning(prefix string) ([]string, error) {
 	local, lErr := p.local.ListRunning(prefix)
 	remote, rErr := p.remote.ListRunning(prefix)
+	return runtime.MergeBackendListResults(
+		runtime.BackendListResult{Label: "local", Names: local, Err: lErr},
+		runtime.BackendListResult{Label: "remote", Names: remote, Err: rErr},
+	)
+}
+
+// ListRunningFresh queries both backends through their uncached lifecycle
+// inventory when available, preserving partial-list behavior.
+func (p *Provider) ListRunningFresh(prefix string) ([]string, error) {
+	local, lErr := runtime.ListRunningFresh(p.local, prefix)
+	remote, rErr := runtime.ListRunningFresh(p.remote, prefix)
 	return runtime.MergeBackendListResults(
 		runtime.BackendListResult{Label: "local", Names: local, Err: lErr},
 		runtime.BackendListResult{Label: "remote", Names: remote, Err: rErr},

@@ -71,6 +71,13 @@ func PromptHash(prompt string) string {
 // cycle under wake_mode=fresh.
 const CurrentBeadIDKey = "currently_processing_bead_id"
 
+// AsyncStartCleanupObligationMetadataKey is the durable write-ahead marker for
+// an asynchronous provider Start. The controller claims it before launching
+// the provider call and clears it only after normal completion or fenced
+// shutdown cleanup. A successor controller sweeps any marker left by a process
+// that exited before its completion callback could run.
+const AsyncStartCleanupObligationMetadataKey = "async_start_cleanup_obligation"
+
 var freshWakeConversationResetKeys = []string{
 	"session_key",
 	"started_config_hash",

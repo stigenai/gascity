@@ -3,6 +3,7 @@
 package beads
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -698,6 +699,13 @@ func (s *DoltliteReadStore) DeleteIfMatch(_ string, _ int64) error {
 // CompareAndSetMetadataKey reports ErrConditionalWriteUnsupported (see
 // UpdateIfMatch).
 func (s *DoltliteReadStore) CompareAndSetMetadataKey(_, _, _, _ string) (bool, error) {
+	return false, ErrConditionalWriteUnsupported
+}
+
+// CompareAndSetMetadataKeyContext preserves the same narrow-CAS veto as
+// CompareAndSetMetadataKey. Without this shadow, the embedded BdStore's
+// context method would be promoted through the direct-SQL wrapper.
+func (s *DoltliteReadStore) CompareAndSetMetadataKeyContext(context.Context, string, string, string, string) (bool, error) {
 	return false, ErrConditionalWriteUnsupported
 }
 

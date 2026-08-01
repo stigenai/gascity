@@ -201,6 +201,37 @@ func (f *Fake) Stop(name string) error {
 	return nil
 }
 
+// StopIfInstanceToken atomically compares the immutable token supplied in the
+// session's Start config and removes only that incarnation. It is primarily a
+// deterministic test double for InstanceTokenFencedStopProvider.
+func (f *Fake) StopIfInstanceToken(name, expectedToken string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, Call{Method: "StopIfInstanceToken", Name: name, Value: expectedToken})
+	if f.broken {
+		return fmt.Errorf("session unavailable")
+	}
+	cfg, exists := f.sessions[name]
+	if !exists {
+		return fmt.Errorf("%w: %q", ErrSessionNotFound, name)
+	}
+	actualToken := strings.TrimSpace(cfg.Env["GC_INSTANCE_TOKEN"])
+	expectedToken = strings.TrimSpace(expectedToken)
+	if actualToken == "" || expectedToken == "" {
+		return fmt.Errorf("%w: immutable instance token unavailable for %q", ErrRuntimeUnavailable, name)
+	}
+	if actualToken != expectedToken {
+		return fmt.Errorf("%w: %q", ErrInstanceTokenMismatch, name)
+	}
+	if err, ok := f.StopErrors[name]; ok {
+		return err
+	}
+	if !f.StopLeavesRunning[name] {
+		delete(f.sessions, name)
+	}
+	return nil
+}
+
 // Relaunch records a warm-box agent relaunch and, on success, updates the live
 // session config without a Stop+Start cycle (the box is reused). Returns
 // ErrSessionNotFound when no session exists (no warm box to relaunch into), a

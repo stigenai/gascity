@@ -363,6 +363,10 @@ type Info struct {
 	// InstanceToken is the RAW instance_token metadata. The wake path compares it
 	// against the live instance token to detect a superseded session.
 	InstanceToken string // instance_token (raw)
+	// AsyncStartCleanupObligation is the RAW durable async-start cleanup journal.
+	// It is interpreted only by the controller lifecycle boundary and kept
+	// verbatim so value-CAS release cannot clear a newer obligation.
+	AsyncStartCleanupObligation string // async_start_cleanup_obligation (raw JSON)
 	// DetachedAt is the RAW detached_at metadata (RFC3339 or empty). The detach
 	// gate reads it as != "" and parses it via time.Parse, so the mirror keeps the
 	// raw bytes.

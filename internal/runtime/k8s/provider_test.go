@@ -5,7 +5,10 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	goruntime "runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/gastownhall/gascity/internal/runtime"
+	"github.com/gastownhall/gascity/internal/testutil"
 )
 
 func TestProviderImplementsInterface(_ *testing.T) {
@@ -337,6 +341,526 @@ func TestRunningPodLookupSharesOneNamespaceSnapshotAcrossSessions(t *testing.T) 
 	}
 }
 
+type snapshotListOps struct {
+	*fakeK8sOps
+	pods            []corev1.Pod
+	listErr         error
+	requireDeadline bool
+	entered         chan struct{}
+	release         chan struct{}
+	enteredOnce     sync.Once
+	listCalls       atomic.Int32
+}
+
+type staleSnapshotRaceOps struct {
+	*fakeK8sOps
+	mu        sync.Mutex
+	pods      []corev1.Pod
+	entered   chan struct{}
+	release   chan struct{}
+	listCalls atomic.Int32
+}
+
+type mutateThenErrorOps struct {
+	*fakeK8sOps
+	createEntered chan struct{}
+	createRelease chan struct{}
+	deleteEntered chan struct{}
+	deleteRelease chan struct{}
+	deleteError   bool
+}
+
+type cleanupDeleteRaceOps struct {
+	*fakeK8sOps
+	deleteEntered chan struct{}
+	deleteRelease chan struct{}
+}
+
+func (o *cleanupDeleteRaceOps) deletePod(ctx context.Context, name string, uid types.UID, grace int64) error {
+	close(o.deleteEntered)
+	<-o.deleteRelease
+	if err := o.fakeK8sOps.deletePod(ctx, name, uid, grace); err != nil {
+		return err
+	}
+	return errors.New("cleanup delete response lost after mutation")
+}
+
+func (o *mutateThenErrorOps) createPod(ctx context.Context, pod *corev1.Pod) (*corev1.Pod, error) {
+	close(o.createEntered)
+	<-o.createRelease
+	created, err := o.fakeK8sOps.createPod(ctx, pod)
+	if err != nil {
+		return created, err
+	}
+	return created, errors.New("create response lost after mutation")
+}
+
+func (o *mutateThenErrorOps) deletePod(ctx context.Context, name string, uid types.UID, grace int64) error {
+	close(o.deleteEntered)
+	<-o.deleteRelease
+	if err := o.fakeK8sOps.deletePod(ctx, name, uid, grace); err != nil {
+		return err
+	}
+	if o.deleteError {
+		return errors.New("delete response lost after mutation")
+	}
+	return nil
+}
+
+func (o *staleSnapshotRaceOps) setPods(pods ...corev1.Pod) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.pods = append([]corev1.Pod(nil), pods...)
+}
+
+func (o *staleSnapshotRaceOps) listPods(ctx context.Context, _, _ string) ([]corev1.Pod, error) {
+	o.mu.Lock()
+	pods := make([]corev1.Pod, len(o.pods))
+	for i := range o.pods {
+		pods[i] = *o.pods[i].DeepCopy()
+	}
+	o.mu.Unlock()
+	if o.listCalls.Add(1) == 1 {
+		close(o.entered)
+		select {
+		case <-o.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return pods, nil
+}
+
+func newSnapshotListOps(pods ...corev1.Pod) *snapshotListOps {
+	return &snapshotListOps{fakeK8sOps: newFakeK8sOps(), pods: pods}
+}
+
+func awaitSnapshotTestValue[T any](t *testing.T, ch <-chan T) T {
+	t.Helper()
+	timer := time.NewTimer(testutil.GoroutineRaceTimeout)
+	defer timer.Stop()
+	select {
+	case value := <-ch:
+		return value
+	case <-timer.C:
+		t.Fatal("timed out waiting for running-pod snapshot test signal")
+		var zero T
+		return zero
+	}
+}
+
+func (o *snapshotListOps) listPods(ctx context.Context, _, _ string) ([]corev1.Pod, error) {
+	o.listCalls.Add(1)
+	if o.entered != nil {
+		o.enteredOnce.Do(func() { close(o.entered) })
+	}
+	if o.release != nil {
+		select {
+		case <-o.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if o.requireDeadline {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			return nil, errors.New("running-pod snapshot has no deadline")
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 || remaining > 10*time.Second {
+			return nil, fmt.Errorf("running-pod snapshot deadline is not tightly bounded: %s", remaining)
+		}
+	}
+	if o.listErr != nil {
+		return nil, o.listErr
+	}
+	pods := make([]corev1.Pod, len(o.pods))
+	for i := range o.pods {
+		pods[i] = *o.pods[i].DeepCopy()
+	}
+	return pods, nil
+}
+
+func runningPodForSnapshot(podName, sessionName string) corev1.Pod {
+	return corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        podName,
+			Labels:      map[string]string{"app": "gc-agent", "gc-session": SanitizeLabel(sessionName)},
+			Annotations: map[string]string{"gc-session-name": sessionName},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+}
+
+func TestListRunningSharesSnapshotAcrossFactoryBurst(t *testing.T) {
+	ops := newSnapshotListOps(
+		runningPodForSnapshot("pod-a", "gc-city-a-worker-1"),
+		runningPodForSnapshot("pod-b", "gc-city-b-worker-1"),
+	)
+	p := newProviderWithOps(ops)
+	p.runningPodCacheTTL = time.Hour
+
+	for i := range 117 {
+		prefix := "gc-city-a-"
+		if i%2 == 1 {
+			prefix = "gc-city-b-"
+		}
+		names, err := p.ListRunning(prefix)
+		if err != nil {
+			t.Fatalf("ListRunning(%q): %v", prefix, err)
+		}
+		if len(names) != 1 {
+			t.Fatalf("ListRunning(%q) = %v, want one session", prefix, names)
+		}
+	}
+
+	if got := ops.listCalls.Load(); got != 1 {
+		t.Fatalf("Kubernetes LIST calls for 117 ListRunning calls = %d, want 1", got)
+	}
+}
+
+func TestListRunningAndSessionLookupShareSnapshot(t *testing.T) {
+	legacyPod := runningPodForSnapshot("pod-b", "gc-city-legacy-1")
+	legacyPod.Labels["app"] = "legacy-session"
+	ops := newSnapshotListOps(
+		runningPodForSnapshot("pod-a", "gc-city-worker-1"),
+		legacyPod,
+	)
+	p := newProviderWithOps(ops)
+	p.runningPodCacheTTL = time.Hour
+
+	names, err := p.ListRunning("gc-city-")
+	if err != nil {
+		t.Fatalf("ListRunning: %v", err)
+	}
+	if len(names) != 1 || names[0] != "gc-city-worker-1" {
+		t.Fatalf("ListRunning = %v, want [gc-city-worker-1]", names)
+	}
+	podName, err := p.findRunningPod(context.Background(), "gc-city-worker-1")
+	if err != nil {
+		t.Fatalf("findRunningPod: %v", err)
+	}
+	if podName != "pod-a" {
+		t.Fatalf("findRunningPod = %q, want pod-a", podName)
+	}
+	legacyPodName, err := p.findRunningPod(context.Background(), "gc-city-legacy-1")
+	if err != nil {
+		t.Fatalf("findRunningPod legacy session: %v", err)
+	}
+	if legacyPodName != "pod-b" {
+		t.Fatalf("findRunningPod legacy session = %q, want pod-b", legacyPodName)
+	}
+	if got := ops.listCalls.Load(); got != 1 {
+		t.Fatalf("Kubernetes LIST calls across list and lookup = %d, want 1", got)
+	}
+}
+
+func TestListRunningFreshBypassesObservationSnapshotThroughProductionWrapper(t *testing.T) {
+	ops := newSnapshotListOps()
+	raw := newProviderWithOps(ops)
+	raw.runningPodCacheTTL = time.Hour
+	provider := newSeamBacked(raw)
+
+	names, err := provider.ListRunning("")
+	if err != nil {
+		t.Fatalf("priming ListRunning: %v", err)
+	}
+	if len(names) != 0 {
+		t.Fatalf("priming ListRunning = %v, want no sessions", names)
+	}
+	ops.pods = []corev1.Pod{runningPodForSnapshot("pod-late", "gc-city-worker-late")}
+
+	names, err = provider.ListRunning("")
+	if err != nil {
+		t.Fatalf("cached ListRunning: %v", err)
+	}
+	if len(names) != 0 {
+		t.Fatalf("cached ListRunning = %v, want stale empty observation snapshot", names)
+	}
+	fresh, ok := provider.(runtime.FreshRunningSessionLister)
+	if !ok {
+		t.Fatalf("production k8s provider %T does not preserve fresh running-session inventory", provider)
+	}
+	names, err = fresh.ListRunningFresh("")
+	if err != nil {
+		t.Fatalf("ListRunningFresh: %v", err)
+	}
+	if len(names) != 1 || names[0] != "gc-city-worker-late" {
+		t.Fatalf("ListRunningFresh = %v, want [gc-city-worker-late]", names)
+	}
+	if got := ops.listCalls.Load(); got != 2 {
+		t.Fatalf("Kubernetes LIST calls across cached observations and fresh inventory = %d, want 2", got)
+	}
+}
+
+func TestRunningPodSnapshotCoalescesConcurrentFailure(t *testing.T) {
+	wantErr := errors.New("Kubernetes API unavailable")
+	ops := newSnapshotListOps()
+	ops.listErr = wantErr
+	ops.entered = make(chan struct{})
+	ops.release = make(chan struct{})
+	p := newProviderWithOps(ops)
+	p.runningPodCacheTTL = time.Hour
+
+	oldProcs := goruntime.GOMAXPROCS(1)
+	t.Cleanup(func() { goruntime.GOMAXPROCS(oldProcs) })
+
+	const callers = 32
+	start := make(chan struct{})
+	ready := make(chan struct{}, callers)
+	errs := make(chan error, callers)
+	for range callers {
+		go func() {
+			<-start
+			ready <- struct{}{}
+			_, err := p.ListRunning("")
+			errs <- err
+		}()
+	}
+	close(start)
+	for range callers {
+		awaitSnapshotTestValue(t, ready)
+	}
+	awaitSnapshotTestValue(t, ops.entered)
+	// With one P, every caller reaches either the fake LIST or the shared
+	// singleflight wait before this goroutine resumes after yielding.
+	goruntime.Gosched()
+	close(ops.release)
+
+	for range callers {
+		if err := awaitSnapshotTestValue(t, errs); !errors.Is(err, wantErr) {
+			t.Fatalf("ListRunning error = %v, want %v", err, wantErr)
+		}
+	}
+	if got := ops.listCalls.Load(); got != 1 {
+		t.Fatalf("Kubernetes LIST calls for %d concurrent failures = %d, want 1", callers, got)
+	}
+}
+
+func TestRunningPodSnapshotUsesBoundedContext(t *testing.T) {
+	ops := newSnapshotListOps(runningPodForSnapshot("pod-a", "gc-city-worker-1"))
+	ops.requireDeadline = true
+	p := newProviderWithOps(ops)
+	p.runningPodCacheTTL = time.Hour
+
+	if _, err := p.ListRunning(""); err != nil {
+		t.Fatalf("ListRunning: %v", err)
+	}
+	if got := ops.listCalls.Load(); got != 1 {
+		t.Fatalf("Kubernetes LIST calls = %d, want 1", got)
+	}
+}
+
+func TestRunningPodSnapshotExpiresAndDoesNotCacheRefreshFailure(t *testing.T) {
+	ops := newSnapshotListOps(runningPodForSnapshot("pod-a", "gc-city-worker-1"))
+	p := newProviderWithOps(ops)
+	p.runningPodCacheTTL = time.Hour
+
+	if _, err := p.ListRunning(""); err != nil {
+		t.Fatalf("priming ListRunning: %v", err)
+	}
+	p.runningPodCacheMu.Lock()
+	p.runningPodCacheAt = time.Now().Add(-2 * time.Hour)
+	p.runningPodCacheMu.Unlock()
+
+	wantErr := errors.New("Kubernetes API unavailable")
+	ops.listErr = wantErr
+	if _, err := p.ListRunning(""); !errors.Is(err, wantErr) {
+		t.Fatalf("expired ListRunning error = %v, want %v", err, wantErr)
+	}
+
+	ops.listErr = nil
+	ops.pods = []corev1.Pod{runningPodForSnapshot("pod-b", "gc-city-worker-2")}
+	names, err := p.ListRunning("")
+	if err != nil {
+		t.Fatalf("retrying ListRunning: %v", err)
+	}
+	if len(names) != 1 || names[0] != "gc-city-worker-2" {
+		t.Fatalf("retrying ListRunning = %v, want [gc-city-worker-2]", names)
+	}
+	if got := ops.listCalls.Load(); got != 3 {
+		t.Fatalf("Kubernetes LIST calls across success, failure, retry = %d, want 3", got)
+	}
+}
+
+func TestRunningPodSnapshotCallerCanCancelSharedWait(t *testing.T) {
+	ops := newSnapshotListOps(runningPodForSnapshot("pod-a", "gc-city-worker-1"))
+	ops.entered = make(chan struct{})
+	ops.release = make(chan struct{})
+	p := newProviderWithOps(ops)
+	p.runningPodCacheTTL = time.Hour
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := p.runningPodSnapshot(ctx)
+		result <- err
+	}()
+	awaitSnapshotTestValue(t, ops.entered)
+	cancel()
+	if err := awaitSnapshotTestValue(t, result); !errors.Is(err, context.Canceled) {
+		t.Fatalf("runningPodSnapshot error = %v, want context.Canceled", err)
+	}
+	close(ops.release)
+}
+
+func TestRunningPodSnapshotInvalidationRejectsPreMutationRefresh(t *testing.T) {
+	ops := &staleSnapshotRaceOps{
+		fakeK8sOps: newFakeK8sOps(),
+		entered:    make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+	ops.setPods(runningPodForSnapshot("pod-old", "gc-city-old"))
+	p := newProviderWithOps(ops)
+	p.runningPodCacheTTL = time.Hour
+
+	first := make(chan []string, 1)
+	go func() {
+		names, _ := p.ListRunning("")
+		first <- names
+	}()
+	awaitSnapshotTestValue(t, ops.entered)
+	p.invalidateRunningPodSnapshot()
+	ops.setPods(runningPodForSnapshot("pod-new", "gc-city-new"))
+	close(ops.release)
+	if names := awaitSnapshotTestValue(t, first); len(names) != 1 || names[0] != "gc-city-old" {
+		t.Fatalf("pre-mutation caller = %v, want its original [gc-city-old] snapshot", names)
+	}
+
+	names, err := p.ListRunning("")
+	if err != nil {
+		t.Fatalf("post-mutation ListRunning: %v", err)
+	}
+	if len(names) != 1 || names[0] != "gc-city-new" {
+		t.Fatalf("post-mutation ListRunning = %v, want [gc-city-new]", names)
+	}
+	if got := ops.listCalls.Load(); got != 2 {
+		t.Fatalf("Kubernetes LIST calls across invalidation race = %d, want 2", got)
+	}
+}
+
+func TestStartInvalidatesSnapshotBeforeCreateThatMutatesThenErrors(t *testing.T) {
+	ops := &mutateThenErrorOps{
+		fakeK8sOps:    newFakeK8sOps(),
+		createEntered: make(chan struct{}),
+		createRelease: make(chan struct{}),
+		deleteEntered: make(chan struct{}),
+		deleteRelease: make(chan struct{}),
+	}
+	p := newProviderWithOps(ops)
+	p.prebaked = true
+	p.runningPodCacheTTL = time.Hour
+	if names, err := p.ListRunning(""); err != nil || len(names) != 0 {
+		t.Fatalf("prime ListRunning = %v, %v; want empty", names, err)
+	}
+
+	startErr := make(chan error, 1)
+	go func() {
+		startErr <- p.Start(context.Background(), "worker", runtime.Config{Command: "agent", Env: map[string]string{"GC_INSTANCE_TOKEN": "tok-worker"}})
+	}()
+	awaitSnapshotTestValue(t, ops.createEntered)
+	names, err := p.ListRunning("")
+	if err != nil {
+		t.Fatalf("ListRunning during mutate-then-error create: %v", err)
+	}
+	if len(names) != 0 {
+		t.Fatalf("ListRunning before mutate-then-error create commits = %v, want empty stale snapshot", names)
+	}
+	close(ops.createRelease)
+	if err := awaitSnapshotTestValue(t, startErr); err == nil {
+		t.Fatal("Start returned nil after injected mutate-then-error create")
+	}
+	names, err = p.ListRunning("")
+	if err != nil || len(names) != 1 || names[0] != "worker" {
+		t.Fatalf("ListRunning after mutate-then-error create = %v, %v; want [worker]", names, err)
+	}
+}
+
+func TestStopInvalidatesSnapshotBeforeDeleteThatMutatesThenErrors(t *testing.T) {
+	fake := newFakeK8sOps()
+	addRunningPod(fake, "worker", "worker")
+	ops := &mutateThenErrorOps{
+		fakeK8sOps:    fake,
+		createEntered: make(chan struct{}),
+		createRelease: make(chan struct{}),
+		deleteEntered: make(chan struct{}),
+		deleteRelease: make(chan struct{}),
+		deleteError:   true,
+	}
+	p := newProviderWithOps(ops)
+	p.runningPodCacheTTL = time.Hour
+	if names, err := p.ListRunning(""); err != nil || len(names) != 1 {
+		t.Fatalf("prime ListRunning = %v, %v; want [worker]", names, err)
+	}
+
+	stopErr := make(chan error, 1)
+	go func() { stopErr <- p.Stop("worker") }()
+	awaitSnapshotTestValue(t, ops.deleteEntered)
+	names, err := p.ListRunning("")
+	if err != nil {
+		t.Fatalf("ListRunning during mutate-then-error delete: %v", err)
+	}
+	if len(names) != 1 || names[0] != "worker" {
+		t.Fatalf("ListRunning before mutate-then-error delete commits = %v, want stale [worker]", names)
+	}
+	close(ops.deleteRelease)
+	if err := awaitSnapshotTestValue(t, stopErr); err == nil {
+		t.Fatal("Stop returned nil after injected mutate-then-error delete")
+	}
+	names, err = p.ListRunning("")
+	if err != nil || len(names) != 0 {
+		t.Fatalf("ListRunning after mutate-then-error delete = %v, %v; want empty", names, err)
+	}
+}
+
+func TestStartCleanupInvalidatesSnapshotAfterDeleteThatMutatesThenErrors(t *testing.T) {
+	fake := newFakeK8sOps()
+	ops := &cleanupDeleteRaceOps{
+		fakeK8sOps:    fake,
+		deleteEntered: make(chan struct{}),
+		deleteRelease: make(chan struct{}),
+	}
+	p := newProviderWithOps(ops)
+	p.prebaked = true
+	p.postStartSettle = 0
+	p.runningPodCacheTTL = time.Hour
+	if names, err := p.ListRunning(""); err != nil || len(names) != 0 {
+		t.Fatalf("prime ListRunning = %v, %v; want empty", names, err)
+	}
+	hasSessionCalls := 0
+	fake.execFunc = func(_ string, cmd []string) (string, error) {
+		if len(cmd) >= 3 && cmd[0] == "tmux" && cmd[1] == "has-session" {
+			hasSessionCalls++
+			if hasSessionCalls == 2 {
+				return "", errors.New("session died after startup")
+			}
+		}
+		return "", nil
+	}
+
+	startErr := make(chan error, 1)
+	go func() {
+		startErr <- p.Start(context.Background(), "worker", runtime.Config{
+			Command:      "agent",
+			ProcessNames: []string{"agent"},
+			Env:          map[string]string{"GC_INSTANCE_TOKEN": "tok-worker"},
+		})
+	}()
+	awaitSnapshotTestValue(t, ops.deleteEntered)
+	names, err := p.ListRunning("")
+	if err != nil || len(names) != 1 || names[0] != "worker" {
+		t.Fatalf("ListRunning before cleanup delete commits = %v, %v; want stale [worker]", names, err)
+	}
+	close(ops.deleteRelease)
+	if err := awaitSnapshotTestValue(t, startErr); !errors.Is(err, runtime.ErrSessionDiedDuringStartup) {
+		t.Fatalf("Start error = %v, want ErrSessionDiedDuringStartup", err)
+	}
+	names, err = p.ListRunning("")
+	if err != nil || len(names) != 0 {
+		t.Fatalf("ListRunning after mutate-then-error cleanup delete = %v, %v; want empty", names, err)
+	}
+}
+
 func TestStop(t *testing.T) {
 	fake := newFakeK8sOps()
 	p := newProviderWithOps(fake)
@@ -355,6 +879,37 @@ func TestStop(t *testing.T) {
 	// Verify pod was deleted.
 	if _, exists := fake.pods["gc-test-agent"]; exists {
 		t.Error("pod still exists after Stop")
+	}
+}
+
+func TestStopInvalidatesRunningPodObservationSnapshot(t *testing.T) {
+	pod := runningPodForSnapshot("pod-worker", "gc-city-worker")
+	pod.UID = types.UID("uid-pod-worker")
+	ops := newSnapshotListOps(pod)
+	p := newProviderWithOps(ops)
+	p.runningPodCacheTTL = time.Hour
+
+	names, err := p.ListRunning("")
+	if err != nil {
+		t.Fatalf("prime ListRunning: %v", err)
+	}
+	if len(names) != 1 || names[0] != "gc-city-worker" {
+		t.Fatalf("prime ListRunning = %v, want [gc-city-worker]", names)
+	}
+	if err := p.Stop("gc-city-worker"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	ops.pods = nil
+
+	names, err = p.ListRunning("")
+	if err != nil {
+		t.Fatalf("ListRunning after Stop: %v", err)
+	}
+	if len(names) != 0 {
+		t.Fatalf("ListRunning after Stop = %v, want no sessions", names)
+	}
+	if got := ops.listCalls.Load(); got != 3 {
+		t.Fatalf("Kubernetes LIST calls across prime, Stop, and post-Stop observation = %d, want 3", got)
 	}
 }
 
@@ -527,6 +1082,128 @@ func TestMetaOps(t *testing.T) {
 	// RemoveMeta.
 	if err := p.RemoveMeta("gc-test-agent", "GC_DRAIN"); err != nil {
 		t.Fatalf("RemoveMeta: %v", err)
+	}
+}
+
+func TestGetMetaInstanceTokenUsesImmutablePodSpecBeforeTmux(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+	addRunningPod(fake, "gc-test-agent", "gc-test-agent")
+	fake.pods["gc-test-agent"].Status.Phase = corev1.PodPending
+	fake.pods["gc-test-agent"].Spec.Containers = []corev1.Container{{
+		Name: "agent",
+		Env:  []corev1.EnvVar{{Name: "GC_INSTANCE_TOKEN", Value: "tok-immutable"}},
+	}}
+	fake.execFunc = func(string, []string) (string, error) {
+		return "", errors.New("tmux is not ready")
+	}
+
+	got, err := p.GetMeta("gc-test-agent", "GC_INSTANCE_TOKEN")
+	if err != nil {
+		t.Fatalf("GetMeta(GC_INSTANCE_TOKEN): %v", err)
+	}
+	if got != "tok-immutable" {
+		t.Fatalf("GetMeta(GC_INSTANCE_TOKEN) = %q, want tok-immutable", got)
+	}
+	for _, call := range fake.calls {
+		if call.method == "execInPod" {
+			t.Fatal("immutable instance-token lookup attempted a tmux exec")
+		}
+	}
+}
+
+func TestStopIfInstanceTokenPreservesSameNameReplacementCreatedAfterList(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+	addRunningPod(fake, "gc-test-agent", "gc-test-agent")
+	old := fake.pods["gc-test-agent"]
+	old.UID = types.UID("uid-old")
+	old.Spec.Containers = []corev1.Container{{
+		Name: "agent",
+		Env:  []corev1.EnvVar{{Name: "GC_INSTANCE_TOKEN", Value: "tok-old"}},
+	}}
+	fake.beforeDelete = func(name string) {
+		fake.beforeDelete = nil
+		fake.pods[name] = &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   name,
+				UID:    types.UID("uid-replacement"),
+				Labels: map[string]string{"app": "gc-agent", "gc-session": "gc-test-agent"},
+			},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{
+				Name: "agent",
+				Env:  []corev1.EnvVar{{Name: "GC_INSTANCE_TOKEN", Value: "tok-replacement"}},
+			}}},
+			Status: corev1.PodStatus{Phase: corev1.PodRunning},
+		}
+	}
+
+	if err := p.StopIfInstanceToken("gc-test-agent", "tok-old"); err != nil {
+		t.Fatalf("StopIfInstanceToken: %v", err)
+	}
+	got := fake.pods["gc-test-agent"]
+	if got == nil || got.UID != "uid-replacement" {
+		t.Fatalf("replacement pod = %#v, want uid-replacement preserved", got)
+	}
+	for _, call := range fake.calls {
+		if call.method == "deletePod" && call.uid != "uid-old" {
+			t.Fatalf("delete UID = %q, want only captured uid-old", call.uid)
+		}
+	}
+}
+
+func TestStopIfInstanceTokenDeletesOnlyMatchingPodsFromAmbiguousLabelSet(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+	for _, tc := range []struct {
+		name  string
+		token string
+	}{
+		{name: "old-pod", token: "tok-old"},
+		{name: "replacement-pod", token: "tok-replacement"},
+	} {
+		addRunningPod(fake, tc.name, "gc-test-agent")
+		fake.pods[tc.name].Spec.Containers = []corev1.Container{{
+			Name: "agent",
+			Env:  []corev1.EnvVar{{Name: "GC_INSTANCE_TOKEN", Value: tc.token}},
+		}}
+	}
+
+	if err := p.StopIfInstanceToken("gc-test-agent", "tok-old"); err != nil {
+		t.Fatalf("StopIfInstanceToken: %v", err)
+	}
+	if _, exists := fake.pods["old-pod"]; exists {
+		t.Fatal("token-matched old pod survived fenced stop")
+	}
+	if _, exists := fake.pods["replacement-pod"]; !exists {
+		t.Fatal("different-token replacement pod was deleted")
+	}
+	deleteCalls := 0
+	for _, call := range fake.calls {
+		if call.method == "deletePod" {
+			deleteCalls++
+			if call.pod != "old-pod" {
+				t.Fatalf("deleted pod %q, want only old-pod", call.pod)
+			}
+		}
+	}
+	if deleteCalls != 1 {
+		t.Fatalf("delete calls = %d, want 1", deleteCalls)
+	}
+}
+
+func TestGetMetaInstanceTokenRejectsDifferentTokensUnderOneSessionLabel(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+	for _, tc := range []struct {
+		name  string
+		token string
+	}{{name: "old-pod", token: "tok-old"}, {name: "new-pod", token: "tok-new"}} {
+		addRunningPod(fake, tc.name, "gc-test-agent")
+		fake.pods[tc.name].Spec.Containers = []corev1.Container{{Name: "agent", Env: []corev1.EnvVar{{Name: "GC_INSTANCE_TOKEN", Value: tc.token}}}}
+	}
+	if _, err := p.GetMeta("gc-test-agent", "GC_INSTANCE_TOKEN"); !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+		t.Fatalf("GetMeta error = %v, want ErrRuntimeUnavailable for ambiguous pod identities", err)
 	}
 }
 
@@ -2088,6 +2765,10 @@ func TestStartSendsNudge(t *testing.T) {
 	fake := newFakeK8sOps()
 	p := newProviderWithOps(fake)
 	p.postStartSettle = 0
+	p.runningPodCacheTTL = time.Hour
+	if names, err := p.ListRunning(""); err != nil || len(names) != 0 {
+		t.Fatalf("prime empty running-pod snapshot: names=%v err=%v", names, err)
+	}
 
 	fake.setExecResult("gc-test-agent",
 		[]string{"tmux", "has-session", "-t", "main"}, "", nil)
