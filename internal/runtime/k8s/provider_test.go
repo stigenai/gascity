@@ -5,7 +5,10 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	goruntime "runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	"github.com/gastownhall/gascity/internal/runtime"
+	"github.com/gastownhall/gascity/internal/testutil"
 )
 
 func TestProviderImplementsInterface(_ *testing.T) {
@@ -335,6 +339,252 @@ func TestRunningPodLookupSharesOneNamespaceSnapshotAcrossSessions(t *testing.T) 
 	if listCalls != 1 {
 		t.Fatalf("listPods calls = %d, want 1 shared snapshot", listCalls)
 	}
+}
+
+type snapshotListOps struct {
+	*fakeK8sOps
+	pods            []corev1.Pod
+	listErr         error
+	requireDeadline bool
+	entered         chan struct{}
+	release         chan struct{}
+	enteredOnce     sync.Once
+	listCalls       atomic.Int32
+}
+
+func newSnapshotListOps(pods ...corev1.Pod) *snapshotListOps {
+	return &snapshotListOps{fakeK8sOps: newFakeK8sOps(), pods: pods}
+}
+
+func awaitSnapshotTestValue[T any](t *testing.T, ch <-chan T) T {
+	t.Helper()
+	timer := time.NewTimer(testutil.GoroutineRaceTimeout)
+	defer timer.Stop()
+	select {
+	case value := <-ch:
+		return value
+	case <-timer.C:
+		t.Fatal("timed out waiting for running-pod snapshot test signal")
+		var zero T
+		return zero
+	}
+}
+
+func (o *snapshotListOps) listPods(ctx context.Context, _, _ string) ([]corev1.Pod, error) {
+	o.listCalls.Add(1)
+	if o.entered != nil {
+		o.enteredOnce.Do(func() { close(o.entered) })
+	}
+	if o.release != nil {
+		select {
+		case <-o.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if o.requireDeadline {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			return nil, errors.New("running-pod snapshot has no deadline")
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 || remaining > 10*time.Second {
+			return nil, fmt.Errorf("running-pod snapshot deadline is not tightly bounded: %s", remaining)
+		}
+	}
+	if o.listErr != nil {
+		return nil, o.listErr
+	}
+	pods := make([]corev1.Pod, len(o.pods))
+	for i := range o.pods {
+		pods[i] = *o.pods[i].DeepCopy()
+	}
+	return pods, nil
+}
+
+func runningPodForSnapshot(podName, sessionName string) corev1.Pod {
+	return corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        podName,
+			Labels:      map[string]string{"app": "gc-agent", "gc-session": SanitizeLabel(sessionName)},
+			Annotations: map[string]string{"gc-session-name": sessionName},
+		},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+}
+
+func TestListRunningSharesSnapshotAcrossFactoryBurst(t *testing.T) {
+	ops := newSnapshotListOps(
+		runningPodForSnapshot("pod-a", "gc-city-a-worker-1"),
+		runningPodForSnapshot("pod-b", "gc-city-b-worker-1"),
+	)
+	p := newProviderWithOps(ops)
+	p.runningPodCacheTTL = time.Hour
+
+	for i := range 117 {
+		prefix := "gc-city-a-"
+		if i%2 == 1 {
+			prefix = "gc-city-b-"
+		}
+		names, err := p.ListRunning(prefix)
+		if err != nil {
+			t.Fatalf("ListRunning(%q): %v", prefix, err)
+		}
+		if len(names) != 1 {
+			t.Fatalf("ListRunning(%q) = %v, want one session", prefix, names)
+		}
+	}
+
+	if got := ops.listCalls.Load(); got != 1 {
+		t.Fatalf("Kubernetes LIST calls for 117 ListRunning calls = %d, want 1", got)
+	}
+}
+
+func TestListRunningAndSessionLookupShareSnapshot(t *testing.T) {
+	legacyPod := runningPodForSnapshot("pod-b", "gc-city-legacy-1")
+	legacyPod.Labels["app"] = "legacy-session"
+	ops := newSnapshotListOps(
+		runningPodForSnapshot("pod-a", "gc-city-worker-1"),
+		legacyPod,
+	)
+	p := newProviderWithOps(ops)
+	p.runningPodCacheTTL = time.Hour
+
+	names, err := p.ListRunning("gc-city-")
+	if err != nil {
+		t.Fatalf("ListRunning: %v", err)
+	}
+	if len(names) != 1 || names[0] != "gc-city-worker-1" {
+		t.Fatalf("ListRunning = %v, want [gc-city-worker-1]", names)
+	}
+	podName, err := p.findRunningPod(context.Background(), "gc-city-worker-1")
+	if err != nil {
+		t.Fatalf("findRunningPod: %v", err)
+	}
+	if podName != "pod-a" {
+		t.Fatalf("findRunningPod = %q, want pod-a", podName)
+	}
+	legacyPodName, err := p.findRunningPod(context.Background(), "gc-city-legacy-1")
+	if err != nil {
+		t.Fatalf("findRunningPod legacy session: %v", err)
+	}
+	if legacyPodName != "pod-b" {
+		t.Fatalf("findRunningPod legacy session = %q, want pod-b", legacyPodName)
+	}
+	if got := ops.listCalls.Load(); got != 1 {
+		t.Fatalf("Kubernetes LIST calls across list and lookup = %d, want 1", got)
+	}
+}
+
+func TestRunningPodSnapshotCoalescesConcurrentFailure(t *testing.T) {
+	wantErr := errors.New("Kubernetes API unavailable")
+	ops := newSnapshotListOps()
+	ops.listErr = wantErr
+	ops.entered = make(chan struct{})
+	ops.release = make(chan struct{})
+	p := newProviderWithOps(ops)
+	p.runningPodCacheTTL = time.Hour
+
+	oldProcs := goruntime.GOMAXPROCS(1)
+	t.Cleanup(func() { goruntime.GOMAXPROCS(oldProcs) })
+
+	const callers = 32
+	start := make(chan struct{})
+	ready := make(chan struct{}, callers)
+	errs := make(chan error, callers)
+	for range callers {
+		go func() {
+			<-start
+			ready <- struct{}{}
+			_, err := p.ListRunning("")
+			errs <- err
+		}()
+	}
+	close(start)
+	for range callers {
+		awaitSnapshotTestValue(t, ready)
+	}
+	awaitSnapshotTestValue(t, ops.entered)
+	// With one P, every caller reaches either the fake LIST or the shared
+	// singleflight wait before this goroutine resumes after yielding.
+	goruntime.Gosched()
+	close(ops.release)
+
+	for range callers {
+		if err := awaitSnapshotTestValue(t, errs); !errors.Is(err, wantErr) {
+			t.Fatalf("ListRunning error = %v, want %v", err, wantErr)
+		}
+	}
+	if got := ops.listCalls.Load(); got != 1 {
+		t.Fatalf("Kubernetes LIST calls for %d concurrent failures = %d, want 1", callers, got)
+	}
+}
+
+func TestRunningPodSnapshotUsesBoundedContext(t *testing.T) {
+	ops := newSnapshotListOps(runningPodForSnapshot("pod-a", "gc-city-worker-1"))
+	ops.requireDeadline = true
+	p := newProviderWithOps(ops)
+	p.runningPodCacheTTL = time.Hour
+
+	if _, err := p.ListRunning(""); err != nil {
+		t.Fatalf("ListRunning: %v", err)
+	}
+	if got := ops.listCalls.Load(); got != 1 {
+		t.Fatalf("Kubernetes LIST calls = %d, want 1", got)
+	}
+}
+
+func TestRunningPodSnapshotExpiresAndDoesNotCacheRefreshFailure(t *testing.T) {
+	ops := newSnapshotListOps(runningPodForSnapshot("pod-a", "gc-city-worker-1"))
+	p := newProviderWithOps(ops)
+	p.runningPodCacheTTL = time.Hour
+
+	if _, err := p.ListRunning(""); err != nil {
+		t.Fatalf("priming ListRunning: %v", err)
+	}
+	p.runningPodCacheMu.Lock()
+	p.runningPodCacheAt = time.Now().Add(-2 * time.Hour)
+	p.runningPodCacheMu.Unlock()
+
+	wantErr := errors.New("Kubernetes API unavailable")
+	ops.listErr = wantErr
+	if _, err := p.ListRunning(""); !errors.Is(err, wantErr) {
+		t.Fatalf("expired ListRunning error = %v, want %v", err, wantErr)
+	}
+
+	ops.listErr = nil
+	ops.pods = []corev1.Pod{runningPodForSnapshot("pod-b", "gc-city-worker-2")}
+	names, err := p.ListRunning("")
+	if err != nil {
+		t.Fatalf("retrying ListRunning: %v", err)
+	}
+	if len(names) != 1 || names[0] != "gc-city-worker-2" {
+		t.Fatalf("retrying ListRunning = %v, want [gc-city-worker-2]", names)
+	}
+	if got := ops.listCalls.Load(); got != 3 {
+		t.Fatalf("Kubernetes LIST calls across success, failure, retry = %d, want 3", got)
+	}
+}
+
+func TestRunningPodSnapshotCallerCanCancelSharedWait(t *testing.T) {
+	ops := newSnapshotListOps(runningPodForSnapshot("pod-a", "gc-city-worker-1"))
+	ops.entered = make(chan struct{})
+	ops.release = make(chan struct{})
+	p := newProviderWithOps(ops)
+	p.runningPodCacheTTL = time.Hour
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		_, err := p.runningPodSnapshot(ctx)
+		result <- err
+	}()
+	awaitSnapshotTestValue(t, ops.entered)
+	cancel()
+	if err := awaitSnapshotTestValue(t, result); !errors.Is(err, context.Canceled) {
+		t.Fatalf("runningPodSnapshot error = %v, want context.Canceled", err)
+	}
+	close(ops.release)
 }
 
 func TestStop(t *testing.T) {

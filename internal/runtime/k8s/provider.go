@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/kubernetes"
@@ -24,6 +25,8 @@ import (
 
 	"github.com/gastownhall/gascity/internal/runtime"
 )
+
+const runningPodSnapshotTimeout = 5 * time.Second
 
 // Compile-time interface checks.
 var (
@@ -53,10 +56,16 @@ type Provider struct {
 	priorityClassName  string              // GC_K8S_PRIORITY_CLASS_NAME
 	postStartSettle    time.Duration       // settle time before post-start liveness check
 	stderr             io.Writer           // warning output (default os.Stderr)
-	runningPodCacheMu  sync.Mutex
-	runningPodCache    map[string]string
+	runningPodCacheMu  sync.RWMutex
+	runningPodCache    *runningPodState
 	runningPodCacheAt  time.Time
 	runningPodCacheTTL time.Duration
+	runningPodFlight   singleflight.Group
+}
+
+type runningPodState struct {
+	bySession         map[string]string
+	agentSessionNames []string
 }
 
 type schedulingFields struct {
@@ -656,27 +665,44 @@ func (p *Provider) Peek(name string, lines int) (string, error) {
 
 // ListRunning returns names of all running sessions with the given prefix.
 func (p *Provider) ListRunning(prefix string) ([]string, error) {
-	ctx := context.Background()
-	pods, err := p.ops.listPods(ctx, "app=gc-agent", "status.phase=Running")
+	ctx, cancel := context.WithTimeout(context.Background(), runningPodSnapshotTimeout)
+	defer cancel()
+
+	if p.runningPodCacheTTL <= 0 {
+		pods, err := p.ops.listPods(ctx, "app=gc-agent", "status.phase=Running")
+		if err != nil {
+			return nil, err
+		}
+		return runningSessionNames(pods, prefix), nil
+	}
+
+	snapshot, err := p.runningPodSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
 	var names []string
-	for i := range pods {
-		pod := &pods[i]
-		// Prefer annotation (raw name) over label (sanitized).
-		name := pod.Annotations["gc-session-name"]
-		if name == "" {
-			name = pod.Labels["gc-session"]
-		}
-		if name == "" {
-			continue
-		}
+	for _, name := range snapshot.agentSessionNames {
 		if prefix == "" || strings.HasPrefix(name, prefix) {
 			names = append(names, name)
 		}
 	}
 	return names, nil
+}
+
+func runningSessionNames(pods []corev1.Pod, prefix string) []string {
+	var names []string
+	for i := range pods {
+		pod := &pods[i]
+		// Prefer annotation (raw name) over label (sanitized).
+		name := strings.TrimSpace(pod.Annotations["gc-session-name"])
+		if name == "" {
+			name = strings.TrimSpace(pod.Labels["gc-session"])
+		}
+		if name != "" && (prefix == "" || strings.HasPrefix(name, prefix)) {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // GetLastActivity returns the time of the last I/O in the tmux session.
@@ -839,16 +865,44 @@ func (p *Provider) findRunningPod(ctx context.Context, name string) (string, err
 // short-lived namespace snapshot preserves current state while reducing the
 // hot path to a single LIST shared by all session names.
 func (p *Provider) findRunningPodFromSnapshot(ctx context.Context, name string) (string, error) {
-	p.runningPodCacheMu.Lock()
-	defer p.runningPodCacheMu.Unlock()
+	snapshot, err := p.runningPodSnapshot(ctx)
+	if err != nil {
+		return "", err
+	}
 
-	now := time.Now()
-	if p.runningPodCache == nil || now.Sub(p.runningPodCacheAt) >= p.runningPodCacheTTL {
-		pods, err := p.ops.listPods(ctx, "", "status.phase=Running")
-		if err != nil {
-			return "", err
+	podName := snapshot.bySession[name]
+	if podName == "" {
+		// Labels are sanitized for Kubernetes, while annotations preserve the
+		// original runtime name. Legacy pods may have only the label.
+		podName = snapshot.bySession[SanitizeLabel(name)]
+	}
+	if podName == "" {
+		return "", fmt.Errorf("no running pod for session %q", name)
+	}
+	return podName, nil
+}
+
+// runningPodSnapshot returns one short-lived namespace snapshot shared by
+// every list and per-session lookup in a controller burst. Refresh failures
+// are coalesced but never cached, and the shared Kubernetes request has its
+// own bound so it does not inherit the winning caller's lifetime.
+func (p *Provider) runningPodSnapshot(ctx context.Context) (*runningPodState, error) {
+	if snapshot, ok := p.cachedRunningPodSnapshot(time.Now()); ok {
+		return snapshot, nil
+	}
+
+	result := p.runningPodFlight.DoChan("refresh", func() (any, error) {
+		if snapshot, ok := p.cachedRunningPodSnapshot(time.Now()); ok {
+			return snapshot, nil
 		}
-		cache := make(map[string]string, len(pods))
+
+		refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runningPodSnapshotTimeout)
+		defer cancel()
+		pods, err := p.ops.listPods(refreshCtx, "", "status.phase=Running")
+		if err != nil {
+			return nil, err
+		}
+		snapshot := &runningPodState{bySession: make(map[string]string, len(pods))}
 		for i := range pods {
 			sessionName := strings.TrimSpace(pods[i].Annotations["gc-session-name"])
 			if sessionName == "" {
@@ -857,24 +911,43 @@ func (p *Provider) findRunningPodFromSnapshot(ctx context.Context, name string) 
 			if sessionName == "" {
 				continue
 			}
-			if _, exists := cache[sessionName]; !exists {
-				cache[sessionName] = pods[i].Name
+			if _, exists := snapshot.bySession[sessionName]; !exists {
+				snapshot.bySession[sessionName] = pods[i].Name
+			}
+			if pods[i].Labels["app"] == "gc-agent" {
+				snapshot.agentSessionNames = append(snapshot.agentSessionNames, sessionName)
 			}
 		}
-		p.runningPodCache = cache
-		p.runningPodCacheAt = now
-	}
 
-	podName := p.runningPodCache[name]
-	if podName == "" {
-		// Labels are sanitized for Kubernetes, while annotations preserve the
-		// original runtime name. Legacy pods may have only the label.
-		podName = p.runningPodCache[SanitizeLabel(name)]
+		p.runningPodCacheMu.Lock()
+		p.runningPodCache = snapshot
+		p.runningPodCacheAt = time.Now()
+		p.runningPodCacheMu.Unlock()
+		return snapshot, nil
+	})
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case refresh := <-result:
+		if refresh.Err != nil {
+			return nil, refresh.Err
+		}
+		snapshot, ok := refresh.Val.(*runningPodState)
+		if !ok {
+			return nil, fmt.Errorf("running-pod snapshot returned %T", refresh.Val)
+		}
+		return snapshot, nil
 	}
-	if podName == "" {
-		return "", fmt.Errorf("no running pod for session %q", name)
+}
+
+func (p *Provider) cachedRunningPodSnapshot(now time.Time) (*runningPodState, bool) {
+	p.runningPodCacheMu.RLock()
+	defer p.runningPodCacheMu.RUnlock()
+	if p.runningPodCache == nil || now.Sub(p.runningPodCacheAt) >= p.runningPodCacheTTL {
+		return nil, false
 	}
-	return podName, nil
+	return p.runningPodCache, true
 }
 
 // findPod finds a pod by session label (any phase).
