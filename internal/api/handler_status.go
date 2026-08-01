@@ -193,6 +193,7 @@ func (s *Server) buildStatusBody(ctx context.Context, lite bool) StatusBody {
 				Scope:         scope,
 				Running:       running,
 				Suspended:     suspended,
+				Draining:      hasInfo && info.state == session.StateDraining,
 				SessionName:   sessName,
 				GroupName:     groupName,
 				Expanded:      isPool,

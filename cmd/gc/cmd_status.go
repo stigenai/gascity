@@ -403,6 +403,14 @@ func rigStatusAgentJSON(name, qualifiedName string, target statusObservationTarg
 // because the draining flag is meaningless then and the probe dominates wall
 // time on idle cities.
 func agentStatusLineWithPartial(running bool, dops drainOps, sn string, suspended bool, partial bool) string {
+	return agentStatusLineWithPartialAndHint(running, dops, sn, suspended, false, partial)
+}
+
+// agentStatusLineWithPartialAndHint accepts the supervisor snapshot's
+// authoritative draining bit when the CLI deliberately avoids constructing a
+// local runtime provider on the API path. Local callers still pass drainOps and
+// get the freshest runtime metadata probe.
+func agentStatusLineWithPartialAndHint(running bool, dops drainOps, sn string, suspended, drainingHint, partial bool) string {
 	if !running {
 		if partial {
 			if suspended {
@@ -415,8 +423,13 @@ func agentStatusLineWithPartial(running bool, dops drainOps, sn string, suspende
 		}
 		return "stopped"
 	}
-	if draining, _ := dops.isDraining(sn); draining {
+	if drainingHint {
 		return "running  (draining)"
+	}
+	if dops != nil {
+		if draining, _ := dops.isDraining(sn); draining {
+			return "running  (draining)"
+		}
 	}
 	return "running"
 }

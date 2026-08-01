@@ -49,9 +49,9 @@ const cacheAgeHeader = "X-GC-Cache-Age-S"
 // It mirrors the subset of StatusBody fields the CLI formatter reads so
 // cmd/gc/ never imports genclient directly. The detail slices (Agents,
 // Rigs, NamedSessions) are pre-filtered by the server to match what the
-// fallback snapshot would collect. Controller authority is resolved
-// locally by the CLI (controllerStatusForCity) because the server
-// handling the request IS the controller — no wire field is needed.
+// fallback snapshot would collect. Controller authority is supplied by the
+// CLI's bounded API resolver because the server handling the request IS the
+// controller — no wire field or follow-up authority probe is needed.
 type StatusView struct {
 	CityName      string
 	CityPath      string
@@ -79,6 +79,7 @@ type StatusAgentView struct {
 	Scope         string
 	Running       bool
 	Suspended     bool
+	Draining      bool
 	SessionName   string
 	GroupName     string
 	ScaleLabel    string

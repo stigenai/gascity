@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -308,6 +309,9 @@ func TestCityStatusJSONEmpty(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
 		t.Fatalf("unmarshal: %v; output: %s", err, stdout.String())
 	}
+	if strings.Contains(stdout.String(), `"draining"`) {
+		t.Fatalf("local legacy status JSON unexpectedly gained draining: %s", stdout.String())
+	}
 	if status.CityName != "bright-lights" {
 		t.Errorf("city_name = %q, want %q", status.CityName, "bright-lights")
 	}
@@ -390,7 +394,8 @@ func TestSnapshotFromStatusViewIncludesBeadsDiagnostic(t *testing.T) {
 		},
 	}
 
-	snapshot := snapshotFromStatusView(view.CityPath, view)
+	controller := ControllerJSON{Running: true, Mode: "supervisor"}
+	snapshot := snapshotFromStatusView(view, controller)
 	if snapshot.Beads == nil {
 		t.Fatal("snapshot.Beads = nil, want diagnostic from API status view")
 	}
@@ -698,6 +703,11 @@ func TestControllerStatusLine(t *testing.T) {
 			want: "standalone-managed (PID 1234)",
 		},
 		{
+			name: "standalone API running without local PID probe",
+			ctrl: ControllerJSON{Mode: "standalone", Running: true},
+			want: "standalone-managed",
+		},
+		{
 			name: "supervisor not running",
 			ctrl: ControllerJSON{Mode: "supervisor"},
 			want: "supervisor-managed (supervisor not running)",
@@ -721,6 +731,11 @@ func TestControllerStatusLine(t *testing.T) {
 			name: "supervisor running",
 			ctrl: ControllerJSON{Mode: "supervisor", PID: 4321, Running: true},
 			want: "supervisor-managed (PID 4321)",
+		},
+		{
+			name: "supervisor API running without local PID probe",
+			ctrl: ControllerJSON{Mode: "supervisor", Running: true},
+			want: "supervisor-managed",
 		},
 	}
 
@@ -965,6 +980,7 @@ func okCityStatusHandler(_ *testing.T) http.Handler {
 					"scope":          "city",
 					"running":        true,
 					"suspended":      false,
+					"draining":       true,
 					"session_name":   "test-city--mayor",
 					"group_name":     "mayor",
 				},
@@ -1196,6 +1212,568 @@ func TestRouteCityStatus_APIStaleBanner(t *testing.T) {
 	}
 }
 
+// TestCmdCityStatusHealthyAPIIsLazy pins the command-level ordering contract:
+// resolving a live supervisor API must complete without entering the local
+// initialization seam (config, Dolt, session snapshot, or runtime provider).
+func TestCmdCityStatusHealthyAPIIsLazy(t *testing.T) {
+	cityPath := writeCityStatusTestCity(t)
+	srv := httptest.NewServer(okCityStatusHandler(t))
+	defer srv.Close()
+
+	oldResolver := cityStatusResolveAPI
+	oldLocal := cityStatusRenderLocal
+	t.Cleanup(func() {
+		cityStatusResolveAPI = oldResolver
+		cityStatusRenderLocal = oldLocal
+	})
+	cityStatusResolveAPI = func(context.Context, string) (cityStatusAPIResolution, error) {
+		return cityStatusAPIResolution{
+			client:     api.NewCityScopedClient(srv.URL, "test-city"),
+			controller: ControllerJSON{Running: true, Mode: "supervisor"},
+		}, nil
+	}
+	localCalls := 0
+	cityStatusRenderLocal = func(string, bool, io.Writer, io.Writer) int {
+		localCalls++
+		return 91
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdCityStatus([]string{cityPath}, true, &stdout, &stderr); code != 0 {
+		t.Fatalf("cmdCityStatus exit = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if localCalls != 0 {
+		t.Fatalf("local initialization calls = %d, want zero on healthy API path", localCalls)
+	}
+	if !strings.Contains(stdout.String(), `"_cache_age_s": 2`) {
+		t.Fatalf("API JSON missing cache age: %s", stdout.String())
+	}
+	if strings.Contains(stdout.String(), `"draining"`) {
+		t.Fatalf("legacy status JSON shape unexpectedly gained draining: %s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := cmdCityStatus([]string{cityPath}, false, &stdout, &stderr); code != 0 {
+		t.Fatalf("cmdCityStatus text exit = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "running  (draining)") {
+		t.Fatalf("API text lost supervisor draining truth: %s", stdout.String())
+	}
+	if localCalls != 0 {
+		t.Fatalf("local initialization calls = %d, want zero after JSON and text API reads", localCalls)
+	}
+}
+
+func TestCmdCityStatusDefaultResolverUsesSupervisorWithoutStandalonePort(t *testing.T) {
+	configureIsolatedRuntimeEnv(t)
+	t.Setenv("GC_NO_API", "")
+	cityPath := writeCityStatusTestCity(t)
+	if err := supervisor.NewRegistry(supervisor.RegistryPath()).Register(cityPath, "test-city"); err != nil {
+		t.Fatalf("register city: %v", err)
+	}
+	srv := httptest.NewServer(okCityStatusHandler(t))
+	defer srv.Close()
+
+	oldResolver := cityStatusResolveAPI
+	oldBaseURL := supervisorAPIBaseURLHook
+	oldRunning := supervisorCityRunningHook
+	oldLocal := cityStatusRenderLocal
+	t.Cleanup(func() {
+		cityStatusResolveAPI = oldResolver
+		supervisorAPIBaseURLHook = oldBaseURL
+		supervisorCityRunningHook = oldRunning
+		cityStatusRenderLocal = oldLocal
+	})
+	cityStatusResolveAPI = resolveCityStatusAPI
+	supervisorAPIBaseURLHook = func() (string, error) { return srv.URL, nil }
+	listCitiesCalls := 0
+	supervisorCityRunningHook = func(string) (bool, string, bool) {
+		listCitiesCalls++
+		return true, "running", true
+	}
+	localCalls := 0
+	cityStatusRenderLocal = func(string, bool, io.Writer, io.Writer) int {
+		localCalls++
+		return 81
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdCityStatus([]string{cityPath}, false, &stdout, &stderr); code != 0 {
+		t.Fatalf("cmdCityStatus exit = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if localCalls != 0 {
+		t.Fatalf("local initialization calls = %d, want zero for supervisor-managed city", localCalls)
+	}
+	if listCitiesCalls != 0 {
+		t.Fatalf("unbounded ListCities preflight calls = %d, want zero", listCitiesCalls)
+	}
+	if !strings.Contains(stdout.String(), "Controller: supervisor-managed") ||
+		!strings.Contains(stdout.String(), "Authority: supervisor API") {
+		t.Fatalf("stdout lost supervisor authority provenance:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "running  (draining)") {
+		t.Fatalf("stdout lost API draining truth:\n%s", stdout.String())
+	}
+}
+
+func TestCmdCityStatusDefaultResolverRendersRegisteredCityStartingFromBoundedSupervisorState(t *testing.T) {
+	configureIsolatedRuntimeEnv(t)
+	t.Setenv("GC_NO_API", "")
+	cityPath := writeCityStatusTestCity(t)
+	if err := supervisor.NewRegistry(supervisor.RegistryPath()).Register(cityPath, "test-city"); err != nil {
+		t.Fatalf("register city: %v", err)
+	}
+
+	statusCalls := 0
+	listCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v0/city/test-city/status":
+			statusCalls++
+			w.Header().Set("Content-Type", "application/problem+json")
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": http.StatusNotFound,
+				"title":  "Not Found",
+				"detail": api.CityNotFoundOrNotRunningDetail("test-city"),
+			})
+		case "/v0/cities":
+			listCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items": []api.CityInfo{{
+					Name:    "test-city",
+					Path:    cityPath,
+					Running: false,
+					Status:  "starting_bead_store",
+				}},
+				"total": 1,
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	oldResolver := cityStatusResolveAPI
+	oldBaseURL := supervisorAPIBaseURLHook
+	oldLocal := cityStatusRenderLocal
+	t.Cleanup(func() {
+		cityStatusResolveAPI = oldResolver
+		supervisorAPIBaseURLHook = oldBaseURL
+		cityStatusRenderLocal = oldLocal
+	})
+	cityStatusResolveAPI = resolveCityStatusAPI
+	supervisorAPIBaseURLHook = func() (string, error) { return srv.URL, nil }
+	localCalls := 0
+	cityStatusRenderLocal = func(string, bool, io.Writer, io.Writer) int {
+		localCalls++
+		return 84
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdCityStatus([]string{cityPath}, false, &stdout, &stderr); code != 0 {
+		t.Fatalf("cmdCityStatus exit = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	if statusCalls != 1 || listCalls != 1 || localCalls != 0 {
+		t.Fatalf("status calls=%d list calls=%d local calls=%d, want 1/1/0", statusCalls, listCalls, localCalls)
+	}
+	if !strings.Contains(stdout.String(), "Controller: supervisor-managed (city starting bead store)") ||
+		!strings.Contains(stdout.String(), "Authority: supervisor API; city status: starting_bead_store") ||
+		!strings.Contains(stdout.String(), "Status:     partial") {
+		t.Fatalf("stdout lost bounded supervisor starting truth:\n%s", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := cmdCityStatus([]string{cityPath}, true, &stdout, &stderr); code != 0 {
+		t.Fatalf("cmdCityStatus JSON exit = %d, want 0; stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	var got StatusJSON
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal JSON: %v; output=%s", err, stdout.String())
+	}
+	if got.Controller.Running || got.Controller.Mode != "supervisor" || got.Controller.Status != "starting_bead_store" || !got.Partial {
+		t.Fatalf("JSON controller/partial = %+v partial=%v, want supervisor starting partial", got.Controller, got.Partial)
+	}
+	if localCalls != 0 {
+		t.Fatalf("local initialization calls = %d, want zero after text and JSON", localCalls)
+	}
+}
+
+func TestCmdCityStatusDefaultResolverInvalidNoAPIWarnsAndFailsOpen(t *testing.T) {
+	configureIsolatedRuntimeEnv(t)
+	t.Setenv("GC_NO_API", "bogus")
+	cityPath := writeCityStatusTestCity(t)
+	if err := supervisor.NewRegistry(supervisor.RegistryPath()).Register(cityPath, "test-city"); err != nil {
+		t.Fatalf("register city: %v", err)
+	}
+	srv := httptest.NewServer(okCityStatusHandler(t))
+	defer srv.Close()
+
+	oldResolver := cityStatusResolveAPI
+	oldBaseURL := supervisorAPIBaseURLHook
+	oldLocal := cityStatusRenderLocal
+	t.Cleanup(func() {
+		cityStatusResolveAPI = oldResolver
+		supervisorAPIBaseURLHook = oldBaseURL
+		cityStatusRenderLocal = oldLocal
+	})
+	cityStatusResolveAPI = resolveCityStatusAPI
+	supervisorAPIBaseURLHook = func() (string, error) { return srv.URL, nil }
+	localCalls := 0
+	cityStatusRenderLocal = func(string, bool, io.Writer, io.Writer) int {
+		localCalls++
+		return 85
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdCityStatus([]string{cityPath}, false, &stdout, &stderr); code != 0 {
+		t.Fatalf("cmdCityStatus exit = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if localCalls != 0 {
+		t.Fatalf("local initialization calls = %d, want zero when invalid GC_NO_API fails open", localCalls)
+	}
+	if !strings.Contains(stderr.String(), `warning: GC_NO_API="bogus" is not recognized; treating as unset`) {
+		t.Fatalf("stderr missing invalid GC_NO_API warning: %q", stderr.String())
+	}
+}
+
+func TestCmdCityStatusManagedNotRunningFollowupSharesDeadline(t *testing.T) {
+	configureIsolatedRuntimeEnv(t)
+	t.Setenv("GC_NO_API", "")
+	cityPath := writeCityStatusTestCity(t)
+	if err := supervisor.NewRegistry(supervisor.RegistryPath()).Register(cityPath, "test-city"); err != nil {
+		t.Fatalf("register city: %v", err)
+	}
+	requestStarted := make(chan time.Time, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v0/city/test-city/status" {
+			select {
+			case requestStarted <- time.Now():
+			default:
+			}
+			w.Header().Set("Content-Type", "application/problem+json")
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": http.StatusNotFound,
+				"title":  "Not Found",
+				"detail": api.CityNotFoundOrNotRunningDetail("test-city"),
+			})
+			return
+		}
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	oldResolver := cityStatusResolveAPI
+	oldBaseURL := supervisorAPIBaseURLHook
+	oldLocal := cityStatusRenderLocal
+	oldTimeout := cityStatusAPITimeout
+	t.Cleanup(func() {
+		cityStatusResolveAPI = oldResolver
+		supervisorAPIBaseURLHook = oldBaseURL
+		cityStatusRenderLocal = oldLocal
+		cityStatusAPITimeout = oldTimeout
+	})
+	cityStatusResolveAPI = resolveCityStatusAPI
+	supervisorAPIBaseURLHook = func() (string, error) { return srv.URL, nil }
+	cityStatusAPITimeout = 120 * time.Millisecond
+	localCalls := 0
+	cityStatusRenderLocal = func(string, bool, io.Writer, io.Writer) int {
+		localCalls++
+		return 86
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdCityStatus([]string{cityPath}, false, &stdout, &stderr); code != 1 {
+		t.Fatalf("cmdCityStatus exit = %d, want 1; stderr=%q", code, stderr.String())
+	}
+	started := <-requestStarted
+	if elapsed := time.Since(started); elapsed > 350*time.Millisecond {
+		t.Fatalf("not-running follow-up took %s, want one shared 120ms budget", elapsed)
+	}
+	if localCalls != 0 {
+		t.Fatalf("local initialization calls = %d, want zero after bounded follow-up timeout", localCalls)
+	}
+	if !strings.Contains(stderr.String(), "status API timed out after 120ms") {
+		t.Fatalf("stderr missing bounded follow-up timeout: %q", stderr.String())
+	}
+}
+
+func TestCmdCityStatusDefaultResolverPrefersConfiguredStandalone(t *testing.T) {
+	configureIsolatedRuntimeEnv(t)
+	t.Setenv("GC_NO_API", "")
+	srv := httptest.NewServer(okCityStatusHandler(t))
+	defer srv.Close()
+	_, port, err := net.SplitHostPort(strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatalf("split test server address: %v", err)
+	}
+	cityPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cityPath, ".gc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cityTOML := "[workspace]\nname = \"test-city\"\n[api]\nport = " + port + "\n"
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte(cityTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Register too: standalone must win before the supervisor candidate.
+	if err := supervisor.NewRegistry(supervisor.RegistryPath()).Register(cityPath, "test-city"); err != nil {
+		t.Fatalf("register city: %v", err)
+	}
+
+	oldResolver := cityStatusResolveAPI
+	oldBaseURL := supervisorAPIBaseURLHook
+	oldLocal := cityStatusRenderLocal
+	t.Cleanup(func() {
+		cityStatusResolveAPI = oldResolver
+		supervisorAPIBaseURLHook = oldBaseURL
+		cityStatusRenderLocal = oldLocal
+	})
+	cityStatusResolveAPI = resolveCityStatusAPI
+	baseURLCalls := 0
+	supervisorAPIBaseURLHook = func() (string, error) {
+		baseURLCalls++
+		return "http://supervisor.invalid", nil
+	}
+	localCalls := 0
+	cityStatusRenderLocal = func(string, bool, io.Writer, io.Writer) int {
+		localCalls++
+		return 82
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdCityStatus([]string{cityPath}, false, &stdout, &stderr); code != 0 {
+		t.Fatalf("cmdCityStatus exit = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if baseURLCalls != 0 || localCalls != 0 {
+		t.Fatalf("supervisor base calls=%d local calls=%d, want standalone-only", baseURLCalls, localCalls)
+	}
+	if !strings.Contains(stdout.String(), "Controller: standalone-managed") {
+		t.Fatalf("stdout lost standalone authority provenance:\n%s", stdout.String())
+	}
+}
+
+func TestCmdCityStatusDefaultResolverHonorsNoAPIWithoutSupervisorLookup(t *testing.T) {
+	configureIsolatedRuntimeEnv(t)
+	t.Setenv("GC_NO_API", "1")
+	cityPath := writeCityStatusTestCity(t)
+	if err := supervisor.NewRegistry(supervisor.RegistryPath()).Register(cityPath, "test-city"); err != nil {
+		t.Fatalf("register city: %v", err)
+	}
+
+	oldResolver := cityStatusResolveAPI
+	oldBaseURL := supervisorAPIBaseURLHook
+	oldLocal := cityStatusRenderLocal
+	t.Cleanup(func() {
+		cityStatusResolveAPI = oldResolver
+		supervisorAPIBaseURLHook = oldBaseURL
+		cityStatusRenderLocal = oldLocal
+	})
+	cityStatusResolveAPI = resolveCityStatusAPI
+	baseURLCalls := 0
+	supervisorAPIBaseURLHook = func() (string, error) {
+		baseURLCalls++
+		return "http://supervisor.invalid", nil
+	}
+	localCalls := 0
+	cityStatusRenderLocal = func(string, bool, io.Writer, io.Writer) int {
+		localCalls++
+		return 29
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdCityStatus([]string{cityPath}, false, &stdout, &stderr); code != 29 {
+		t.Fatalf("cmdCityStatus exit = %d, want local sentinel 29", code)
+	}
+	if baseURLCalls != 0 || localCalls != 1 {
+		t.Fatalf("supervisor base calls=%d local calls=%d, want 0/1 under GC_NO_API", baseURLCalls, localCalls)
+	}
+}
+
+func TestCmdCityStatusDefaultResolverFallsBackWhenUnmanaged(t *testing.T) {
+	configureIsolatedRuntimeEnv(t)
+	t.Setenv("GC_NO_API", "")
+	cityPath := writeCityStatusTestCity(t)
+
+	oldResolver := cityStatusResolveAPI
+	oldBaseURL := supervisorAPIBaseURLHook
+	oldLocal := cityStatusRenderLocal
+	t.Cleanup(func() {
+		cityStatusResolveAPI = oldResolver
+		supervisorAPIBaseURLHook = oldBaseURL
+		cityStatusRenderLocal = oldLocal
+	})
+	cityStatusResolveAPI = resolveCityStatusAPI
+	baseURLCalls := 0
+	supervisorAPIBaseURLHook = func() (string, error) {
+		baseURLCalls++
+		return "http://supervisor.invalid", nil
+	}
+	localCalls := 0
+	cityStatusRenderLocal = func(string, bool, io.Writer, io.Writer) int {
+		localCalls++
+		return 37
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdCityStatus([]string{cityPath}, false, &stdout, &stderr); code != 37 {
+		t.Fatalf("cmdCityStatus exit = %d, want local sentinel 37", code)
+	}
+	if baseURLCalls != 0 || localCalls != 1 {
+		t.Fatalf("supervisor base calls=%d local calls=%d, want 0/1 for unmanaged city", baseURLCalls, localCalls)
+	}
+}
+
+func TestCmdCityStatusResolverAndFetchShareOneDeadline(t *testing.T) {
+	cityPath := writeCityStatusTestCity(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	oldResolver := cityStatusResolveAPI
+	oldLocal := cityStatusRenderLocal
+	oldTimeout := cityStatusAPITimeout
+	t.Cleanup(func() {
+		cityStatusResolveAPI = oldResolver
+		cityStatusRenderLocal = oldLocal
+		cityStatusAPITimeout = oldTimeout
+	})
+	cityStatusAPITimeout = 120 * time.Millisecond
+	var resolverStarted time.Time
+	cityStatusResolveAPI = func(ctx context.Context, _ string) (cityStatusAPIResolution, error) {
+		resolverStarted = time.Now()
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			return cityStatusAPIResolution{}, errors.New("resolver context has no deadline")
+		}
+		wait := time.Until(deadline.Add(-30 * time.Millisecond))
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				return cityStatusAPIResolution{}, ctx.Err()
+			}
+		}
+		return cityStatusAPIResolution{
+			client:     api.NewCityScopedClient(srv.URL, "test-city"),
+			controller: ControllerJSON{Running: true, Mode: "supervisor"},
+		}, nil
+	}
+	localCalls := 0
+	cityStatusRenderLocal = func(string, bool, io.Writer, io.Writer) int {
+		localCalls++
+		return 83
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := cmdCityStatus([]string{cityPath}, true, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("cmdCityStatus exit = %d, want 1; stderr=%q", code, stderr.String())
+	}
+	if resolverStarted.IsZero() {
+		t.Fatal("status API resolver did not run")
+	}
+	if elapsed := time.Since(resolverStarted); elapsed > 175*time.Millisecond {
+		t.Fatalf("resolver plus fetch took %s, they appear to have separate budgets", elapsed)
+	}
+	if localCalls != 0 {
+		t.Fatalf("local initialization calls = %d, want zero after shared deadline", localCalls)
+	}
+	if !strings.Contains(stderr.String(), "status API timed out after 120ms") {
+		t.Fatalf("stderr missing shared-deadline diagnostic: %q", stderr.String())
+	}
+}
+
+// TestCmdCityStatusAPITimeoutIsBoundedAndDoesNotFallback proves a live but
+// wedged supervisor cannot cascade into the local Dolt/provider path after its
+// command budget expires.
+func TestCmdCityStatusAPITimeoutIsBoundedAndDoesNotFallback(t *testing.T) {
+	cityPath := writeCityStatusTestCity(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	oldResolver := cityStatusResolveAPI
+	oldLocal := cityStatusRenderLocal
+	oldTimeout := cityStatusAPITimeout
+	t.Cleanup(func() {
+		cityStatusResolveAPI = oldResolver
+		cityStatusRenderLocal = oldLocal
+		cityStatusAPITimeout = oldTimeout
+	})
+	cityStatusAPITimeout = 25 * time.Millisecond
+	cityStatusResolveAPI = func(context.Context, string) (cityStatusAPIResolution, error) {
+		return cityStatusAPIResolution{
+			client:     api.NewCityScopedClient(srv.URL, "test-city"),
+			controller: ControllerJSON{Running: true, Mode: "supervisor"},
+		}, nil
+	}
+	localCalls := 0
+	cityStatusRenderLocal = func(string, bool, io.Writer, io.Writer) int {
+		localCalls++
+		return 92
+	}
+
+	var stdout, stderr bytes.Buffer
+	started := time.Now()
+	code := cmdCityStatus([]string{cityPath}, true, &stdout, &stderr)
+	elapsed := time.Since(started)
+	if code != 1 {
+		t.Fatalf("cmdCityStatus exit = %d, want 1; stderr=%q", code, stderr.String())
+	}
+	if elapsed > time.Second {
+		t.Fatalf("cmdCityStatus took %s, want bounded near %s", elapsed, cityStatusAPITimeout)
+	}
+	if localCalls != 0 {
+		t.Fatalf("local initialization calls = %d, want zero after API timeout", localCalls)
+	}
+	if !strings.Contains(stderr.String(), "status API timed out after 25ms") {
+		t.Fatalf("stderr missing bounded-timeout diagnostic: %q", stderr.String())
+	}
+}
+
+// TestCmdCityStatusClassifiedAPIFailureUsesLazyFallback preserves the existing
+// cache-not-live/legacy fallback contract while ensuring initialization occurs
+// only after the API attempt has been classified.
+func TestCmdCityStatusClassifiedAPIFailureUsesLazyFallback(t *testing.T) {
+	cityPath := writeCityStatusTestCity(t)
+	srv := httptest.NewServer(cityStatusProblemHandler(http.StatusServiceUnavailable, "cache_not_live: priming")(t))
+	defer srv.Close()
+
+	oldResolver := cityStatusResolveAPI
+	oldLocal := cityStatusRenderLocal
+	t.Cleanup(func() {
+		cityStatusResolveAPI = oldResolver
+		cityStatusRenderLocal = oldLocal
+	})
+	cityStatusResolveAPI = func(context.Context, string) (cityStatusAPIResolution, error) {
+		return cityStatusAPIResolution{
+			client:     api.NewCityScopedClient(srv.URL, "test-city"),
+			controller: ControllerJSON{Running: true, Mode: "supervisor"},
+		}, nil
+	}
+	localCalls := 0
+	cityStatusRenderLocal = func(string, bool, io.Writer, io.Writer) int {
+		localCalls++
+		return 23
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdCityStatus([]string{cityPath}, false, &stdout, &stderr); code != 23 {
+		t.Fatalf("cmdCityStatus exit = %d, want lazy fallback code 23", code)
+	}
+	if localCalls != 1 {
+		t.Fatalf("local initialization calls = %d, want 1 after classified API failure", localCalls)
+	}
+}
+
 func TestControllerStatusGuidance(t *testing.T) {
 	tests := []struct {
 		name string
@@ -1255,6 +1833,13 @@ func TestControllerStatusGuidance(t *testing.T) {
 			ctrl: ControllerJSON{Mode: "supervisor", PID: 4321, Running: true},
 			want: []string{
 				"Authority: supervisor process PID 4321",
+			},
+		},
+		{
+			name: "supervisor API running without local PID probe",
+			ctrl: ControllerJSON{Mode: "supervisor", Running: true},
+			want: []string{
+				"Authority: supervisor API",
 			},
 		},
 		{
@@ -1341,9 +1926,10 @@ func TestRenderCityStatusFromAPIPartialRendersUnknownNotStopped(t *testing.T) {
 		Summary: api.StatusSummaryView{TotalAgents: 1, RunningAgents: 0},
 	}
 	cr := api.CachedRead[api.StatusView]{Body: view}
+	controller := ControllerJSON{Running: true, Mode: "supervisor"}
 
 	var stdout bytes.Buffer
-	if code := renderCityStatusFromAPI(view.CityPath, cr, newFakeDrainOps(), false, &stdout); code != 0 {
+	if code := renderCityStatusFromAPI(cr, controller, newFakeDrainOps(), false, &stdout); code != 0 {
 		t.Fatalf("code = %d, want 0", code)
 	}
 	out := stdout.String()
@@ -1356,7 +1942,7 @@ func TestRenderCityStatusFromAPIPartialRendersUnknownNotStopped(t *testing.T) {
 
 	// The JSON projection off the same view must also carry the partial flags.
 	var jsonOut bytes.Buffer
-	if code := renderCityStatusFromAPI(view.CityPath, cr, newFakeDrainOps(), true, &jsonOut); code != 0 {
+	if code := renderCityStatusFromAPI(cr, controller, newFakeDrainOps(), true, &jsonOut); code != 0 {
 		t.Fatalf("json code = %d, want 0", code)
 	}
 	var status StatusJSON
