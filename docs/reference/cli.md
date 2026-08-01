@@ -1603,6 +1603,11 @@ Compile and instantiate a formula as real beads in the current store.
 This is a low-level workflow construction tool. It creates the formula root
 and all compiled step beads without routing any work.
 
+Root metadata supplied with --meta is validated before store access and
+written atomically with root creation. The engine-owned gc.* namespace and
+legacy engine metadata keys are rejected; use a caller-owned annotation
+namespace instead.
+
 With --attach=&lt;bead-id&gt;, the sub-DAG is created as children of the given
 bead. The bead gains a blocking dependency on the sub-DAG root, so it won't
 close until the sub-DAG completes. This is the core primitive for late-bound
@@ -1623,7 +1628,7 @@ gc formula cook <formula-name> [flags]
 |------|------|---------|-------------|
 | `--attach` | string |  | attach sub-DAG to existing bead (bead gains blocking dep on sub-DAG root) |
 | `--json` | bool |  | output JSONL summary |
-| `--meta` | stringArray |  | set root bead metadata after cook (key=value, repeatable) |
+| `--meta` | stringArray |  | set caller-owned root annotation metadata atomically at creation (key=value, repeatable) |
 | `-t`, `--title` | string |  | override root bead title |
 | `--var` | stringArray |  | variable substitution for formula (key=value, repeatable) |
 

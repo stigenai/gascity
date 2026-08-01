@@ -45,6 +45,13 @@ type Options struct {
 	// on crash-retry.
 	IdempotencyKey string
 
+	// RootMetadata is merged onto the root bead as part of its initial create.
+	// Caller-owned annotation values win over compiled annotations, matching a
+	// post-create metadata update without exposing a partially admitted graph.
+	// The engine-owned gc.* namespace and legacy engine keys are rejected by
+	// ValidateRootMetadata.
+	RootMetadata map[string]string
+
 	// PriorityOverride forces every created bead to use the given priority.
 	// When nil, each step's compiled priority is used.
 	PriorityOverride *int
@@ -172,6 +179,12 @@ type AttachOptions struct {
 	// Stored as gc.idempotency_key on the sub-DAG root bead.
 	IdempotencyKey string
 
+	// RootMetadata is merged onto the sub-DAG root as part of its initial
+	// create. Caller-owned annotation values win over compiled annotations; the
+	// engine-owned gc.* namespace and legacy engine keys are rejected. An
+	// idempotent duplicate must explicitly carry the same values.
+	RootMetadata map[string]string
+
 	// ExpectedEpoch enables optimistic concurrency control. If > 0, Attach
 	// reads gc.control_epoch from the attach bead and aborts with
 	// ErrEpochConflict if it doesn't match. On success, the epoch is
@@ -227,6 +240,9 @@ type AttachResult struct {
 // incremented. This prevents concurrent processors from spawning duplicate
 // attempts.
 func Attach(ctx context.Context, store beads.Store, recipe *formula.Recipe, attachBeadID string, opts AttachOptions) (*AttachResult, error) {
+	if err := ValidateRootMetadata(opts.RootMetadata); err != nil {
+		return nil, err
+	}
 	if recipe == nil {
 		return nil, fmt.Errorf("recipe is nil")
 	}
@@ -257,7 +273,7 @@ func Attach(ctx context.Context, store beads.Store, recipe *formula.Recipe, atta
 	// This runs before epoch fencing so that crash-retries with stale epochs
 	// still return the existing result instead of failing.
 	if opts.IdempotencyKey != "" {
-		if existing, err := findExistingAttach(store, recipe, rootBeadID, attachBeadID, opts.IdempotencyKey, opts.ExpectedEpoch); err != nil {
+		if existing, err := findExistingAttach(store, recipe, rootBeadID, attachBeadID, opts.IdempotencyKey, opts.ExpectedEpoch, opts.RootMetadata); err != nil {
 			return nil, fmt.Errorf("idempotency check: %w", err)
 		} else if existing != nil {
 			return existing, nil
@@ -331,6 +347,7 @@ func Attach(ctx context.Context, store beads.Store, recipe *formula.Recipe, atta
 	result, err := Instantiate(ctx, store, recipe, Options{
 		Title:            opts.Title,
 		Vars:             opts.Vars,
+		RootMetadata:     opts.RootMetadata,
 		PriorityOverride: clonePriority(parentBead.Priority),
 		PreserveRootType: true,
 		DeferAssignees:   fencedDeferred,
@@ -409,7 +426,7 @@ func claimAttachCandidate(store beads.Store, rootID, from, to string) (bool, err
 
 // findExistingAttach checks if a sub-DAG root with the given idempotency key
 // already exists in the workflow. Returns nil if not found.
-func findExistingAttach(store beads.Store, recipe *formula.Recipe, rootBeadID, attachBeadID, key string, expectedEpoch int) (*AttachResult, error) {
+func findExistingAttach(store beads.Store, recipe *formula.Recipe, rootBeadID, attachBeadID, key string, expectedEpoch int, rootMetadata map[string]string) (*AttachResult, error) {
 	all, err := store.List(beads.ListQuery{
 		Metadata: map[string]string{
 			beadmeta.IdempotencyKeyMetadataKey: key,
@@ -441,6 +458,9 @@ func findExistingAttach(store beads.Store, recipe *formula.Recipe, rootBeadID, a
 				failedRootID = b.ID
 			}
 			continue
+		}
+		if err := ValidateExistingRootMetadata(b, rootMetadata); err != nil {
+			return nil, err
 		}
 		switch b.Metadata[beadmeta.AttachFencePendingMetadataKey] {
 		case attachFencePendingUnclaimed:
@@ -753,6 +773,9 @@ func attachStepRefs(step formula.RecipeStep) []string {
 // already-created beads are marked with "molecule_failed" metadata
 // for cleanup.
 func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe, opts Options) (*Result, error) {
+	if err := ValidateRootMetadata(opts.RootMetadata); err != nil {
+		return nil, err
+	}
 	if recipe == nil {
 		return nil, fmt.Errorf("recipe is nil")
 	}
@@ -869,6 +892,7 @@ func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe,
 				b.Metadata["idempotency_key"] = opts.IdempotencyKey
 			}
 			stampFormulaVars(vars, &b)
+			b.Metadata = mergeRootMetadata(b.Metadata, opts.RootMetadata)
 		} else {
 			// graph.v2 workflows and their retry/Ralph attempt sub-recipes
 			// use step beads as independently routable actionable work, not
@@ -1044,6 +1068,19 @@ func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe,
 		IDMapping:     idMapping,
 		Created:       len(createdIDs),
 	}, nil
+}
+
+func mergeRootMetadata(metadata, rootMetadata map[string]string) map[string]string {
+	if len(rootMetadata) == 0 {
+		return metadata
+	}
+	if metadata == nil {
+		metadata = make(map[string]string, len(rootMetadata))
+	}
+	for key, value := range rootMetadata {
+		metadata[key] = value
+	}
+	return metadata
 }
 
 // InstantiateFragment creates beads from a rootless recipe fragment and stamps

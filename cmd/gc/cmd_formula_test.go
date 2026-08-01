@@ -718,6 +718,191 @@ title = "Do work"
 	}
 }
 
+// TestFormulaCookRejectsInvalidMetadataBeforeCreatingBeads locks the admission
+// boundary for --meta: caller metadata must be validated before a formula graph
+// becomes visible in the store. Otherwise a malformed flag reports failure
+// after leaving live, routable work behind.
+func TestFormulaCookRejectsInvalidMetadataBeforeCreatingBeads(t *testing.T) {
+	cityDir := setupFormulaCookMetadataFixture(t)
+
+	var stdout, stderr bytes.Buffer
+	cmd := newFormulaCookCmd(&stdout, &stderr)
+	cmd.SetArgs([]string{"graph-work", "--meta", "missing-equals", "--json"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("formula cook succeeded, want invalid metadata error")
+	}
+	if !strings.Contains(err.Error(), `invalid metadata "missing-equals"`) {
+		t.Fatalf("formula cook error = %v, want invalid metadata diagnostic", err)
+	}
+
+	store, err := openStoreAtForCity(cityDir, cityDir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	items, err := store.List(beads.ListQuery{
+		AllowScan:     true,
+		IncludeClosed: true,
+		TierMode:      beads.TierBoth,
+	})
+	if err != nil {
+		t.Fatalf("store.List(): %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("invalid --meta left %d bead(s), want none: %#v", len(items), items)
+	}
+}
+
+func TestFormulaCookAttachRejectsInvalidMetadataBeforeCreatingBeads(t *testing.T) {
+	cityDir := setupFormulaCookMetadataFixture(t)
+	store, err := openStoreAtForCity(cityDir, cityDir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	source, err := store.Create(beads.Bead{Title: "attach target", Type: "task"})
+	if err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	cmd := newFormulaCookCmd(&stdout, &stderr)
+	cmd.SetArgs([]string{"graph-work", "--attach", source.ID, "--meta", "missing-equals", "--json"})
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatal("formula cook attach succeeded, want invalid metadata error")
+	}
+	if !strings.Contains(err.Error(), `invalid metadata "missing-equals"`) {
+		t.Fatalf("formula cook attach error = %v, want invalid metadata diagnostic", err)
+	}
+
+	items, err := store.List(beads.ListQuery{
+		AllowScan:     true,
+		IncludeClosed: true,
+		TierMode:      beads.TierBoth,
+	})
+	if err != nil {
+		t.Fatalf("store.List(): %v", err)
+	}
+	if len(items) != 1 || items[0].ID != source.ID {
+		t.Fatalf("invalid attach --meta left graph beads: %#v", items)
+	}
+}
+
+func TestFormulaCookRejectsProtectedMetadataBeforeCityResolution(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("GC_CITY_PATH", filepath.Join(t.TempDir(), "missing-city"))
+
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "standalone identity",
+			args: []string{"graph-work", "--meta", "idempotency_key=attacker", "--json"},
+		},
+		{
+			name: "attach fence",
+			args: []string{"graph-work", "--attach", "source-1", "--meta", beadmeta.AttachFencePendingMetadataKey + "=false", "--json"},
+		},
+		{
+			name: "compiled formula hash",
+			args: []string{"graph-work", "--meta", beadmeta.FormulaHashMetadataKey + "=attacker", "--json"},
+		},
+		{
+			name: "compiled formula source",
+			args: []string{"graph-work", "--meta", beadmeta.FormulaSourceMetadataKey + "=attacker", "--json"},
+		},
+		{
+			name: "unknown engine namespace",
+			args: []string{"graph-work", "--meta", "gc.future_annotation=attacker", "--json"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			cmd := newFormulaCookCmd(&stdout, &stderr)
+			cmd.SetArgs(tc.args)
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("formula cook accepted protected metadata")
+			}
+			if !strings.Contains(err.Error(), "protected engine-owned") {
+				t.Fatalf("formula cook error = %v, want protected metadata before missing-city resolution", err)
+			}
+		})
+	}
+}
+
+func TestFormulaCookCreatesRootWithExactStringMetadata(t *testing.T) {
+	cityDir := setupFormulaCookMetadataFixture(t)
+
+	var stdout, stderr bytes.Buffer
+	cmd := newFormulaCookCmd(&stdout, &stderr)
+	cmd.SetArgs([]string{
+		"graph-work", "--json",
+		"--meta", "number=123",
+		"--meta", "boolean=true",
+		"--meta", "null=null",
+		"--meta", "array=[1,2]",
+		"--meta", `object={"answer":42}`,
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("formula cook: %v\nstderr: %s", err, stderr.String())
+	}
+
+	var result formulaCookJSONResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode formula cook output %q: %v", stdout.String(), err)
+	}
+	store, err := openStoreAtForCity(cityDir, cityDir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	root, err := store.Get(result.RootID)
+	if err != nil {
+		t.Fatalf("get root %s: %v", result.RootID, err)
+	}
+	want := map[string]string{
+		"number":  "123",
+		"boolean": "true",
+		"null":    "null",
+		"array":   "[1,2]",
+		"object":  `{"answer":42}`,
+	}
+	for key, value := range want {
+		if got := root.Metadata[key]; got != value {
+			t.Errorf("root metadata[%q] = %q, want exact string %q", key, got, value)
+		}
+	}
+}
+
+func setupFormulaCookMetadataFixture(t *testing.T) string {
+	t.Helper()
+	formulatest.EnableV2ForTest(t)
+
+	cityDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte(withBuiltinProviderAliasesTOMLForTest(`
+[workspace]
+name = "my-city"
+provider = "claude"
+
+[daemon]
+formula_v2 = true
+`, "claude")+testControlDispatcherAgentTOML("")), 0o644); err != nil {
+		t.Fatalf("write city.toml: %v", err)
+	}
+	writeFormulaTestFile(t, filepath.Join(cityDir, "formulas"), "graph-work", `
+formula = "graph-work"
+version = 2
+contract = "graph.v2"
+
+[[steps]]
+id = "step"
+title = "Do work"
+`)
+	formulatest.SetupHermeticCookEnv(t, cityDir, cityDir)
+	return cityDir
+}
+
 func writeFormulaTestFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -726,6 +911,118 @@ func writeFormulaTestFile(t *testing.T, dir, name, content string) {
 	if err := os.WriteFile(filepath.Join(dir, name+".formula.toml"), []byte(content), 0o644); err != nil {
 		t.Fatalf("write formula %s: %v", name, err)
 	}
+}
+
+func TestFormulaCookAttachGraphV2DuplicateRootMetadataDistinguishesMissingFromExplicitEmpty(t *testing.T) {
+	const metadataKey = "admission"
+
+	runCook := func(t *testing.T, sourceID string, metadataValue *string) (formulaCookJSONResult, error) {
+		t.Helper()
+		args := []string{"graph-work", "--attach", sourceID, "--json"}
+		if metadataValue != nil {
+			args = append(args, "--meta", metadataKey+"="+*metadataValue)
+		}
+		var stdout, stderr bytes.Buffer
+		cmd := newFormulaCookCmd(&stdout, &stderr)
+		cmd.SetArgs(args)
+		err := cmd.Execute()
+		if err != nil {
+			return formulaCookJSONResult{}, err
+		}
+		var result formulaCookJSONResult
+		if decodeErr := json.Unmarshal(stdout.Bytes(), &result); decodeErr != nil {
+			t.Fatalf("decode formula cook output %q: %v; stderr=%s", stdout.String(), decodeErr, stderr.String())
+		}
+		return result, nil
+	}
+
+	snapshot := func(t *testing.T, store beads.Store, sourceID string) ([]beads.Bead, []beads.Dep) {
+		t.Helper()
+		items, err := store.List(beads.ListQuery{
+			AllowScan:     true,
+			IncludeClosed: true,
+			TierMode:      beads.TierBoth,
+		})
+		if err != nil {
+			t.Fatalf("snapshot List: %v", err)
+		}
+		deps, err := store.DepList(sourceID, "down")
+		if err != nil {
+			t.Fatalf("snapshot DepList: %v", err)
+		}
+		return items, deps
+	}
+
+	t.Run("missing key conflicts with requested empty", func(t *testing.T) {
+		cityDir := setupFormulaCookMetadataFixture(t)
+		store, err := openStoreAtForCity(cityDir, cityDir)
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		convoy, err := store.Create(beads.Bead{Title: "input", Type: "convoy"})
+		if err != nil {
+			t.Fatalf("create convoy: %v", err)
+		}
+		first, err := runCook(t, convoy.ID, nil)
+		if err != nil {
+			t.Fatalf("first formula cook: %v", err)
+		}
+		beforeItems, beforeDeps := snapshot(t, store, convoy.ID)
+		empty := ""
+
+		_, err = runCook(t, convoy.ID, &empty)
+		if err == nil || !strings.Contains(err.Error(), `key is absent, want ""`) {
+			t.Fatalf("missing-key retry error = %v, want explicit absence mismatch", err)
+		}
+		afterItems, afterDeps := snapshot(t, store, convoy.ID)
+		if !reflect.DeepEqual(afterItems, beforeItems) || !reflect.DeepEqual(afterDeps, beforeDeps) {
+			t.Fatalf("missing-key retry mutated graph:\nitems before=%#v\nitems after=%#v\ndeps before=%#v\ndeps after=%#v", beforeItems, afterItems, beforeDeps, afterDeps)
+		}
+		root, getErr := store.Get(first.RootID)
+		if getErr != nil {
+			t.Fatalf("Get(original root): %v", getErr)
+		}
+		if _, present := root.Metadata[metadataKey]; present {
+			t.Fatalf("original root unexpectedly gained %q: %#v", metadataKey, root.Metadata)
+		}
+	})
+
+	t.Run("explicit empty matches", func(t *testing.T) {
+		cityDir := setupFormulaCookMetadataFixture(t)
+		store, err := openStoreAtForCity(cityDir, cityDir)
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		convoy, err := store.Create(beads.Bead{Title: "input", Type: "convoy"})
+		if err != nil {
+			t.Fatalf("create convoy: %v", err)
+		}
+		empty := ""
+		first, err := runCook(t, convoy.ID, &empty)
+		if err != nil {
+			t.Fatalf("first formula cook: %v", err)
+		}
+		created, err := store.Get(first.RootID)
+		if err != nil {
+			t.Fatalf("Get(created root): %v", err)
+		}
+		if got, present := created.Metadata[metadataKey]; !present || got != "" {
+			t.Fatalf("created metadata[%q] = %q, present=%v; want explicit empty", metadataKey, got, present)
+		}
+		beforeItems, beforeDeps := snapshot(t, store, convoy.ID)
+
+		duplicate, err := runCook(t, convoy.ID, &empty)
+		if err != nil {
+			t.Fatalf("matching empty retry: %v", err)
+		}
+		if duplicate.RootID != first.RootID {
+			t.Fatalf("matching empty retry root = %s, want %s", duplicate.RootID, first.RootID)
+		}
+		afterItems, afterDeps := snapshot(t, store, convoy.ID)
+		if !reflect.DeepEqual(afterItems, beforeItems) || !reflect.DeepEqual(afterDeps, beforeDeps) {
+			t.Fatalf("matching empty retry mutated graph:\nitems before=%#v\nitems after=%#v\ndeps before=%#v\ndeps after=%#v", beforeItems, afterItems, beforeDeps, afterDeps)
+		}
+	})
 }
 
 func runGitForFormulaTest(t *testing.T, dir string, args ...string) {
@@ -786,7 +1083,7 @@ title = "Do work for {{convoy_id}}"
 		t.Helper()
 		var stdout, stderr bytes.Buffer
 		cmd := newFormulaCookCmd(&stdout, &stderr)
-		cmd.SetArgs([]string{"graph-work", "--attach", source.ID, "--json"})
+		cmd.SetArgs([]string{"graph-work", "--attach", source.ID, "--meta", "admission=accepted", "--json"})
 		if err := cmd.Execute(); err != nil {
 			t.Fatalf("formula cook: %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
 		}
@@ -804,6 +1101,9 @@ title = "Do work for {{convoy_id}}"
 		t.Fatalf("workflow roots = %+v, want two independent graph.v2 attach roots", roots)
 	}
 	for _, root := range roots {
+		if got := root.Metadata["admission"]; got != "accepted" {
+			t.Fatalf("root %s admission metadata = %q, want accepted", root.ID, got)
+		}
 		if root.Metadata["gc.graphv2_root_key"] == "" {
 			t.Fatalf("root metadata = %#v, missing graphv2 root key", root.Metadata)
 		}

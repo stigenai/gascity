@@ -3,14 +3,41 @@ package molecule
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/beads/beadstest"
 	"github.com/gastownhall/gascity/internal/rollout/gate"
 )
+
+type attachPreAdmissionAccessStore struct {
+	beads.Store
+	readCalls int
+}
+
+func (s *attachPreAdmissionAccessStore) Get(id string) (beads.Bead, error) {
+	s.readCalls++
+	return s.Store.Get(id)
+}
+
+func (s *attachPreAdmissionAccessStore) List(query beads.ListQuery) ([]beads.Bead, error) {
+	s.readCalls++
+	return s.Store.List(query)
+}
+
+func (s *attachPreAdmissionAccessStore) ListByMetadata(filters map[string]string, limit int, opts ...beads.QueryOpt) ([]beads.Bead, error) {
+	s.readCalls++
+	return s.Store.ListByMetadata(filters, limit, opts...)
+}
+
+func (s *attachPreAdmissionAccessStore) DepList(id, direction string) ([]beads.Dep, error) {
+	s.readCalls++
+	return s.Store.DepList(id, direction)
+}
 
 // newStampedAttachStore opens a MemStore through the beads factory so it
 // carries a real conditional-writes stamp.
@@ -139,6 +166,60 @@ func TestAttachRequireIncapableRefusesBeforeSideEffects(t *testing.T) {
 	}
 	updated, _ := store.Get(control.ID)
 	if got := updated.Metadata["gc.control_epoch"]; got != "1" {
+		t.Fatalf("epoch = %q, want untouched 1", got)
+	}
+}
+
+func TestAttachRejectsFenceMetadataBeforeConditionalStoreAccess(t *testing.T) {
+	base := newStampedAttachStore(t, gate.Auto)
+	root := setupWorkflow(t, base)
+	control := setupWorkflowChild(t, base, root.ID, "Control")
+	if err := base.SetMetadata(control.ID, beadmeta.ControlEpochMetadataKey, "1"); err != nil {
+		t.Fatalf("seed epoch: %v", err)
+	}
+	before, err := base.ListOpen()
+	if err != nil {
+		t.Fatalf("ListOpen before: %v", err)
+	}
+	depsBefore, err := base.DepList(control.ID, "down")
+	if err != nil {
+		t.Fatalf("DepList before: %v", err)
+	}
+	recording := beadstest.NewRecordingStore(base)
+	store := &attachPreAdmissionAccessStore{Store: recording}
+
+	_, err = Attach(context.Background(), store, makeWorkflowRecipe("attempt", "run"), control.ID, AttachOptions{
+		IdempotencyKey: "attempt:1",
+		ExpectedEpoch:  1,
+		RootMetadata: map[string]string{
+			beadmeta.AttachFencePendingMetadataKey: "false",
+		},
+	})
+	if err == nil {
+		t.Fatal("Attach accepted protected fence metadata")
+	}
+	if store.readCalls != 0 || len(recording.Calls()) != 0 {
+		t.Fatalf("Attach performed store access before rejection: reads=%d writes=%#v", store.readCalls, recording.Calls())
+	}
+	after, listErr := base.ListOpen()
+	if listErr != nil {
+		t.Fatalf("ListOpen after: %v", listErr)
+	}
+	if !reflect.DeepEqual(after, before) {
+		t.Fatalf("protected fence metadata mutated beads:\nbefore=%#v\nafter=%#v", before, after)
+	}
+	depsAfter, depErr := base.DepList(control.ID, "down")
+	if depErr != nil {
+		t.Fatalf("DepList after: %v", depErr)
+	}
+	if !reflect.DeepEqual(depsAfter, depsBefore) {
+		t.Fatalf("protected fence metadata mutated routes/deps: before=%#v after=%#v", depsBefore, depsAfter)
+	}
+	updatedControl, getErr := base.Get(control.ID)
+	if getErr != nil {
+		t.Fatalf("Get control after: %v", getErr)
+	}
+	if got := updatedControl.Metadata[beadmeta.ControlEpochMetadataKey]; got != "1" {
 		t.Fatalf("epoch = %q, want untouched 1", got)
 	}
 }
