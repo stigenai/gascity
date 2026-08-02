@@ -1542,6 +1542,9 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 			if strings.TrimSpace(b.Assignee) != "" {
 				continue
 			}
+			if claimQueuedBehindHead(b) {
+				continue
+			}
 			template := controllerDemandRouteTarget(cfg, b, group.templates)
 			if _, ok := group.templates[template]; !ok {
 				continue
@@ -1589,6 +1592,25 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 		}
 	}
 	return counts, demand, partialTemplates, errs
+}
+
+// claimQueuedBehindHead reports whether route-claim-watch has already decided
+// this bead is not the head of its target's claim queue.
+//
+// Such a bead is unclaimable by construction: gc hook --claim hands the target
+// its head item, so a fresh session created for a queued bead finds nothing it
+// may take and aborts before creation_complete. Counting it as pool demand
+// therefore produces a create that cannot succeed, and because the create
+// budget is per-tick fair-share rather than cumulative, the next tick simply
+// tries again — 167 times over four hours for ib-izxdw on 2026-08-01, and
+// 1,447 aborted creates across five beads that day. Nothing was wrong with the
+// city; three beads were waiting their turn and gc could not see that.
+//
+// Self-clearing by design: when the head is worked, route-claim-watch moves
+// this bead to head and drops the queued state, and demand resumes on the next
+// tick. Nothing here needs to time out or be reset.
+func claimQueuedBehindHead(b beads.Bead) bool {
+	return strings.TrimSpace(b.Metadata[beadmeta.ClaimStateMetadataKey]) == beadmeta.ClaimStateQueued
 }
 
 func mergeScaleCheckDemand(existing, incoming scaleCheckDemand, count int) scaleCheckDemand {
