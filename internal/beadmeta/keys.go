@@ -295,6 +295,21 @@ const (
 	ClaimQueueReasonMetadataKey = "claim_queue_reason"
 )
 
+// CreateFailureReasonMetadataKey records WHY a session create failed, on the
+// session bead, before it is rolled back and closed.
+//
+// Without it a failed create persists only state="failed-create" and the
+// canonical close reason "session create failed: aborted before
+// creation_complete" — the same eleven words for a provider error, a cold-start
+// timeout, and an unclaimable bead. 2,209 of these were written on 2026-08-01
+// and none of them said anything, so the cause had to be reconstructed from
+// timing correlations across two days and three wrong hypotheses (auth expiry,
+// slot contention, an environmental fault) before the real one.
+//
+// Diagnostic only: nothing branches on this value, so an unrecognized or
+// truncated string costs nothing.
+const CreateFailureReasonMetadataKey = "create_failure_reason"
+
 // ClaimStateQueued is the one claim state that means "this bead is not
 // deliverable right now, and will become deliverable without anyone spawning
 // anything for it" — the bead ahead of it in its target's queue is being
