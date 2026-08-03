@@ -286,11 +286,20 @@ func driftCheckEnv(t *testing.T, supervisorBuildID string) (cityPath string, res
 // never verifies) fail fast instead of waiting the full production
 // driftReadyTimeout — pollDelegatedRestartVerified polls until that budget
 // expires before reporting the last obstacle.
+// shrinkDriftReadyTimeout shortens both post-restart waits so a test asserting
+// an elapsed bound is not paying either one in full. They are separate
+// constants — NFR-2 governs driftReadyTimeout, while a systemd-delegated
+// replacement is allowed to take longer — but every caller here wants the same
+// thing: do not spend the real budget proving a restart did not happen.
 func shrinkDriftReadyTimeout(t *testing.T) {
 	t.Helper()
-	old := driftReadyTimeout
+	oldReady, oldDelegated := driftReadyTimeout, driftDelegatedVerifyTimeout
 	driftReadyTimeout = 300 * time.Millisecond
-	t.Cleanup(func() { driftReadyTimeout = old })
+	driftDelegatedVerifyTimeout = 300 * time.Millisecond
+	t.Cleanup(func() {
+		driftReadyTimeout = oldReady
+		driftDelegatedVerifyTimeout = oldDelegated
+	})
 }
 
 // TestRunStartDriftCheck_RestartReturnsContinue pins the load-bearing

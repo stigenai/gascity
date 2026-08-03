@@ -174,9 +174,27 @@ func printDriftReport(w io.Writer, r driftReport) {
 
 // driftReadyTimeout caps how long PollReady waits after a restart for
 // the new supervisor to come up. Five seconds matches NFR-2 in the
-// architect's brief. It also caps pollDelegatedRestartVerified's wait for
-// a delegated restart to land its replacement.
+// architect's brief.
 var driftReadyTimeout = 5 * time.Second
+
+// driftDelegatedVerifyTimeout caps pollDelegatedRestartVerified instead.
+//
+// This was driftReadyTimeout, and sharing was the bug: NFR-2 bounds how long
+// we wait for a supervisor we just started ourselves, while this waits on a
+// systemd job that is explicitly allowed to outlive the CLI's own
+// delegatedSystemctlJobTimeout — the late-replacement case the poll exists
+// for. Five seconds is only a few probes at supervisorReadyPollInterval, so
+// under load the poll gave up before the replacement landed and printed
+// "supervisor was not replaced ... stop it with 'gc supervisor stop'" about a
+// restart that was still in flight, which is worse than slow: it aims the
+// operator at the wrong remedy. Caught by
+// TestRunStartDriftCheck_DelegatedTryRestartTimeoutThenReplacementSucceeds
+// failing at 5.35s under the gate while passing alone.
+//
+// Ten seconds is the TESTING.md exec floor, for its stated reason. Nothing
+// waits this long when the restart is prompt: the poll returns the instant it
+// observes replacement plus drift-clearance.
+var driftDelegatedVerifyTimeout = 10 * time.Second
 
 // driftVerifyProbeTimeout bounds each supervisor Status probe inside
 // pollDelegatedRestartVerified's post-restart verification poll.
@@ -363,8 +381,9 @@ func runStartDriftCheck(cityPath string, stdout, stderr io.Writer) (int, bool) {
 			// answers from whatever serves /health — would then misreport "was
 			// not replaced" before the late replacement lands. Poll for genuine
 			// replacement *and* drift-clearance evidence until it is observed
-			// or driftReadyTimeout expires, then surface the last obstacle.
-			if msg := pollDelegatedRestartVerified(baseURL, pid, status.BuildID, commit, delegation, driftReadyTimeout); msg != "" {
+			// or driftDelegatedVerifyTimeout expires, then surface the last
+			// obstacle.
+			if msg := pollDelegatedRestartVerified(baseURL, pid, status.BuildID, commit, delegation, driftDelegatedVerifyTimeout); msg != "" {
 				fmt.Fprintln(stdout)             //nolint:errcheck // best-effort stdout
 				fmt.Fprintf(stderr, "%s\n", msg) //nolint:errcheck // best-effort stderr
 				return 1, false
