@@ -144,6 +144,16 @@ detect_memory_kib() {
 }
 
 cpus="$(detect_cpus)"
+
+# --cpus exposes the raw performance-core count so callers sizing a SECOND
+# concurrency knob derive it from the same detector instead of re-deriving it
+# (and re-acquiring the hw.ncpu bug). The job count below is memory-capped and
+# so cannot stand in for it.
+if [[ "${1:-}" == "--cpus" ]]; then
+  printf '%s\n' "$cpus"
+  exit 0
+fi
+
 memory_kib="$(detect_memory_kib || true)"
 jobs="$cpus"
 
