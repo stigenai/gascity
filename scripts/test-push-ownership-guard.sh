@@ -210,10 +210,18 @@ run_guard_zsh() {
     local session_id="${6:-}" session_name="${7:-}"
     (
         cd "$repo" || exit 1
-        PATH="$fbd:$PATH" GC_AGENT="$agent" GC_TEMPLATE="$template" \
+        # zsh runs its startup files even for -c, and a PATH-rewriting
+        # ~/.zshenv (nix-managed dev boxes) REPLACES the exported PATH
+        # outright, silently dropping $fbd. The guard then resolves the
+        # deployer's real bd against this throwaway repo's synthetic bead id
+        # and blocks, failing the test for an environment reason. Re-prepend
+        # inside zsh, after startup has run, so the fake bd survives. The
+        # outer PATH stays for shells that do not rewrite it.
+        POG_FAKE_BD="$fbd" \
+            PATH="$fbd:$PATH" GC_AGENT="$agent" GC_TEMPLATE="$template" \
             GC_SESSION_ID="$session_id" GC_SESSION_NAME="$session_name" \
             POG_TIMEOUT_SECONDS="$pog_timeout" LIB="$LIB" \
-            zsh -c '. "$LIB"; assert_bead_still_claimed'
+            zsh -c 'PATH="$POG_FAKE_BD:$PATH"; . "$LIB"; assert_bead_still_claimed'
     )
 }
 
