@@ -4592,8 +4592,14 @@ func TestStopManagedCityForcesCleanupAfterTimeout(t *testing.T) {
 	var stderr bytes.Buffer
 	start := time.Now()
 	err := stopManagedCity(mc, cityPath, &stderr)
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Fatalf("stopManagedCity took %s, want bounded timeout", elapsed)
+	// Every timeout above is 20ms, so unlike the sibling test there is no long
+	// timeout to discriminate against — the claim here is only that the forced
+	// cleanup path TERMINATES instead of hanging. A 10s ceiling says that just
+	// as well as 500ms, without also requiring an idle machine: this call forks
+	// the spy script, and under the push gate's shard fan-out it overran 500ms
+	// while behaving correctly.
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("stopManagedCity took %s, want it bounded rather than hanging", elapsed)
 	}
 	if err == nil {
 		t.Fatal("stopManagedCity err = nil, want non-nil because city never exited")
@@ -4697,8 +4703,19 @@ func TestStopManagedCityDoesNotUseStartupOrDriftTimeouts(t *testing.T) {
 	var stderr bytes.Buffer
 	start := time.Now()
 	err := stopManagedCity(mc, cityPath, &stderr)
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Fatalf("stopManagedCity took %s, want shutdown-timeout bound", elapsed)
+	// The claim is that the 20ms ShutdownTimeout bounded this call rather than
+	// StartupTimeout (3m) or DriftDrainTimeout (2m). Any ceiling far below two
+	// minutes settles that; 10s discriminates by 12x and does not also depend
+	// on the machine being idle. The old 500ms bound bought no extra
+	// discriminating power and did depend on it — stopManagedCity forks the spy
+	// script, so under the push gate's shard fan-out it overran 500ms while the
+	// code was behaving correctly.
+	//
+	// The mechanism itself is asserted directly a few lines below: stderr must
+	// name "20ms". That check is what has teeth here; this one only rules out
+	// the two long timeouts.
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("stopManagedCity took %s, want a bound far below DriftDrainTimeout=2m/StartupTimeout=3m", elapsed)
 	}
 	if err == nil {
 		t.Fatal("stopManagedCity err = nil, want non-nil because city never exited")

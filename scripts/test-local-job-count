@@ -22,7 +22,17 @@ detect_cpus() {
     return
   fi
 
-  nproc 2>/dev/null ||
+  # Apple Silicon first: hw.ncpu counts efficiency cores alongside performance
+  # ones and nproc (coreutils, via nix) agrees with it, so a 4P/6E machine
+  # reports 10 and the fan-out lands ~28 concurrent packages on 4 fast cores.
+  # macOS then schedules the surplus onto E-cores, where a fork+exec that costs
+  # 0.10s costs more than 10s — measured, not estimated: TestRunConditionPass
+  # runs a two-line `#!/bin/sh echo ok` in 0.12s standalone and blew a 10s
+  # deadline under the gate. Deadlines cannot absorb 100x, so count the cores
+  # that actually do this work. Absent on Intel Macs and on Linux, where the
+  # existing probes are already right.
+  sysctl -n hw.perflevel0.logicalcpu 2>/dev/null ||
+    nproc 2>/dev/null ||
     getconf _NPROCESSORS_ONLN 2>/dev/null ||
     sysctl -n hw.ncpu 2>/dev/null ||
     printf '8\n'
@@ -134,6 +144,16 @@ detect_memory_kib() {
 }
 
 cpus="$(detect_cpus)"
+
+# --cpus exposes the raw performance-core count so callers sizing a SECOND
+# concurrency knob derive it from the same detector instead of re-deriving it
+# (and re-acquiring the hw.ncpu bug). The job count below is memory-capped and
+# so cannot stand in for it.
+if [[ "${1:-}" == "--cpus" ]]; then
+  printf '%s\n' "$cpus"
+  exit 0
+fi
+
 memory_kib="$(detect_memory_kib || true)"
 jobs="$cpus"
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/gastownhall/gascity/internal/citylayout"
+	"github.com/gastownhall/gascity/internal/pathutil"
 )
 
 type cityDiscoveryOptions struct {
@@ -35,10 +36,12 @@ func findCityWithOptions(dir string, opts cityDiscoveryOptions) (string, error) 
 			// cityPath-derived store scopes fail the native-store identity
 			// gate ("database project_id could not be confirmed") and every
 			// command degrades to the bd-subprocess fallback.
-			if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-				return resolved, nil
-			}
-			return dir, nil
+			// Canonical form, not a bare EvalSymlinks: this value becomes
+			// cityPath for the whole process and is compared against config
+			// and rig paths, which never carry the darwin /private prefix.
+			// pathutil still follows a real symlink (~/gc -> /real/city); it
+			// only declines to expand /var and /tmp into their /private twins.
+			return pathutil.NormalizePathForCompare(dir), nil
 		}
 		if legacy == "" && !isCityDiscoveryCeiling(dir, opts.ceilingDirs) && citylayout.HasRuntimeRoot(dir) && !isIgnoredLegacyRuntimeRoot(dir, opts.ignoredLegacyRuntime) {
 			legacy = dir
@@ -162,6 +165,12 @@ func normalizeDiscoveryPath(path string) string {
 	// existing ancestor and re-append the remainder, so a configured-but-
 	// not-yet-created ceiling still normalizes consistently instead of
 	// silently dropping out of the comparison.
+	//
+	// Deliberately NOT pathutil.NormalizePathForCompare: this is an internal
+	// ceiling comparison where both sides pass through here, so the raw
+	// resolved form is self-consistent. Only findCity's return value, which
+	// escapes into cityPath and meets config paths, needs the /private
+	// collapse.
 	path = filepath.Clean(path)
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		return filepath.Clean(resolved)

@@ -15,8 +15,22 @@ import (
 const (
 	// detachedProbeMetadataKey is a work-bead metadata contract documented in
 	// engdocs/architecture/health-patrol.md. Values use tmux:<socket>:<session>.
-	detachedProbeMetadataKey    = beadmeta.DetachedMetadataKey
-	detachedProbeDefaultTimeout = time.Second
+	detachedProbeMetadataKey = beadmeta.DetachedMetadataKey
+	// detachedProbeDefaultTimeout bounds one `tmux has-session`. It races a
+	// subprocess start, so it takes the 10s exec floor from TESTING.md's test
+	// deadline rule — the rationale there (an operation that finishes in <1s
+	// idle but not under CPU saturation) applies to a busy town pod exactly as
+	// it does to CI.
+	//
+	// This is a correctness bound, not a latency knob. filterStrandedByDetached
+	// treats alive as suppress and BOTH error and timeout as preserve, so a
+	// probe that merely ran out of clock emits session.stranded against an
+	// agent that is alive — the false-liveness shape of the b02dc7f incident,
+	// and it fires precisely when the town is loaded enough to cause it. A
+	// genuinely wedged tmux still lands on preserve, so raising this trades
+	// only patrol latency in the rare hung case for the removal of a routine
+	// false alarm. It was 1s.
+	detachedProbeDefaultTimeout = 10 * time.Second
 	detachedProbeErrorThreshold = 3
 )
 

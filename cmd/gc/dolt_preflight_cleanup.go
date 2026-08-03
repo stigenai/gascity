@@ -16,9 +16,26 @@ import (
 
 var managedDoltPreflightCleanupFn = preflightManagedDoltCleanup
 
-const (
-	managedDoltProcTimeout = 1500 * time.Millisecond
-	managedDoltLsofTimeout = 3 * time.Second
+// Both bound a probe of who holds a socket — a /proc scan and an lsof fork —
+// so they take the 10s exec floor from TESTING.md's deadline rule for the same
+// reason the rule gives: the work finishes in milliseconds idle and does not
+// under CPU saturation.
+//
+// They fail OPEN, which is what makes the old 1.5s/3s dangerous rather than
+// merely slow. removeStaleManagedDoltSockets treats errManagedDoltOpenStateUnknown
+// as "skip this path", so a probe that only ran out of clock reads as "someone
+// might still hold it" and the socket survives — leaving exactly the stale
+// socket preflight-clean exists to clear, and leaving it right when the box is
+// busy enough that the next dolt start is already struggling. It surfaced as
+// TestDoltStatePreflightClean failing at 3.04s under the gate's fan-out while
+// passing alone. Preflight runs once at startup, not per tick, so a slower
+// worst case buys a correct answer cheaply.
+// var, not const, so a test asserting the bound can set the bound it asserts
+// instead of paying the production one — the same shape as driftReadyTimeout
+// and delegatedSystemctlJobTimeout.
+var (
+	managedDoltProcTimeout = 10 * time.Second
+	managedDoltLsofTimeout = 10 * time.Second
 )
 
 var (

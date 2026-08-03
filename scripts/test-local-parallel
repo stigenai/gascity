@@ -67,6 +67,28 @@ if ! [[ "$cmd_gc_total" =~ ^[0-9]+$ && "$cmd_gc_total" -gt 0 ]]; then
   exit 1
 fi
 
+# unit-core is one job to the scheduler above but builds and runs every package
+# except cmd/gc, and `go test` defaults -p to GOMAXPROCS. On a 4P/6E box that
+# is ten packages inside one of four concurrent job slots — the fan-out is
+# bounded, what it contains is not — and the surplus lands on efficiency cores,
+# where a fork+exec that costs 0.10s costs seconds. The cmd/gc shards need no
+# equivalent: each tests a single package, so -p does nothing for them.
+#
+# Bound it at the performance-core count, not at cores-per-job-slot. Dividing
+# by local_jobs was measured and rejected: it yields -p=1 here, and unit-core
+# then spends longer than the entire previous gate, because -p mostly gates
+# per-package build and link work rather than CPU time, so serializing 180
+# packages costs far more than the contention it removes. The point is to stop
+# one job claiming 10 packages on 4 usable cores, not to make it single-file.
+pkg_parallelism="${LOCAL_TEST_PKG_PARALLELISM:-}"
+if [[ -z "$pkg_parallelism" ]]; then
+  pkg_parallelism="$("$repo_root/scripts/test-local-job-count" --cpus)"
+fi
+if ! [[ "$pkg_parallelism" =~ ^[0-9]+$ && "$pkg_parallelism" -gt 0 ]]; then
+  echo "LOCAL_TEST_PKG_PARALLELISM must be a positive integer" >&2
+  exit 1
+fi
+
 gopath_val="$(go env GOPATH)"
 gocache_val="$(go env GOCACHE)"
 gomodcache_val="$(go env GOMODCACHE)"
@@ -88,7 +110,7 @@ add_fsys_compile_job() {
 
 add_unit_core_job() {
   add_job "unit-core" \
-    'GC_FAST_UNIT=1 go test $(go list ./... | grep -v '"'"'^github.com/gastownhall/gascity/cmd/gc$'"'"')'
+    "GC_FAST_UNIT=1 go test -p=${pkg_parallelism} \$(go list ./... | grep -v '^github.com/gastownhall/gascity/cmd/gc\$')"
 }
 
 # Runs as a direct shell job rather than through a `go test` wrapper because a

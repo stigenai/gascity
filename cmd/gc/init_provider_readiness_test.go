@@ -1732,6 +1732,7 @@ func TestCheckDoltAuthorIdentityReportsProbeErrorsSeparately(t *testing.T) {
 }
 
 func TestInitRunDoltConfigGetReportsExitStderrAsProbeError(t *testing.T) {
+	relaxInitRunVersionTimeout(t)
 	binDir := t.TempDir()
 	doltPath := filepath.Join(binDir, "dolt")
 	if err := os.WriteFile(doltPath, []byte("#!/bin/sh\necho 'unreadable global config' >&2\nexit 1\n"), 0o755); err != nil {
@@ -1754,7 +1755,24 @@ func TestInitRunDoltConfigGetReportsExitStderrAsProbeError(t *testing.T) {
 	}
 }
 
+// relaxInitRunVersionTimeout widens the version/config probe budget for one
+// test. These tests are hermetic — they put a stub `dolt` shell script on PATH,
+// so no real binary runs — but they still fork, and the production budget is
+// two seconds. Under the push gate's shard fan-out a fork loses that race and
+// the probe reports a timeout instead of the sentinel the test is asserting on.
+//
+// The production value stays two seconds. The narrowing counterpart already
+// exists: TestInitRunVersionTimesOutHungVersionCommand drops it to 50ms to
+// prove the timeout fires, so this seam is the file's established idiom.
+func relaxInitRunVersionTimeout(t *testing.T) {
+	t.Helper()
+	original := initRunVersionTimeout
+	initRunVersionTimeout = 2 * time.Minute
+	t.Cleanup(func() { initRunVersionTimeout = original })
+}
+
 func TestInitRunDoltConfigGetTreatsSilentEmptyExitAsMissingKey(t *testing.T) {
+	relaxInitRunVersionTimeout(t)
 	binDir := t.TempDir()
 	doltPath := filepath.Join(binDir, "dolt")
 	if err := os.WriteFile(doltPath, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {

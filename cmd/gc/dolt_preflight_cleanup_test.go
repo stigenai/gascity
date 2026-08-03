@@ -74,6 +74,16 @@ func TestFileOpenedByAnyProcessBoundsLsof(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
+	// The bound is this test's subject, so set it here rather than inherit
+	// production's. Production wants 10s — long enough that a loaded box does
+	// not read "lsof ran out of clock" as "nobody holds this socket" and skip
+	// a stale one. Waiting that out to prove a cutoff exists only makes the
+	// suite slower, and pinning the assertion to whatever production happens
+	// to use is what made this test fail when that value moved.
+	oldLsof := managedDoltLsofTimeout
+	managedDoltLsofTimeout = time.Second
+	t.Cleanup(func() { managedDoltLsofTimeout = oldLsof })
+
 	start := time.Now()
 	open, err := fileOpenedByAnyProcess(path)
 	if err != nil && !errors.Is(err, errManagedDoltOpenStateUnknown) {

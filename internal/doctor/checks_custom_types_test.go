@@ -31,10 +31,16 @@ func TestCustomTypesCheck_MissingTypes(t *testing.T) {
 	// defeating the assertion. Clearing GC_BEADS and the dolt connection
 	// vars prevents bd from connecting even if testenv.init() has not
 	// yet added them to its LeakVectorVars scrub list.
+	//
+	// BEADS_DOLT_SHARED_SERVER is in the list for a second reason: left set,
+	// `bd init` does not fall back to a private store, it fails outright with
+	// "port 3308 is in use by another project's dolt server". A developer
+	// running a shared server — the documented cross-machine sync setup — then
+	// sees this test fail for a reason that has nothing to do with type drift.
 	for _, key := range []string{
 		"BEADS_DIR", "BEADS_ACTOR", "GC_BEADS_SCOPE_ROOT",
 		"GC_BEADS", "BEADS_DOLT_SERVER_PORT", "GC_DOLT_HOST", "GC_DOLT_PORT",
-		"BEADS_DOLT_SERVER_HOST",
+		"BEADS_DOLT_SERVER_HOST", "BEADS_DOLT_SHARED_SERVER",
 	} {
 		t.Setenv(key, "")
 	}
@@ -87,7 +93,7 @@ func TestCustomTypesCheck_TableDrift(t *testing.T) {
 	for _, key := range []string{
 		"BEADS_DIR", "BEADS_ACTOR", "GC_BEADS_SCOPE_ROOT",
 		"GC_BEADS", "BEADS_DOLT_SERVER_PORT", "GC_DOLT_HOST", "GC_DOLT_PORT",
-		"BEADS_DOLT_SERVER_HOST",
+		"BEADS_DOLT_SERVER_HOST", "BEADS_DOLT_SHARED_SERVER",
 	} {
 		t.Setenv(key, "")
 	}

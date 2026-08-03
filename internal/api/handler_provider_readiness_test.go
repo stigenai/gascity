@@ -1519,6 +1519,29 @@ func assertGitHubCLIReadinessStatus(t *testing.T, h http.Handler, state State, w
 	}
 }
 
+// TestMain widens the probe subprocess budget for the whole package.
+//
+// These tests are already hermetic — providerProbePathEnv points at a temp dir
+// of stub executables, so no real CLI is invoked — but they still fork, and a
+// fork can lose the production five-second race to the scheduler when the local
+// push gate runs its shard fan-out. The failure then reads as probe_error,
+// which looks like a probe bug and is actually the runner starving.
+//
+// This was a per-test helper and that shape was the bug: it covered ten of the
+// thirty-odd forking tests here, so the gate still failed on the ones nobody
+// had remembered to opt in — GitHubCLIWithoutHostsFile and
+// GitHubCLIAuthStatusFallback among them. Opting out is a decision; opting in
+// is something you forget. Nothing in this package asserts the probe deadline
+// (providerProbeTimeout appears in no other test), so a package-wide default
+// costs no coverage: a test that ever needs a real bound sets it itself, which
+// reads as the deliberate act it should be.
+//
+// The deadline stays five seconds in production.
+func TestMain(m *testing.M) {
+	providerProbeTimeout = 2 * time.Minute
+	os.Exit(m.Run())
+}
+
 func unsetGitHubCLITokenEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("GH_TOKEN", "")

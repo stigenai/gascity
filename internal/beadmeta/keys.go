@@ -273,6 +273,55 @@ const (
 	MergeStrategyMetadataKey = "merge_strategy"
 )
 
+// Claim delivery keys: written by the city's route-claim-watch order (a Python
+// order in stigen-gastown), never by gc. They record how a routed bead's
+// delivery to its target is going. gc had no reader for any of them, which is
+// how the 2026-08-01 spawn storms happened: route-claim-watch correctly marked
+// beads it knew were undeliverable, and the desired-state builder kept
+// generating pool demand for them anyway, ~2 creates/min for hours.
+//
+// Un-prefixed for the same reason as the families above — the on-store strings
+// are load-bearing and owned by the writer, so they are declared here rather
+// than renamed. Intentionally NOT in KnownMetadataKeys; the drift guard only
+// covers the gc. namespace.
+const (
+	// ClaimStateMetadataKey is the delivery state route-claim-watch assigns:
+	// "queued" (something else is at the head of this target's queue),
+	// "claimed", "overdue", or "escalated".
+	ClaimStateMetadataKey = "claim_state"
+
+	// ClaimQueueReasonMetadataKey explains a "queued" state: "behind_head" or
+	// "target_busy". Diagnostic only; ClaimStateMetadataKey is the decision.
+	ClaimQueueReasonMetadataKey = "claim_queue_reason"
+)
+
+// CreateFailureReasonMetadataKey records WHY a session create failed, on the
+// session bead, before it is rolled back and closed.
+//
+// Without it a failed create persists only state="failed-create" and the
+// canonical close reason "session create failed: aborted before
+// creation_complete" — the same eleven words for a provider error, a cold-start
+// timeout, and an unclaimable bead. 2,209 of these were written on 2026-08-01
+// and none of them said anything, so the cause had to be reconstructed from
+// timing correlations across two days and three wrong hypotheses (auth expiry,
+// slot contention, an environmental fault) before the real one.
+//
+// Diagnostic only: nothing branches on this value, so an unrecognized or
+// truncated string costs nothing.
+const CreateFailureReasonMetadataKey = "create_failure_reason"
+
+// ClaimStateQueued is the one claim state that means "this bead is not
+// deliverable right now, and will become deliverable without anyone spawning
+// anything for it" — the bead ahead of it in its target's queue is being
+// worked, and that same session picks this up when it finishes.
+//
+// It is deliberately the only state treated as a demand suppressor. "overdue"
+// and "escalated" also mean delivery is failing, but suppressing on those would
+// deadlock: nothing would ever spawn for the bead again, so nothing could ever
+// claim it and clear the state. Bounding that case needs an attempt budget that
+// parks the bead visibly, not a silent skip.
+const ClaimStateQueued = "queued"
+
 // OptionMetadataPrefix is the dynamic non-"gc."-prefixed key prefix under
 // which provider option choices are stored as opt_<OptionsSchema key> (e.g.
 // opt_model, opt_effort) on session and work beads. The suffix is open-world

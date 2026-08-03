@@ -110,6 +110,20 @@ var (
 
 var providerProbeCacheTTL = 2 * time.Second
 
+// providerProbeTimeout bounds a single `claude auth status` / `gh auth status`
+// subprocess. Five seconds is a generous budget for a real CLI answering from
+// local state, and it stays five seconds in production.
+//
+// It is a var only so tests can widen it. The probe tests are already hermetic
+// — they point providerProbePathEnv at a temp dir of stub executables — but
+// they still fork a process, and under the local push gate's shard fan-out
+// (LOCAL_TEST_JOBS derives 7 on a 10-core box, each running -p=4) a fork can
+// lose a five-second race to the scheduler and report probe_error. That is the
+// runner starving, not the code failing. Widening the bound in tests is the
+// honest fix; shrinking a real user-facing budget to suit a loaded CI box is
+// not.
+var providerProbeTimeout = 5 * time.Second
+
 type providerReadinessResponse struct {
 	Providers map[string]providerReadiness `json:"providers"`
 }
@@ -365,7 +379,7 @@ func probeClaude(ctx context.Context, homeDir string) providerProbeResult {
 		return providerProbeResult{status: probeStatusNotInstalled, detail: "claude executable not found in probe PATH"}
 	}
 
-	stdout, _, err := runProbeCommandWithEnv(ctx, homeDir, 5*time.Second, claudeProbeCommandEnv(), path, "auth", "status", "--json")
+	stdout, _, err := runProbeCommandWithEnv(ctx, homeDir, providerProbeTimeout, claudeProbeCommandEnv(), path, "auth", "status", "--json")
 	if err != nil && strings.TrimSpace(stdout) == "" {
 		return providerProbeResult{status: probeStatusProbeError, detail: "claude auth status failed before returning JSON"}
 	}
@@ -585,7 +599,7 @@ func probeGitHubCLIAuthStatus(ctx context.Context, homeDir, ghPath string) provi
 	stdout, stderr, err := runProbeCommandWithEnv(
 		ctx,
 		homeDir,
-		5*time.Second,
+		providerProbeTimeout,
 		gitHubCLIProbeCommandEnv(),
 		ghPath,
 		"auth",

@@ -2768,11 +2768,46 @@ func commitStartResultTraced(
 // wake-failure accounting, plus the matching trace and log records. It is split
 // out of commitStartResultTraced to keep the success path legible; the caller
 // returns false after invoking it.
+// createFailureReasonMaxLen keeps a pathological provider error (a wrapped
+// stack, an echoed prompt) from bloating every failed session bead. The useful
+// part of a start error is its head.
+const createFailureReasonMaxLen = 400
+
+// recordCreateFailureReason stamps why this create failed onto the session bead
+// before the rollback closes it.
+//
+// Written here rather than threaded through rollbackPendingCreate because this
+// is the only place the error exists: the rollback helpers take (info, store,
+// now, stderr) and are called from five sites, several with no error in scope.
+// It is a plain marker write outside rollbackPendingCreateClears' transaction on
+// purpose — that Tx encodes a documented write-ordering invariant between
+// last_woke_at, the close, and session_name, and a diagnostic string has no
+// business inside it. Worst case on a failed rollback is a reason stamped on a
+// bead that stays open one more tick, which is inert.
+func recordCreateFailureReason(info sessionpkg.Info, sessFront *sessionpkg.Store, err error, stderr io.Writer) {
+	if sessFront == nil || err == nil || strings.TrimSpace(info.ID) == "" {
+		return
+	}
+	reason := formatLifecycleError(err)
+	if len(reason) > createFailureReasonMaxLen {
+		reason = reason[:createFailureReasonMaxLen]
+	}
+	if writeErr := sessFront.SetMarker(info.ID, beadmeta.CreateFailureReasonMetadataKey, reason); writeErr != nil {
+		fmt.Fprintf(stderr, "session reconciler: recording create failure reason for %s: %v\n", info.ID, writeErr) //nolint:errcheck
+	}
+}
+
 func commitStartFailure(result startResult, sessFront *sessionpkg.Store, clk clock.Clock, rec events.Recorder, wave int, stderr io.Writer, trace *sessionReconcilerTraceCycle) {
 	info := result.prepared.candidate.info
 	name := result.prepared.candidate.name()
 	tp := result.prepared.candidate.tp
 	fmt.Fprintf(stderr, "session reconciler: starting %s: %s\n", name, formatLifecycleError(result.err)) //nolint:errcheck
+	if result.rollbackPending {
+		// Every arm below that rolls back closes the bead as failed-create, and
+		// that close reason is identical for all of them. Stamp the cause once,
+		// here, so it is present whichever arm fires.
+		recordCreateFailureReason(info, sessFront, result.err, stderr)
+	}
 	if reason := runtime.ProviderTerminalErrorReason(result.err.Error()); reason != "" {
 		// This runs on the async start goroutine, and this failure arm is terminal
 		// (logs + returns), so the write-returns-Info fold is discarded — never assign

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gastownhall/gascity/internal/pathutil"
 )
 
 // These tests pin the symlink-resolution behavior added to
@@ -90,11 +92,12 @@ func TestFindCityResolvesSymlinkedCityDir(t *testing.T) {
 		t.Skipf("symlinks unsupported on this platform: %v", err)
 	}
 
-	resolved, err := filepath.EvalSymlinks(realCity)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.Clean(resolved)
+	// Spell the expectation the way the package canonicalizes, not with a bare
+	// EvalSymlinks. Both name the same directory; on darwin EvalSymlinks also
+	// expands /var into /private/var, which findCity deliberately collapses so
+	// cityPath compares equal to config and rig paths. The assertion under test
+	// is still "the city-link was followed to the real city dir".
+	want := pathutil.NormalizePathForCompare(realCity)
 
 	got, err := findCity(link)
 	if err != nil {
