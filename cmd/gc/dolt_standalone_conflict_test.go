@@ -58,7 +58,24 @@ func startStandaloneBdDoltLikeProcess(t *testing.T, dataDir string) *exec.Cmd {
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatalf("Mkfifo(sql-server): %v", err)
 	}
-	cmd := exec.Command("bash", "-c", `exec -a dolt cat sql-server -- --data-dir "$1"`, "fake-dolt", dataDir)
+	// /bin/cat, not a PATH lookup. The whole trick here is `exec -a dolt`,
+	// which rewrites argv[0] so the process looks like a dolt sql-server to
+	// processLooksLikeDoltSQLServer. A coreutils MULTI-CALL binary dispatches
+	// on argv[0], so the rewrite makes it search for a program named "dolt",
+	// print `coreutils: unknown program 'dolt'`, and exit immediately — the
+	// process is already <defunct> by the time the wait loop inspects it, on
+	// every run. Nix and Homebrew both ship such a cat (here PATH cat resolves
+	// to nix .../coreutils-9.11/bin/cat). /bin/cat is the platform's own
+	// single-purpose cat and ignores argv[0].
+	catPath := "/bin/cat"
+	if st, statErr := os.Stat(catPath); statErr != nil || st.IsDir() {
+		resolved, lookErr := exec.LookPath("cat")
+		if lookErr != nil {
+			t.Skip("requires a cat binary for the argv[0]-rewrite fake")
+		}
+		catPath = resolved
+	}
+	cmd := exec.Command("bash", "-c", `exec -a dolt "$0" sql-server -- --data-dir "$1"`, catPath, dataDir)
 	cmd.Dir = dataDir
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
@@ -79,7 +96,10 @@ func startStandaloneBdDoltLikeProcess(t *testing.T, dataDir string) *exec.Cmd {
 		time.Sleep(10 * time.Millisecond)
 	}
 	args, _ := processArgs(cmd.Process.Pid)
-	t.Fatalf("fake dolt sql-server did not become inspectable; pid=%d args=%q", cmd.Process.Pid, args)
+	// args="<defunct>" means the fake exited rather than ran slowly: the usual
+	// cause is a cat that dispatches on argv[0] (see the catPath comment above),
+	// not load.
+	t.Fatalf("fake dolt sql-server did not become inspectable; pid=%d args=%q cat=%q", cmd.Process.Pid, args, catPath)
 	return cmd
 }
 
