@@ -1525,9 +1525,12 @@ func resolveStoreScopeRoot(cityPath, storePath string) string {
 	// native-store identity gate sees an unregistered scope and rejects it
 	// ("database project_id could not be confirmed"), silently degrading to the
 	// bd-subprocess fallback.
-	if resolved, err := filepath.EvalSymlinks(scopeRoot); err == nil {
-		scopeRoot = resolved
-	}
+	// normalizePathForCompare, not a bare EvalSymlinks: on darwin the resolved
+	// form of a temp or var path carries a /private prefix that the rest of the
+	// codebase canonicalizes away (pathutil.canonicalizePlatformPathAlias), so
+	// resolving here without it hands callers a scope root that compares unequal
+	// to every other path in the process.
+	scopeRoot = normalizePathForCompare(scopeRoot)
 	return scopeRoot
 }
 

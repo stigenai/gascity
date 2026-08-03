@@ -444,6 +444,13 @@ func extractBeadIDFromWorktreeName(cfg *config.City, name string) string {
 // isStrictlyUnderDir reports whether path is strictly contained within dir
 // (i.e., it is not dir itself and has dir as a prefix component).
 func isStrictlyUnderDir(dir, path string) bool {
+	// Normalize both sides first. dir arrives from config/city layout while
+	// path arrives from `git worktree list --porcelain`, and on darwin git
+	// reports the resolved /private form of a /var path. Comparing those raw
+	// makes filepath.Rel answer "..", so this guard silently vetoed every
+	// worktree the caller had already accepted via pathutil.PathWithin.
+	dir = pathutil.NormalizePathForCompare(dir)
+	path = pathutil.NormalizePathForCompare(path)
 	rel, err := filepath.Rel(dir, path)
 	if err != nil {
 		return false
