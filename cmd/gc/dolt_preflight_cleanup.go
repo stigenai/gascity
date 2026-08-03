@@ -30,7 +30,10 @@ var managedDoltPreflightCleanupFn = preflightManagedDoltCleanup
 // TestDoltStatePreflightClean failing at 3.04s under the gate's fan-out while
 // passing alone. Preflight runs once at startup, not per tick, so a slower
 // worst case buys a correct answer cheaply.
-const (
+// var, not const, so a test asserting the bound can set the bound it asserts
+// instead of paying the production one — the same shape as driftReadyTimeout
+// and delegatedSystemctlJobTimeout.
+var (
 	managedDoltProcTimeout = 10 * time.Second
 	managedDoltLsofTimeout = 10 * time.Second
 )
