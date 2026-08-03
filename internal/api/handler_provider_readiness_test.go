@@ -471,7 +471,6 @@ printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstPar
 	// every override before returning.
 	providerProbePathEnv = binDir
 	providerProbeCommandContext = exec.CommandContext
-	relaxProbeTimeoutForTest(t)
 	providerProbeCache = newCachedProviderProbeStore()
 	providerProbeCacheTTL = time.Hour
 	defer func() {
@@ -566,7 +565,6 @@ printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstPar
 	originalCacheTTL := providerProbeCacheTTL
 	providerProbePathEnv = binDir
 	providerProbeCommandContext = exec.CommandContext
-	relaxProbeTimeoutForTest(t)
 	providerProbeCache = newCachedProviderProbeStore()
 	providerProbeCacheTTL = time.Hour
 	defer func() {
@@ -622,7 +620,6 @@ func TestHandleProviderReadinessFreshBypassesCache(t *testing.T) {
 	originalCommandContext := providerProbeCommandContext
 	providerProbePathEnv = binDir
 	providerProbeCommandContext = exec.CommandContext
-	relaxProbeTimeoutForTest(t)
 	defer func() {
 		providerProbePathEnv = originalPathEnv
 		providerProbeCommandContext = originalCommandContext
@@ -761,7 +758,6 @@ printf '%s\n' '{"loggedIn":true,"authMethod":"oauth_token","apiProvider":"firstP
 	originalCommandContext := providerProbeCommandContext
 	providerProbePathEnv = binDir
 	providerProbeCommandContext = exec.CommandContext
-	relaxProbeTimeoutForTest(t)
 	defer func() {
 		providerProbePathEnv = originalPathEnv
 		providerProbeCommandContext = originalCommandContext
@@ -797,7 +793,6 @@ printf '%s\n' '{"loggedIn":true,"authMethod":"oauth_token","apiProvider":"firstP
 	originalCommandContext := providerProbeCommandContext
 	providerProbePathEnv = binDir
 	providerProbeCommandContext = exec.CommandContext
-	relaxProbeTimeoutForTest(t)
 	defer func() {
 		providerProbePathEnv = originalPathEnv
 		providerProbeCommandContext = originalCommandContext
@@ -823,7 +818,6 @@ printf '%s\n' '{"loggedIn":true,"authMethod":"oauth_token","apiProvider":"bedroc
 	originalCommandContext := providerProbeCommandContext
 	providerProbePathEnv = binDir
 	providerProbeCommandContext = exec.CommandContext
-	relaxProbeTimeoutForTest(t)
 	defer func() {
 		providerProbePathEnv = originalPathEnv
 		providerProbeCommandContext = originalCommandContext
@@ -849,7 +843,6 @@ printf '%s\n' '{"loggedIn":true,"authMethod":"apiKey","apiProvider":"firstParty"
 	originalCommandContext := providerProbeCommandContext
 	providerProbePathEnv = binDir
 	providerProbeCommandContext = exec.CommandContext
-	relaxProbeTimeoutForTest(t)
 	defer func() {
 		providerProbePathEnv = originalPathEnv
 		providerProbeCommandContext = originalCommandContext
@@ -875,7 +868,6 @@ printf '%s\n' '{"loggedIn":false,"authMethod":"claude.ai","apiProvider":"firstPa
 	originalCommandContext := providerProbeCommandContext
 	providerProbePathEnv = binDir
 	providerProbeCommandContext = exec.CommandContext
-	relaxProbeTimeoutForTest(t)
 	defer func() {
 		providerProbePathEnv = originalPathEnv
 		providerProbeCommandContext = originalCommandContext
@@ -901,7 +893,6 @@ printf '%s\n' 'not-json'
 	originalCommandContext := providerProbeCommandContext
 	providerProbePathEnv = binDir
 	providerProbeCommandContext = exec.CommandContext
-	relaxProbeTimeoutForTest(t)
 	defer func() {
 		providerProbePathEnv = originalPathEnv
 		providerProbeCommandContext = originalCommandContext
@@ -927,7 +918,6 @@ printf '%s\n' 'not-json'
 	originalCommandContext := providerProbeCommandContext
 	providerProbePathEnv = binDir
 	providerProbeCommandContext = exec.CommandContext
-	relaxProbeTimeoutForTest(t)
 	defer func() {
 		providerProbePathEnv = originalPathEnv
 		providerProbeCommandContext = originalCommandContext
@@ -1529,7 +1519,7 @@ func assertGitHubCLIReadinessStatus(t *testing.T, h http.Handler, state State, w
 	}
 }
 
-// relaxProbeTimeoutForTest widens the probe subprocess budget for one test.
+// TestMain widens the probe subprocess budget for the whole package.
 //
 // These tests are already hermetic — providerProbePathEnv points at a temp dir
 // of stub executables, so no real CLI is invoked — but they still fork, and a
@@ -1537,14 +1527,19 @@ func assertGitHubCLIReadinessStatus(t *testing.T, h http.Handler, state State, w
 // push gate runs its shard fan-out. The failure then reads as probe_error,
 // which looks like a probe bug and is actually the runner starving.
 //
-// What these tests assert is the status mapping, never the deadline; the
-// deadline itself stays five seconds in production. Timeout behavior has its
-// own coverage that sets the bound deliberately rather than inheriting it.
-func relaxProbeTimeoutForTest(t *testing.T) {
-	t.Helper()
-	original := providerProbeTimeout
+// This was a per-test helper and that shape was the bug: it covered ten of the
+// thirty-odd forking tests here, so the gate still failed on the ones nobody
+// had remembered to opt in — GitHubCLIWithoutHostsFile and
+// GitHubCLIAuthStatusFallback among them. Opting out is a decision; opting in
+// is something you forget. Nothing in this package asserts the probe deadline
+// (providerProbeTimeout appears in no other test), so a package-wide default
+// costs no coverage: a test that ever needs a real bound sets it itself, which
+// reads as the deliberate act it should be.
+//
+// The deadline stays five seconds in production.
+func TestMain(m *testing.M) {
 	providerProbeTimeout = 2 * time.Minute
-	t.Cleanup(func() { providerProbeTimeout = original })
+	os.Exit(m.Run())
 }
 
 func unsetGitHubCLITokenEnv(t *testing.T) {

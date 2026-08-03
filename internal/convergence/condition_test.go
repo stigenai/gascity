@@ -536,7 +536,7 @@ func TestRunConditionPass(t *testing.T) {
 		ArtifactDir: dir,
 	}
 
-	result := RunCondition(context.Background(), script, env, 5*time.Second, 0)
+	result := RunCondition(context.Background(), script, env, testutil.ExecRaceTimeout, 0)
 	if result.Outcome != GatePass {
 		t.Errorf("Outcome = %q, want %q", result.Outcome, GatePass)
 	}
@@ -565,7 +565,7 @@ func TestRunConditionFail(t *testing.T) {
 		ArtifactDir: dir,
 	}
 
-	result := RunCondition(context.Background(), script, env, 5*time.Second, 0)
+	result := RunCondition(context.Background(), script, env, testutil.ExecRaceTimeout, 0)
 	if result.Outcome != GateFail {
 		t.Errorf("Outcome = %q, want %q", result.Outcome, GateFail)
 	}
@@ -603,7 +603,7 @@ func TestRunConditionRetriesTextFileBusy(t *testing.T) {
 		<-closed
 	}()
 
-	result := RunCondition(context.Background(), script, ConditionEnv{CityPath: dir}, 5*time.Second, 0)
+	result := RunCondition(context.Background(), script, ConditionEnv{CityPath: dir}, testutil.ExecRaceTimeout, 0)
 	if result.Outcome != GatePass {
 		t.Fatalf("Outcome = %q, stderr = %q, want pass after text-file-busy retry", result.Outcome, result.Stderr)
 	}
@@ -635,7 +635,7 @@ func TestRunConditionUsesWorkDir(t *testing.T) {
 		ArtifactDir: cityDir,
 	}
 
-	result := RunCondition(context.Background(), script, env, 5*time.Second, 0)
+	result := RunCondition(context.Background(), script, env, testutil.ExecRaceTimeout, 0)
 	if result.Outcome != GatePass {
 		t.Fatalf("Outcome = %q, want %q (stderr=%q)", result.Outcome, GatePass, result.Stderr)
 	}
@@ -669,7 +669,7 @@ func TestRunConditionUsesStorePathAsDefaultWorkDir(t *testing.T) {
 		StorePath: storeDir,
 	}
 
-	result := RunCondition(context.Background(), script, env, 5*time.Second, 0)
+	result := RunCondition(context.Background(), script, env, testutil.ExecRaceTimeout, 0)
 	if result.Outcome != GatePass {
 		t.Fatalf("Outcome = %q, want %q (stderr=%q)", result.Outcome, GatePass, result.Stderr)
 	}
@@ -762,7 +762,7 @@ func TestRunConditionNotFound(t *testing.T) {
 		ArtifactDir: t.TempDir(),
 	}
 
-	result := RunCondition(context.Background(), "/nonexistent/script.sh", env, 5*time.Second, 0)
+	result := RunCondition(context.Background(), "/nonexistent/script.sh", env, testutil.ExecRaceTimeout, 0)
 	if result.Outcome != GateError {
 		t.Errorf("Outcome = %q, want %q", result.Outcome, GateError)
 	}
@@ -783,7 +783,7 @@ func TestRunConditionOutputCapture(t *testing.T) {
 		ArtifactDir: dir,
 	}
 
-	result := RunCondition(context.Background(), script, env, 5*time.Second, 0)
+	result := RunCondition(context.Background(), script, env, testutil.ExecRaceTimeout, 0)
 	if !strings.Contains(result.Stdout, "stdout-data") {
 		t.Errorf("Stdout = %q, want to contain 'stdout-data'", result.Stdout)
 	}
@@ -812,7 +812,7 @@ func TestRunConditionOutputTruncation(t *testing.T) {
 		ArtifactDir: dir,
 	}
 
-	result := RunCondition(context.Background(), script, env, 5*time.Second, 0)
+	result := RunCondition(context.Background(), script, env, testutil.ExecRaceTimeout, 0)
 	if result.Outcome != GatePass {
 		t.Errorf("Outcome = %q, want %q", result.Outcome, GatePass)
 	}
@@ -842,7 +842,7 @@ func TestRunConditionParentContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	result := RunCondition(ctx, script, env, 5*time.Second, 2)
+	result := RunCondition(ctx, script, env, testutil.ExecRaceTimeout, 2)
 	// Should get GateError (parent canceled), NOT GateTimeout.
 	if result.Outcome != GateError {
 		t.Errorf("Outcome = %q, want %q (parent context canceled)", result.Outcome, GateError)
@@ -870,7 +870,7 @@ func TestRunConditionEnvVarsAvailable(t *testing.T) {
 		ArtifactDir: dir,
 	}
 
-	result := RunCondition(context.Background(), script, env, 5*time.Second, 0)
+	result := RunCondition(context.Background(), script, env, testutil.ExecRaceTimeout, 0)
 	if result.Outcome != GatePass {
 		t.Fatalf("Outcome = %q, want pass; stderr: %s", result.Outcome, result.Stderr)
 	}
