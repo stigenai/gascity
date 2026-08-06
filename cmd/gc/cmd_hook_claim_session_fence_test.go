@@ -106,10 +106,10 @@ func TestHookCommandClaimStaleSessionDrainsBeforeWorkQuery(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := cmdHookWithOptions(nil, hookCommandOptions{Claim: true, JSON: true}, &stdout, &stderr)
 
-	// Without --drain-ack the refusal is still terminal (exit 1) but now carries a
-	// schema-backed drain record instead of empty stdout.
-	if code != 1 {
-		t.Fatalf("code = %d, want 1; stdout=%q stderr=%s", code, stdout.String(), stderr.String())
+	// The refusal is terminal but, like every ok:true --json drain, exits 0 (rc
+	// follows the envelope, gt-jb6) and carries a schema-backed drain record.
+	if code != 0 {
+		t.Fatalf("code = %d, want 0 (ok:true JSON drain); stdout=%q stderr=%s", code, stdout.String(), stderr.String())
 	}
 	var result hookClaimJSONResult
 	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &result); err != nil {
@@ -163,8 +163,8 @@ func TestHookCommandClaimEligibleStatesReachWorkQuery(t *testing.T) {
 			if strings.Contains(stderr.String(), "refusing stale session") {
 				t.Fatalf("eligible %s session was refused as stale: %s", state, stderr.String())
 			}
-			if code != 1 {
-				t.Fatalf("code = %d, want 1 (JSON no-work drain without --drain-ack); stderr=%s", code, stderr.String())
+			if code != 0 {
+				t.Fatalf("code = %d, want 0 (JSON no-work drain without --drain-ack); stderr=%s", code, stderr.String())
 			}
 			var result hookClaimJSONResult
 			if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &result); err != nil {
@@ -201,8 +201,8 @@ func TestHookCommandClaimEmptyLegacyStateReachesWorkQuery(t *testing.T) {
 	if strings.Contains(stderr.String(), "refusing stale session") {
 		t.Fatalf("empty-legacy-state session was refused as stale: %s", stderr.String())
 	}
-	if code != 1 {
-		t.Fatalf("code = %d, want 1 (JSON no-work drain without --drain-ack); stderr=%s", code, stderr.String())
+	if code != 0 {
+		t.Fatalf("code = %d, want 0 (JSON no-work drain without --drain-ack); stderr=%s", code, stderr.String())
 	}
 	var result hookClaimJSONResult
 	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &result); err != nil {
@@ -239,8 +239,8 @@ func TestHookCommandClaimTokenlessRuntimeSkipsFence(t *testing.T) {
 	if strings.Contains(stderr.String(), "refusing stale session") {
 		t.Fatalf("token-less runtime was refused by the fence: %s", stderr.String())
 	}
-	if code != 1 {
-		t.Fatalf("code = %d, want 1 (JSON no-work drain without --drain-ack); stderr=%s", code, stderr.String())
+	if code != 0 {
+		t.Fatalf("code = %d, want 0 (JSON no-work drain without --drain-ack); stderr=%s", code, stderr.String())
 	}
 	var result hookClaimJSONResult
 	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &result); err != nil {
@@ -269,8 +269,8 @@ func TestHookCommandClaimAbsentSessionBeadDrainsStale(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := cmdHookWithOptions(nil, hookCommandOptions{Claim: true, JSON: true}, &stdout, &stderr)
 
-	if code != 1 {
-		t.Fatalf("code = %d, want 1; stdout=%q stderr=%s", code, stdout.String(), stderr.String())
+	if code != 0 {
+		t.Fatalf("code = %d, want 0; stdout=%q stderr=%s", code, stdout.String(), stderr.String())
 	}
 	var result hookClaimJSONResult
 	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &result); err != nil {
@@ -321,8 +321,8 @@ func TestHookCommandClaimFailsOpenOnSessionStoreError(t *testing.T) {
 	if !strings.Contains(stderr.String(), "session fence unavailable") {
 		t.Fatalf("stderr = %q, want fence-unavailable diagnostic", stderr.String())
 	}
-	if code != 1 {
-		t.Fatalf("code = %d, want 1 (JSON no-work drain without --drain-ack)", code)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0 (JSON no-work drain without --drain-ack)", code)
 	}
 }
 
@@ -495,8 +495,9 @@ func TestWriteHookClaimDrainStaleSessionWithDrainAck(t *testing.T) {
 }
 
 // TestWriteHookClaimDrainDoesNotAckWhenNotRequested proves the drain path never
-// runs drain-ack unless --drain-ack was requested, and returns the historical
-// exit 1 for an unacknowledged drain.
+// runs drain-ack unless --drain-ack was requested, and that a --json drain
+// still exits 0 without --drain-ack: rc follows the ok:true envelope (gt-jb6),
+// so the only thing --drain-ack changes is whether the ack side effect runs.
 func TestWriteHookClaimDrainDoesNotAckWhenNotRequested(t *testing.T) {
 	fakeAck := func(io.Writer) error {
 		t.Fatalf("drain-ack must not run without --drain-ack")
@@ -504,8 +505,8 @@ func TestWriteHookClaimDrainDoesNotAckWhenNotRequested(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	code := writeHookClaimDrain(hookClaimReasonStaleSession, true, false, fakeAck, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("code = %d, want 1 when drain is not acknowledged", code)
+	if code != 0 {
+		t.Fatalf("code = %d, want 0 (ok:true JSON drain without --drain-ack)", code)
 	}
 	var result hookClaimJSONResult
 	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &result); err != nil {
@@ -555,8 +556,8 @@ func TestHookCommandClaimStaleSessionMissingTemplateDrainsBeforeAgentResolution(
 	var stdout, stderr bytes.Buffer
 	code := cmdHookWithOptions(nil, hookCommandOptions{Claim: true, JSON: true}, &stdout, &stderr)
 
-	if code != 1 {
-		t.Fatalf("code = %d, want 1; stdout=%q stderr=%s", code, stdout.String(), stderr.String())
+	if code != 0 {
+		t.Fatalf("code = %d, want 0; stdout=%q stderr=%s", code, stdout.String(), stderr.String())
 	}
 	var result hookClaimJSONResult
 	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &result); err != nil {
@@ -598,8 +599,8 @@ func TestHookCommandClaimStaleSessionSuspendedAgentDrainsBeforeSuspensionCheck(t
 	var stdout, stderr bytes.Buffer
 	code := cmdHookWithOptions(nil, hookCommandOptions{Claim: true, JSON: true}, &stdout, &stderr)
 
-	if code != 1 {
-		t.Fatalf("code = %d, want 1; stdout=%q stderr=%s", code, stdout.String(), stderr.String())
+	if code != 0 {
+		t.Fatalf("code = %d, want 0; stdout=%q stderr=%s", code, stdout.String(), stderr.String())
 	}
 	var result hookClaimJSONResult
 	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &result); err != nil {
@@ -646,8 +647,8 @@ func TestHookCommandClaimStaleSessionSuspendedCityDrainsBeforeSuspensionCheck(t 
 	var stdout, stderr bytes.Buffer
 	code := cmdHookWithOptions(nil, hookCommandOptions{Claim: true, JSON: true}, &stdout, &stderr)
 
-	if code != 1 {
-		t.Fatalf("code = %d, want 1; stdout=%q stderr=%s", code, stdout.String(), stderr.String())
+	if code != 0 {
+		t.Fatalf("code = %d, want 0; stdout=%q stderr=%s", code, stdout.String(), stderr.String())
 	}
 	var result hookClaimJSONResult
 	if err := json.Unmarshal(bytes.TrimSpace(stdout.Bytes()), &result); err != nil {

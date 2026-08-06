@@ -405,9 +405,13 @@ func writeHookClaimStaleSessionDrain(opts hookCommandOptions, stdout, stderr io.
 // terminal no-claim outcome: an idle no-work store, a claims-errored store, and a
 // refused stale session. For a --json caller it emits the schema-backed drain
 // line; when drainAck is set it first runs drainAckFn and marks the result
-// acknowledged. The exit code mirrors the historical contract — 0 once drain is
-// acknowledged, else 1 — so a non-drain-ack caller still reports action=drain
-// (a completed drain) rather than a bare failure.
+// acknowledged. The exit code follows the envelope (gt-jb6): the result is
+// ok:true, so a --json caller (which has read that ok:true) must not also see a
+// failure exit code, and a drain-ack caller has acknowledged a completed drain;
+// both exit 0. The two genuine-failure returns above (drain-ack or JSON write
+// error) are ok:false and correctly exit 1. A non-JSON claim that did not
+// acknowledge drain keeps the shell convention of exit 1 = "no work", matching
+// `gc hook` without --claim, which documents the same.
 func writeHookClaimDrain(reason string, jsonOut, drainAck bool, drainAckFn hookDrainAckFunc, stdout, stderr io.Writer) int {
 	result := hookClaimJSONResult{
 		SchemaVersion: "1",
@@ -429,7 +433,10 @@ func writeHookClaimDrain(reason string, jsonOut, drainAck bool, drainAckFn hookD
 			return 1
 		}
 	}
-	if drainAck {
+	// rc follows the envelope: ok:true drains must exit 0 for a --json caller
+	// (it read ok:true) or a drain-ack caller (it acknowledged the drain). A
+	// non-JSON, non-drain-ack claim keeps exit 1 = "no work" (shell convention).
+	if drainAck || jsonOut {
 		return 0
 	}
 	return 1
