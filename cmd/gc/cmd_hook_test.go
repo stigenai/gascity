@@ -1630,8 +1630,8 @@ printf '[]'
 
 	var stdout, stderr bytes.Buffer
 	code := cmdHookWithOptions(nil, hookCommandOptions{Claim: true, JSON: true}, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("cmdHookWithOptions(--claim, suffixed pool worker) = %d, want 1 (no_work drain); stdout=%q stderr=%s", code, stdout.String(), stderr.String())
+	if code != 0 {
+		t.Fatalf("cmdHookWithOptions(--claim, suffixed pool worker) = %d, want 0 (ok:true no_work drain); stdout=%q stderr=%s", code, stdout.String(), stderr.String())
 	}
 	var result hookClaimJSONResult
 	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
@@ -1759,8 +1759,8 @@ func TestPoolWorkerIdentityCandidatesExcludeBareTemplate(t *testing.T) {
 		t.Fatalf("REGRESSION ga-80pen8: pool worker %q adopted %q's in_progress bead %q (%+v)",
 			workerReal, poolTemplate, result.BeadID, result)
 	}
-	if result.Action != "drain" || result.Reason != "no_work" || code != 1 {
-		t.Fatalf("want no_work drain, got action=%q reason=%q code=%d", result.Action, result.Reason, code)
+	if result.Action != "drain" || result.Reason != "no_work" || code != 0 {
+		t.Fatalf("want ok:true no_work drain (rc 0), got action=%q reason=%q code=%d", result.Action, result.Reason, code)
 	}
 }
 
