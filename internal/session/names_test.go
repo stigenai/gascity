@@ -1200,3 +1200,104 @@ func TestEnsureSessionAliasAvailable_DrainedNamedPredecessorBlocksLiveSelfOwnerC
 		t.Fatalf("ensureSessionAliasAvailable(different owner vs drained predecessor) = %v, want ErrSessionAliasExists", err)
 	}
 }
+
+// An open, asleep configured-named-session bead holding the canonical alias
+// via its ALIAS metadata (not its session_name) squats that alias forever in
+// front of a new session for the SAME identity. The alias==alias branch of
+// ensureSessionAliasAvailable had no self-owner staleness exception, unlike the
+// session_name branch above it, so it unconditionally returned
+// ErrSessionAliasExists ("already belongs to ..."). This is gt-av9 (root cause
+// of gt-8fc): a session that dies without closing its bead leaves a stale
+// alias bead, and the reconciler defers on every tick. Mirror the session_name
+// branch's #2885 exception: skip a superseded, non-running predecessor for the
+// SAME canonical identity when the requester is that identity's live holder.
+func TestEnsureSessionAliasAvailable_DrainedAliasPredecessorAllowsLiveSelfOwnerClaim(t *testing.T) {
+	store := beads.NewMemStore()
+
+	// Stale alias holder: a configured-named-session that died (asleep)
+	// without closing its bead, squatting the canonical alias via its alias
+	// metadata. session_name is deliberately distinct so this exercises the
+	// alias==alias branch, not the session_name branch above it.
+	if _, err := store.Create(beads.Bead{
+		Type:   BeadType,
+		Labels: []string{LabelSession},
+		Metadata: map[string]string{
+			"session_name":              "perrin-gc-1",
+			"alias":                     "perrin",
+			"session_origin":            "named",
+			"configured_named_session":  "true",
+			"configured_named_identity": "perrin",
+			"state":                     "asleep",
+			"sleep_reason":              "crashed",
+		},
+	}); err != nil {
+		t.Fatalf("Create(stale alias holder): %v", err)
+	}
+
+	live, err := store.Create(beads.Bead{
+		Type:   BeadType,
+		Labels: []string{LabelSession},
+		Metadata: map[string]string{
+			"session_name": "perrin-gc-live1",
+			"agent_name":   "perrin",
+			"template":     "perrin",
+			"pool_managed": "true",
+			"state":        "awake",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create(live typed session): %v", err)
+	}
+
+	// (1) The new live session, reclaiming its own canonical alias, is not
+	// blocked by its own stale alias bead — the reconciler can start it
+	// instead of deferring on "session alias already exists" forever.
+	if err := ensureSessionAliasAvailable(store, nil, "perrin", live.ID, "perrin"); err != nil {
+		t.Fatalf("ensureSessionAliasAvailable(live self-owner vs stale alias) = %v, want nil", err)
+	}
+
+	// (2a) A third party (different selfOwner) must still be refused: the
+	// stale bead still legitimately reserves the identity against anyone who
+	// is not that identity's own live holder.
+	if err := ensureSessionAliasAvailable(store, nil, "perrin", "gc-stranger", "siuan"); !errors.Is(err, ErrSessionAliasExists) {
+		t.Fatalf("ensureSessionAliasAvailable(different owner vs stale alias) = %v, want ErrSessionAliasExists", err)
+	}
+
+	// (2b) A LIVE (awake) holder still legitimately reserves its alias even
+	// against its own identity's reclaim — the exception is for non-running
+	// predecessors only.
+	if _, err := store.Create(beads.Bead{
+		Type:   BeadType,
+		Labels: []string{LabelSession},
+		Metadata: map[string]string{
+			"session_name":              "fael-gc-1",
+			"alias":                     "fael",
+			"configured_named_session":  "true",
+			"configured_named_identity": "fael",
+			"state":                     "awake",
+		},
+	}); err != nil {
+		t.Fatalf("Create(awake alias holder): %v", err)
+	}
+	if err := ensureSessionAliasAvailable(store, nil, "fael", "gc-other", "fael"); !errors.Is(err, ErrSessionAliasExists) {
+		t.Fatalf("ensureSessionAliasAvailable(self-owner vs AWAKE alias) = %v, want ErrSessionAliasExists", err)
+	}
+
+	// (2c) An asleep but ad-hoc (non-configured-named) alias holder is
+	// ambiguous and must still conflict — the exception recognizes only
+	// configured-named-session beads.
+	if _, err := store.Create(beads.Bead{
+		Type:   BeadType,
+		Labels: []string{LabelSession},
+		Metadata: map[string]string{
+			"session_name": "rand-gc-1",
+			"alias":        "rand",
+			"state":        "asleep",
+		},
+	}); err != nil {
+		t.Fatalf("Create(ad-hoc asleep alias holder): %v", err)
+	}
+	if err := ensureSessionAliasAvailable(store, nil, "rand", "gc-other2", "rand"); !errors.Is(err, ErrSessionAliasExists) {
+		t.Fatalf("ensureSessionAliasAvailable(self-owner vs ad-hoc asleep alias) = %v, want ErrSessionAliasExists", err)
+	}
+}

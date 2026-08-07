@@ -627,6 +627,20 @@ func ensureSessionAliasAvailable(store beads.Store, cfg *config.City, alias, sel
 			return fmt.Errorf("%w: %q conflicts with session name on %s", ErrSessionAliasExists, alias, b.ID)
 		}
 		if strings.TrimSpace(b.Metadata["alias"]) == alias {
+			// A superseded, non-running (asleep) configured-named-session
+			// predecessor holding the SAME canonical alias must not block
+			// that identity's own live holder from reclaiming it (gt-av9,
+			// mirroring the session_name branch's #2885 exception above).
+			// Same narrow scoping: only when (1) the claimant asserts the
+			// exact owner identity, (2) the holder is asleep rather than
+			// genuinely running, and (3) the holder is recognizably a
+			// configured-named-session bead. Does not resurrect or steal an
+			// alias from an unrelated, live, or ambiguous session.
+			if selfOwner != "" && selfOwner == alias &&
+				strings.TrimSpace(b.Metadata["state"]) == string(StateAsleep) &&
+				wasConfiguredNamedSession(b) {
+				continue
+			}
 			return fmt.Errorf("%w: %q already belongs to %s", ErrSessionAliasExists, alias, b.ID)
 		}
 		if strings.TrimSpace(b.Metadata["agent_name"]) == alias {
