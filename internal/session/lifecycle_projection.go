@@ -449,8 +449,15 @@ func lifecycleResetPendingReasonVisible(view LifecycleView, metadata map[string]
 	if isRunning == nil {
 		return false
 	}
+	// Mirror the awake-engine bridge (cmd/gc/compute_awake_bridge.go):
+	// continuation_reset_pending is only a live reset once it carries a
+	// committed timestamp (reset_committed_at). Without this gate the display
+	// reports reset-pending for a session the engine will not wake on that
+	// cause (gt-88n). restart_requested is its own wake reason and stays
+	// ungated, matching the bridge.
 	if strings.TrimSpace(metadata["restart_requested"]) != "true" &&
-		strings.TrimSpace(metadata["continuation_reset_pending"]) != "true" {
+		(strings.TrimSpace(metadata["continuation_reset_pending"]) != "true" ||
+			strings.TrimSpace(metadata["reset_committed_at"]) == "") {
 		return false
 	}
 	sessionName = strings.TrimSpace(sessionName)
@@ -475,8 +482,15 @@ func lifecycleResetPendingReasonVisibleInfo(view LifecycleView, info Info, isRun
 	if isRunning == nil {
 		return false
 	}
+	// Mirror the awake-engine bridge (cmd/gc/compute_awake_bridge.go):
+	// ContinuationResetPending is only a live reset once ResetCommittedAt is
+	// non-empty (the bridge gates the same field the same way). Without this
+	// gate the display reports reset-pending for a session the engine will not
+	// wake on that cause (gt-88n). RestartRequested is its own wake reason and
+	// stays ungated, matching the bridge.
 	if strings.TrimSpace(info.RestartRequested) != "true" &&
-		strings.TrimSpace(info.ContinuationResetPending) != "true" {
+		(strings.TrimSpace(info.ContinuationResetPending) != "true" ||
+			strings.TrimSpace(info.ResetCommittedAt) == "") {
 		return false
 	}
 	sessionName := strings.TrimSpace(info.SessionName)
