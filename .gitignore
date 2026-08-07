@@ -76,3 +76,20 @@ __pycache__/
 # Beads / Dolt files (added by bd init)
 .beads/proxieddb/
 .beads.backup-*
+
+# Gas City — entries gc itself writes into a checkout it manages.
+# Tracked here on purpose: `gc rig add` (rigGitignoreEntries) and the
+# project-MCP prestart (managedMCPGitignoreEntries, written into each agent's
+# work_dir) both append whatever is missing. When this repo is a Gas City rig
+# its own work_dir IS this checkout, so an absent entry means a tracked
+# .gitignore edit on every boot — and the town's canonical-checkout reconcile
+# refuses to fast-forward a tree with tracked changes, which crash-loops the
+# pod. Listing them makes those writers no-ops (ensureGitignoreEntries only
+# appends entries not already present).
+.beads/*
+!.beads/identity.toml
+.mcp.json
+.gemini/settings.json
+.codex/config.toml
+.cursor/mcp.json
+opencode.json
