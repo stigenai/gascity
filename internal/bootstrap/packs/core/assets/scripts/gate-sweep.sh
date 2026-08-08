@@ -18,6 +18,16 @@
 # Bead-type gates are skipped: in beads v1.0.2, checkBeadGate is
 # hard-coded to fail because cross-rig routing was removed upstream.
 # Restore `gc bd gate check --type=bead --escalate` when beads adds it back.
+#
+# Cross-rig (gt-15s): gh:pr / gh:run / timer gate beads live in the PER-RIG
+# stores — agents create them there — but this order is discovered at city
+# scope (core-pack orders are scanned at the city root in
+# orderdiscovery.ScanAll, so the order's Scope field cannot fan it out per
+# rig). A bare `gc bd gate check` is HQ-scoped and sees none of the per-rig
+# gates, so a merged PR's gate stays OPEN forever and the work bead stays
+# blocked. Walk HQ + every non-HQ rig explicitly, the way
+# renudge-stale-human-gates.sh does. `--rig` is a gc flag (not a bd flag),
+# so it routes through `gc bd`.
 set -euo pipefail
 
 # Trace bd invocations to $GC_BD_TRACE when set (no-op otherwise).
@@ -25,5 +35,55 @@ __SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 . "$__SCRIPT_DIR/_bd_trace.sh" "gate-sweep"
 
-gc bd gate check --type=timer --escalate
-gc bd gate check --type=gh --escalate || true
+CITY="${GC_CITY:-.}"
+PACK_STATE_DIR="${GC_PACK_STATE_DIR:-${GC_CITY_RUNTIME_DIR:-$CITY/.gc/runtime}/packs/core}"
+mkdir -p "$PACK_STATE_DIR"
+
+# Build the list of scopes to sweep: HQ (empty scope, bare gc bd) plus every
+# non-HQ rig. `gc bd gate check` without --rig is HQ-scoped from the city cwd,
+# so per-rig gates are invisible to a bare query — walk each rig explicitly
+# (gt-15s). The HQ entry is excluded from `gc rig list` (it reports the city
+# root as an hq=true pseudo-rig), matching renudge-stale-human-gates.sh. jq is
+# best-effort: without it the sweep falls back to HQ-only, which is the
+# pre-gt-15s behavior (no regression), not a silent partial sweep.
+SCOPES_FILE="$(mktemp "$PACK_STATE_DIR/.gate-sweep-scopes.XXXXXX")"
+trap 'rm -f "$SCOPES_FILE"' EXIT
+printf '\n' > "$SCOPES_FILE" # HQ scope: an empty line
+if command -v jq >/dev/null 2>&1; then
+    RIGS_JSON="$(gc rig list --json 2>/dev/null || true)"
+    if [ -n "$RIGS_JSON" ]; then
+        printf '%s' "$RIGS_JSON" \
+            | jq -r '(.rigs // [])[] | select(.hq != true) | .name' 2>/dev/null \
+            >> "$SCOPES_FILE" || true
+    fi
+else
+    echo "gate-sweep: jq not found in PATH; sweeping HQ only (per-rig gates will not resolve)" >&2
+fi
+
+# A scope with a resolved-but-merged gate and a scope with no gates at all
+# both cost a gate-list round-trip; gate-sweep's 30s cadence is what makes a
+# merged PR's gate drop within one tick, so we accept the per-scope fan-out.
+FAILED=0
+while IFS= read -r scope; do
+    RIG_ARG1=""
+    RIG_ARG2=""
+    if [ -n "$scope" ]; then
+        RIG_ARG1="--rig"
+        RIG_ARG2="$scope"
+    fi
+    # Isolated per scope (gcy-vb9): under set -e, one scope's timer-gate
+    # failure would otherwise abort every later-ordered scope's checks for
+    # this tick. Still loud-fails per #1734 (logged here, exit-1'd after the
+    # loop) instead of a blanket `|| true` that would silently mask a real
+    # bd regression.
+    if ! gc bd gate check ${RIG_ARG1:+"$RIG_ARG1" "$RIG_ARG2"} --type=timer --escalate; then
+        echo "gate-sweep: FAILED timer-gate check for scope '${scope:-HQ}' (will retry next sweep)" >&2
+        FAILED=$((FAILED + 1))
+    fi
+    gc bd gate check ${RIG_ARG1:+"$RIG_ARG1" "$RIG_ARG2"} --type=gh --escalate || true
+done < "$SCOPES_FILE"
+
+if [ "$FAILED" -gt 0 ]; then
+    echo "gate-sweep: $FAILED scope(s) failed timer-gate check (see above; will retry next sweep)" >&2
+    exit 1
+fi
