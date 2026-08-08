@@ -36,6 +36,8 @@ __SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$__SCRIPT_DIR/_bd_trace.sh" "gate-sweep"
 
 CITY="${GC_CITY:-.}"
+PACK_STATE_DIR="${GC_PACK_STATE_DIR:-${GC_CITY_RUNTIME_DIR:-$CITY/.gc/runtime}/packs/core}"
+mkdir -p "$PACK_STATE_DIR"
 
 # Build the list of scopes to sweep: HQ (empty scope, bare gc bd) plus every
 # non-HQ rig. `gc bd gate check` without --rig is HQ-scoped from the city cwd,
@@ -44,7 +46,7 @@ CITY="${GC_CITY:-.}"
 # root as an hq=true pseudo-rig), matching renudge-stale-human-gates.sh. jq is
 # best-effort: without it the sweep falls back to HQ-only, which is the
 # pre-gt-15s behavior (no regression), not a silent partial sweep.
-SCOPES_FILE="$(mktemp "${GC_PACK_STATE_DIR:-${GC_CITY_RUNTIME_DIR:-$CITY/.gc/runtime}/packs/core}/.gate-sweep-scopes.XXXXXX")"
+SCOPES_FILE="$(mktemp "$PACK_STATE_DIR/.gate-sweep-scopes.XXXXXX")"
 trap 'rm -f "$SCOPES_FILE"' EXIT
 printf '\n' > "$SCOPES_FILE" # HQ scope: an empty line
 if command -v jq >/dev/null 2>&1; then
