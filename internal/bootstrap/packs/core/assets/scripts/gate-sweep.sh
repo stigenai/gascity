@@ -63,6 +63,7 @@ fi
 # A scope with a resolved-but-merged gate and a scope with no gates at all
 # both cost a gate-list round-trip; gate-sweep's 30s cadence is what makes a
 # merged PR's gate drop within one tick, so we accept the per-scope fan-out.
+FAILED=0
 while IFS= read -r scope; do
     RIG_ARG1=""
     RIG_ARG2=""
@@ -70,6 +71,19 @@ while IFS= read -r scope; do
         RIG_ARG1="--rig"
         RIG_ARG2="$scope"
     fi
-    gc bd gate check ${RIG_ARG1:+"$RIG_ARG1" "$RIG_ARG2"} --type=timer --escalate
+    # Isolated per scope (gcy-vb9): under set -e, one scope's timer-gate
+    # failure would otherwise abort every later-ordered scope's checks for
+    # this tick. Still loud-fails per #1734 (logged here, exit-1'd after the
+    # loop) instead of a blanket `|| true` that would silently mask a real
+    # bd regression.
+    if ! gc bd gate check ${RIG_ARG1:+"$RIG_ARG1" "$RIG_ARG2"} --type=timer --escalate; then
+        echo "gate-sweep: FAILED timer-gate check for scope '${scope:-HQ}' (will retry next sweep)" >&2
+        FAILED=$((FAILED + 1))
+    fi
     gc bd gate check ${RIG_ARG1:+"$RIG_ARG1" "$RIG_ARG2"} --type=gh --escalate || true
 done < "$SCOPES_FILE"
+
+if [ "$FAILED" -gt 0 ]; then
+    echo "gate-sweep: $FAILED scope(s) failed timer-gate check (see above; will retry next sweep)" >&2
+    exit 1
+fi
