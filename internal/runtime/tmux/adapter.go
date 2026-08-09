@@ -889,9 +889,13 @@ func (o *tmuxStartOps) capturePane(name string, lines int) (string, error) {
 // start error is otherwise lost). It records the dead pane's exit status and
 // terminating signal alongside the captured pane output. Best-effort: a
 // disabled capture (empty runtimeDir) or any I/O error returns "" without
-// affecting startup. Returns the artifact path when written.
+// affecting startup — but the reason is logged to stderr (gcy-3bo: a silently
+// skipped diagnostic is what left the mayor startup failure with neither a
+// pane excerpt nor a diagnostic path to investigate). Returns the artifact
+// path when written.
 func (o *tmuxStartOps) recordStartCrash(name, paneContent string) string {
 	if o.runtimeDir == "" {
+		fmt.Fprintf(os.Stderr, "gc: session %q start-crash diagnostic unavailable: no runtime dir configured\n", name)
 		return ""
 	}
 	status, signal := o.tm.PaneDeadInfo(name)
@@ -912,10 +916,12 @@ func (o *tmuxStartOps) recordStartCrash(name, paneContent string) string {
 
 	dir := filepath.Join(o.runtimeDir, "sessions", name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "gc: session %q start-crash diagnostic unavailable: creating %s: %v\n", name, dir, err)
 		return ""
 	}
 	path := filepath.Join(dir, "start-stderr.log")
 	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "gc: session %q start-crash diagnostic unavailable: writing %s: %v\n", name, path, err)
 		return ""
 	}
 	return path
@@ -1086,6 +1092,11 @@ func ignoreDeadlineIfSessionAlive(ops startOps, name string, err error) error {
 func startupDeadSessionError(ops startOps, name string) error {
 	pane, err := ops.capturePane(name, startupPaneCaptureLines)
 	if err != nil {
+		// Logged rather than folded into the returned error: the existing
+		// fallback contract keeps that error free of internal plumbing detail
+		// (TestDoStartSession_FinalDeadPaneCaptureErrorFallsBack), but the
+		// reason should not vanish entirely — see recordStartCrash above.
+		fmt.Fprintf(os.Stderr, "gc: session %q start-crash pane capture failed: %v\n", name, err)
 		pane = ""
 	} else {
 		pane = strings.TrimSpace(pane)
