@@ -10290,6 +10290,63 @@ esac
 	}
 }
 
+// TestGateSweepWarnsAndFallsBackToHQOnlyWhenRigListFails pins the gcy-dgk
+// fix: `gc rig list --json` failing (non-zero exit) took the same silent
+// path as an empty or unparseable result — `2>/dev/null || true` on the gc
+// call and the jq pipe's own `2>/dev/null || true` swallowed every signal,
+// so the sweep quietly reverted to HQ-only with zero log line and zero
+// non-zero exit, unlike the jq-not-found branch which warns. Before this
+// fix, only jq's absence was diagnosable; a failing `gc rig list --json`
+// was not.
+func TestGateSweepWarnsAndFallsBackToHQOnlyWhenRigListFails(t *testing.T) {
+	binDir := t.TempDir()
+	bdLog := filepath.Join(t.TempDir(), "bd.log")
+	writeMaintenanceGCStub(t, filepath.Join(binDir, "gc"), `#!/bin/sh
+case "$1 $2 $3" in
+  "rig list --json")
+    echo "gc: simulated rig list failure" >&2
+    exit 1
+    ;;
+esac
+exit 0
+`)
+	writeExecutable(t, filepath.Join(binDir, "bd"), `#!/bin/sh
+printf '%s\n' "$*" >> "$BD_LOG"
+exit 0
+`)
+	env := map[string]string{
+		"BD_LOG":       bdLog,
+		"GC_CITY":      t.TempDir(),
+		"GC_CITY_PATH": t.TempDir(),
+		"PATH":         binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+
+	out, err := runScriptResult(t, coreScriptPath("gate-sweep.sh"), env)
+	if err != nil {
+		t.Fatalf("gate-sweep should still exit 0 on a rig-list failure (HQ-only fallback, same as jq-missing): %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "gate-sweep: gc rig list --json returned no usable rigs; sweeping HQ only") {
+		t.Fatalf("expected a stderr warning mirroring the jq-not-found case; got:\n%s", out)
+	}
+
+	log, readErr := os.ReadFile(bdLog)
+	if readErr != nil {
+		t.Fatalf("ReadFile(bd log): %v", readErr)
+	}
+	s := string(log)
+	for _, want := range []string{
+		"gate check --type=timer --escalate", // HQ scope must still run.
+		"gate check --type=gh --escalate",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %q in bd log (HQ scope must still run despite rig-list failure):\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "--rig") {
+		t.Fatalf("a rig-list failure must fall back to HQ-only, not partially sweep; bd log:\n%s", s)
+	}
+}
+
 // hermeticGitEnv builds a git invocation env that strips any pre-existing
 // GIT_* control variables from the parent environment before applying the
 // overrides — same approach as mergeTestEnv. This avoids duplicate keys

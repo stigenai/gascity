@@ -43,18 +43,25 @@ mkdir -p "$PACK_STATE_DIR"
 # non-HQ rig. `gc bd gate check` without --rig is HQ-scoped from the city cwd,
 # so per-rig gates are invisible to a bare query — walk each rig explicitly
 # (gt-15s). The HQ entry is excluded from `gc rig list` (it reports the city
-# root as an hq=true pseudo-rig), matching renudge-stale-human-gates.sh. jq is
-# best-effort: without it the sweep falls back to HQ-only, which is the
-# pre-gt-15s behavior (no regression), not a silent partial sweep.
+# root as an hq=true pseudo-rig), matching renudge-stale-human-gates.sh. jq
+# missing, `gc rig list --json` failing, and it returning nothing usable are
+# all best-effort: each falls back to HQ-only, which is the pre-gt-15s
+# behavior (no regression) — but each must also say so on stderr (gcy-dgk),
+# not silently revert to a partial sweep.
 SCOPES_FILE="$(mktemp "$PACK_STATE_DIR/.gate-sweep-scopes.XXXXXX")"
 trap 'rm -f "$SCOPES_FILE"' EXIT
 printf '\n' > "$SCOPES_FILE" # HQ scope: an empty line
 if command -v jq >/dev/null 2>&1; then
     RIGS_JSON="$(gc rig list --json 2>/dev/null || true)"
+    RIG_NAMES=""
     if [ -n "$RIGS_JSON" ]; then
-        printf '%s' "$RIGS_JSON" \
-            | jq -r '(.rigs // [])[] | select(.hq != true) | .name' 2>/dev/null \
-            >> "$SCOPES_FILE" || true
+        RIG_NAMES="$(printf '%s' "$RIGS_JSON" \
+            | jq -r '(.rigs // [])[] | select(.hq != true) | .name' 2>/dev/null || true)"
+    fi
+    if [ -n "$RIG_NAMES" ]; then
+        printf '%s\n' "$RIG_NAMES" >> "$SCOPES_FILE"
+    else
+        echo "gate-sweep: gc rig list --json returned no usable rigs; sweeping HQ only" >&2
     fi
 else
     echo "gate-sweep: jq not found in PATH; sweeping HQ only (per-rig gates will not resolve)" >&2
