@@ -164,6 +164,18 @@ func computePoolDesiredStates(
 			if wb.Status != "in_progress" && wb.Status != "open" {
 				continue
 			}
+			// An in_progress bead blocked on an open dependency (e.g. a bd
+			// gate awaiting human PR merge) has nothing actionable left; open
+			// work's blocker state is already folded into its Ready flag
+			// upstream, so only in_progress needs this check here. Mirrors
+			// workBeadHasAwakeDemand's identical guard in
+			// compute_awake_set.go, which fixed the sleep/wake side of the
+			// same gap (#4726). Without it, a min_active_sessions=0 pool
+			// cold-starts a fresh session every reconcile tick purely to
+			// re-discover the same still-open gate (gcy-lg2).
+			if wb.Status == "in_progress" && wb.IsBlocked != nil && *wb.IsBlocked {
+				continue
+			}
 			assignee := strings.TrimSpace(wb.Assignee)
 			if assignee == "" {
 				continue

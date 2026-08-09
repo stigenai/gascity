@@ -1117,6 +1117,63 @@ func TestComputePoolDesiredStates_ResumeOverridesZeroScaleCheck(t *testing.T) {
 	}
 }
 
+// Regression: an in_progress bead carrying bd's IsBlocked=true (an open
+// gate/blocking dependency, e.g. a bd gate awaiting human PR merge) must not
+// generate resume demand even when a live session bead is still bound to it.
+// A session correctly gated on external state has nothing actionable to do;
+// treating it as "must stay alive" regardless of blocked state is the pool
+// side of the bug ComputeAwakeSet's workBeadHasAwakeDemand already fixed for
+// sleep/wake (upstream #4726) — this is the sibling gap in session-creation
+// demand (gcy-lg2).
+func TestComputePoolDesiredStates_BlockedInProgressWorkDoesNotResume(t *testing.T) {
+	cfg := &config.City{
+		Agents: []config.Agent{poolAgent("claude", "", intPtr(5), 0)},
+	}
+	work := []beads.Bead{
+		workBead("w1", "claude", "sess-1", "in_progress", 5),
+	}
+	work[0].IsBlocked = boolPtr(true)
+	sessions := []beads.Bead{sessionBead("sess-1", "open")}
+
+	result := ComputePoolDesiredStates(cfg, work, sessionInfosFromBeads(sessions), nil)
+
+	total := 0
+	for _, ds := range result {
+		total += len(ds.Requests)
+	}
+	if total != 0 {
+		t.Fatalf("total requests = %d, want 0 (blocked work must not resume)", total)
+	}
+}
+
+// Regression: same as above for the wake-known-identity tier, which is the
+// common case for min_active_sessions=0 pools — a coder that gates its own
+// bead and ends its session (the documented workflow) leaves no live session
+// bead behind at all. Without this check, every reconcile tick synthesizes a
+// fresh SessionRequest that cold-starts a brand-new session purely to
+// re-discover the same still-open gate (gcy-lg2: 7 redispatches over ~30h for
+// one PR awaiting human merge).
+func TestComputePoolDesiredStates_BlockedInProgressWorkDoesNotWakeKnownIdentity(t *testing.T) {
+	cfg := &config.City{
+		Agents: []config.Agent{poolAgent("implementation-worker", "gascity-packs", intPtr(8), 0)},
+	}
+	identity := "gascity-packs/implementation-worker"
+	work := []beads.Bead{
+		workBead("gp-qx1o", identity, identity, "in_progress", 5),
+	}
+	work[0].IsBlocked = boolPtr(true)
+
+	result := ComputePoolDesiredStates(cfg, work, nil, nil)
+
+	total := 0
+	for _, ds := range result {
+		total += len(ds.Requests)
+	}
+	if total != 0 {
+		t.Fatalf("total requests = %d, want 0 (blocked work must not wake a known identity)", total)
+	}
+}
+
 // Regression: no demand and no assigned work → poolDesired=0.
 // This was the idle-sessions-never-sleeping bug: derivePoolDesired counted
 // session bead existence instead of actual demand.
