@@ -3626,6 +3626,48 @@ func TestDoSlingIdempotentDryRunSuppressesNudge(t *testing.T) {
 	}
 }
 
+func TestDoSlingIdempotentBlockedInProgressSuppressesNudge(t *testing.T) {
+	// A bead that is already claimed, in_progress, and blocked on an open
+	// dependency has nothing left for the target to act on. Unlike the
+	// warm-pool-miss case TestDoSlingIdempotentHonorsNudge covers (Status:
+	// "open"), nudging here would only wake/create a session that
+	// re-examines work it cannot advance, burning a full agent turn for
+	// nothing (gcy-ej8).
+	runner := newFakeRunner()
+	cfg := &config.City{Workspace: config.Workspace{Name: "test"}}
+	a := config.Agent{Name: "mayor", MaxActiveSessions: intPtr(1)}
+
+	routed := beads.Bead{
+		ID:        "BL-1",
+		Title:     "BL-1",
+		Type:      "task",
+		Status:    "in_progress",
+		IsBlocked: boolPtr(true),
+		Metadata: map[string]string{
+			beadmeta.RoutedToMetadataKey: a.QualifiedName(),
+		},
+	}
+	store := beads.NewMemStoreFrom(0, []beads.Bead{routed}, nil)
+	deps := testDeps(cfg, runtime.NewFake(), runner.run)
+	deps.Store = store
+
+	result, err := DoSling(SlingOpts{
+		Target: a, BeadOrFormula: "BL-1", Nudge: true, NoConvoy: true,
+	}, deps, store)
+	if err != nil {
+		t.Fatalf("DoSling: %v", err)
+	}
+	if !result.Idempotent {
+		t.Fatalf("expected idempotent route, got %+v", result)
+	}
+	if result.NudgeAgent != nil {
+		t.Error("expected NudgeAgent to stay nil for an in_progress+blocked bead")
+	}
+	if len(runner.calls) != 0 {
+		t.Errorf("idempotent sling must not re-route, got %d runner calls", len(runner.calls))
+	}
+}
+
 func TestDoSlingSuspendedAgentWarnsEvenOnFailure(t *testing.T) {
 	// Matches gastown-sling tutorial: sling to suspended agent, runner fails,
 	// but AgentSuspended should still be set so CLI prints the warning.

@@ -215,8 +215,13 @@ func resolveIdempotentShortCircuit(opts SlingOpts, a config.Agent, deps SlingDep
 	// with --nudge must still deliver a wake; otherwise the idempotent
 	// short-circuit silently drops it and the slot sits idle on work it never
 	// began. The claim path is idempotent/CAS-safe, so a redundant nudge is
-	// harmless. Suppressed for dry-run, which must not mutate or signal anything.
-	if opts.Nudge && !opts.DryRun {
+	// harmless. Suppressed for dry-run, which must not mutate or signal
+	// anything, and for a bead that is already in_progress and blocked on an
+	// open dependency: there the target has nothing to act on, so a nudge
+	// would only wake/create a session that re-examines unchanged state for
+	// nothing (gcy-ej8).
+	blockedInProgress := check.BeadStatus == "in_progress" && check.BeadBlocked
+	if opts.Nudge && !opts.DryRun && !blockedInProgress {
 		result.NudgeAgent = &a
 	}
 	return true
