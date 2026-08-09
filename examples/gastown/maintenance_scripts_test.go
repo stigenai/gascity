@@ -10086,12 +10086,24 @@ func TestJsonlExportPushFailureEscalatesOncePerUnresolvedFailure(t *testing.T) {
 }
 
 // gateSweepEnv constructs the env for a gate-sweep.sh invocation with a
-// PATH-shimmed bd stub that logs every call to BD_LOG.
+// PATH-shimmed bd stub that logs every call to BD_LOG. The gc stub answers
+// `rig list --json` with a fixed hq + two-rig list (schema matches
+// RigListJSON in cmd/gc/cmd_rig.go, same as pruneBranchesRig below), so
+// every gate-sweep test exercises the per-rig fan-out (gt-15s), not just
+// the HQ scope.
 func gateSweepEnv(t *testing.T) (binDir, bdLog string, env map[string]string) {
 	t.Helper()
 	binDir = t.TempDir()
 	bdLog = filepath.Join(t.TempDir(), "bd.log")
-	writeMaintenanceGCStub(t, filepath.Join(binDir, "gc"), "#!/bin/sh\nexit 0\n")
+	writeMaintenanceGCStub(t, filepath.Join(binDir, "gc"), `#!/bin/sh
+case "$1 $2 $3" in
+  "rig list --json")
+    printf '%s\n' '{"city_path":"/tmp","city_name":"test","rigs":[{"name":"hq","path":"/tmp","prefix":"hq","hq":true,"suspended":false,"beads":""},{"name":"alpha","path":"/tmp/rigs/alpha","prefix":"al","hq":false,"suspended":false,"beads":""},{"name":"beta","path":"/tmp/rigs/beta","prefix":"be","hq":false,"suspended":false,"beads":""}]}'
+    exit 0
+    ;;
+esac
+exit 0
+`)
 	env = map[string]string{
 		"BD_LOG":       bdLog,
 		"GC_CITY":      t.TempDir(),
@@ -10116,12 +10128,25 @@ exit 0
 	}
 	s := string(log)
 	for _, want := range []string{
+		// HQ scope: bare, no --rig.
 		"gate check --type=timer --escalate",
 		"gate check --type=gh --escalate",
+		// Per-rig fan-out (gt-15s): each non-HQ rig from `gc rig list
+		// --json` gets its own --rig-scoped checks.
+		"gate check --rig alpha --type=timer --escalate",
+		"gate check --rig alpha --type=gh --escalate",
+		"gate check --rig beta --type=timer --escalate",
+		"gate check --rig beta --type=gh --escalate",
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing %q in bd log:\n%s", want, s)
 		}
+	}
+	// The rig list's hq:true entry must be excluded from the fan-out (it's
+	// already covered by the bare HQ scope above) — a regression here would
+	// double-check the same store under two different scope arguments.
+	if strings.Contains(s, "--rig hq") {
+		t.Fatalf("hq pseudo-rig must not get its own --rig scope; bd log:\n%s", s)
 	}
 }
 
