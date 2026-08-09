@@ -10238,6 +10238,58 @@ esac
 	}
 }
 
+// TestGateSweepIsolatesSingleScopeTimerFailureFromSiblingScopes verifies the
+// gcy-vb9 fix survives the gt-15s fan-out: failing exactly one scope's
+// timer-gate check (alpha, ordered before beta by gateSweepEnv's rig list)
+// must not abort the loop under set -e and starve beta of its checks. This
+// is the case TestGateSweepInvokesTimerAndGhGateChecks (all scopes succeed)
+// and TestGateSweepPropagatesTimerGateBdFailures (all scopes fail
+// identically) cannot exercise: both look identical — non-zero exit, no
+// per-scope distinction — whether the sweep isolates each scope's failure
+// (the fix) or set -e aborts the whole tick on the first failure (the
+// gcy-vb9 bug), so a regression back to a bare
+// `gc bd gate check ... --type=timer --escalate` with no FAILED-counter
+// guard would leave every other gate-sweep test green.
+func TestGateSweepIsolatesSingleScopeTimerFailureFromSiblingScopes(t *testing.T) {
+	binDir, bdLog, env := gateSweepEnv(t)
+	writeExecutable(t, filepath.Join(binDir, "bd"), `#!/bin/sh
+printf '%s\n' "$*" >> "$BD_LOG"
+case "$*" in
+  *"--rig alpha --type=timer"*)
+    echo "bd: simulated timer-gate failure for alpha" >&2
+    exit 1
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`)
+
+	script := coreScriptPath("gate-sweep.sh")
+	cmd := exec.Command(script)
+	cmd.Env = mergeTestEnv(env)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("gate-sweep should exit non-zero when alpha's timer-gate check fails; got success\n%s", out)
+	}
+
+	log, readErr := os.ReadFile(bdLog)
+	if readErr != nil {
+		t.Fatalf("ReadFile(bd log): %v", readErr)
+	}
+	s := string(log)
+	for _, want := range []string{
+		"gate check --type=timer --escalate",             // hq: unaffected, ordered before alpha
+		"gate check --rig alpha --type=timer --escalate", // alpha: the failing call itself must still have been made
+		"gate check --rig beta --type=timer --escalate",  // beta: later-ordered scope must still run despite alpha's failure
+		"gate check --rig beta --type=gh --escalate",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %q in bd log (alpha's failure should not abort later scopes):\n%s", want, s)
+		}
+	}
+}
+
 // hermeticGitEnv builds a git invocation env that strips any pre-existing
 // GIT_* control variables from the parent environment before applying the
 // overrides — same approach as mergeTestEnv. This avoids duplicate keys
