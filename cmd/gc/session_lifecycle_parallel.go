@@ -38,6 +38,15 @@ const (
 	// derived from the wake budget used for starts.
 	defaultMaxParallelStopsPerWave = 3
 	defaultMaxParallelInterrupts   = 16
+
+	// A single sweep probes at most this many admitted/cleanup journals
+	// against the runtime provider. Each probe is bounded per-call (see
+	// runningPodSnapshotTimeout in the k8s provider), but without this cap
+	// the sweep itself is not: N simultaneously-admitted journals under a
+	// merely-slow (not hard-down) API server would cost up to N per-call
+	// timeouts of cumulative stall in one controller tick. Journals beyond
+	// the cap stay pending and are retried on the next sweep.
+	defaultMaxAsyncStartCleanupObligationsPerTick = 20
 )
 
 // staleKeyDetectDelay is how long production waits after starting a session
@@ -2167,6 +2176,7 @@ func sweepAsyncStartCleanupObligationsSkipping(sp runtime.Provider, store beads.
 	if err != nil {
 		return 0, 0, err
 	}
+	probed := 0
 	for _, info := range infos {
 		if skip != nil && skip(info) {
 			continue
@@ -2175,6 +2185,13 @@ func sweepAsyncStartCleanupObligationsSkipping(sp runtime.Provider, store beads.
 		if raw == "" {
 			continue
 		}
+		if probed >= defaultMaxAsyncStartCleanupObligationsPerTick {
+			// Left for the next sweep: still outstanding, so it must count
+			// as pending rather than being silently dropped from the total.
+			pending++
+			continue
+		}
+		probed++
 		if reconcileAsyncStartCleanupObligation(info, raw, sp, sessFront, now, false, stderr) {
 			resolved++
 			if onResolved != nil {

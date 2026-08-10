@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -117,6 +118,7 @@ type asyncCleanupProbeProvider struct {
 	probeErr    error
 	stopErr     error
 	stopCalls   atomic.Int32
+	probeCalls  atomic.Int32
 	stopStarted chan struct{}
 	stopRelease chan struct{}
 }
@@ -135,6 +137,7 @@ func (p *asyncCleanupProbeProvider) GetMeta(_, key string) (string, error) {
 	if key != "GC_INSTANCE_TOKEN" {
 		return "", nil
 	}
+	p.probeCalls.Add(1)
 	return p.token, p.probeErr
 }
 
@@ -165,15 +168,24 @@ func (p *asyncCleanupProbeProvider) StopIfInstanceToken(_ string, expectedToken 
 
 func seedAsyncStartCleanupObligation(t *testing.T, store beads.Store) (preparedStart, string) {
 	t.Helper()
+	return seedNamedAsyncStartCleanupObligation(t, store, "gc-worker", "worker")
+}
+
+// seedNamedAsyncStartCleanupObligation is seedAsyncStartCleanupObligation
+// parameterized by bead ID and session name, so a single store can hold
+// several concurrently admitted journals (e.g. to test per-sweep fan-out
+// bounds) instead of just the one "gc-worker" fixture.
+func seedNamedAsyncStartCleanupObligation(t *testing.T, store beads.Store, id, name string) (preparedStart, string) {
+	t.Helper()
 	const token = "tok-worker"
 	created, err := store.Create(beads.Bead{
-		ID:     "gc-worker",
-		Title:  "worker",
+		ID:     id,
+		Title:  name,
 		Type:   sessionpkg.BeadType,
 		Status: "open",
 		Labels: []string{sessionpkg.LabelSession},
 		Metadata: map[string]string{
-			"session_name":         "worker",
+			"session_name":         name,
 			"template":             "worker",
 			"state":                string(sessionpkg.StateCreating),
 			"instance_token":       token,
@@ -189,7 +201,7 @@ func seedAsyncStartCleanupObligation(t *testing.T, store beads.Store) (preparedS
 	}
 	item := preparedStart{candidate: startCandidate{
 		info: info,
-		tp:   TemplateParams{SessionName: "worker", TemplateName: "worker", Command: "agent"},
+		tp:   TemplateParams{SessionName: name, TemplateName: "worker", Command: "agent"},
 	}}
 	raw, err := claimAsyncStartCleanupObligation(sessionFrontDoor(store), item, time.Now(), time.Minute)
 	if err != nil {
@@ -307,6 +319,52 @@ func TestSweepAsyncStartCleanupObligationsRefusesNameStopWithoutAtomicFence(t *t
 	}
 	if provider.stopCalls.Load() != 0 {
 		t.Fatalf("unsafe name-based Stop calls = %d, want 0", provider.stopCalls.Load())
+	}
+}
+
+// TestSweepAsyncStartCleanupObligationsBoundsProbesPerSweep guards the
+// tick-level budget: a sweep must not issue more than
+// defaultMaxAsyncStartCleanupObligationsPerTick provider probes, no matter how many
+// journals are concurrently admitted, so N simultaneously-admitted journals
+// under a merely-slow (not hard-down) API server cost a bounded, not
+// cumulative, stall in a single controller tick. Journals left over must
+// still count as pending (not silently dropped) and must resolve on a
+// subsequent sweep, since callers such as the startup barrier loop retry
+// until pending reaches zero.
+func TestSweepAsyncStartCleanupObligationsBoundsProbesPerSweep(t *testing.T) {
+	store := beads.NewMemStore()
+	const extra = 3
+	total := defaultMaxAsyncStartCleanupObligationsPerTick + extra
+	for i := 0; i < total; i++ {
+		id := fmt.Sprintf("gc-worker-%d", i)
+		name := fmt.Sprintf("worker-%d", i)
+		seedNamedAsyncStartCleanupObligation(t, store, id, name)
+	}
+	provider := &asyncCleanupProbeProvider{Provider: runtime.NewFake(), token: "tok-worker"}
+
+	resolved, pending, err := sweepAsyncStartCleanupObligations(provider, store, time.Now(), io.Discard)
+	if err != nil {
+		t.Fatalf("first sweep: %v", err)
+	}
+	if got := provider.probeCalls.Load(); got != int32(defaultMaxAsyncStartCleanupObligationsPerTick) {
+		t.Fatalf("first sweep probe calls = %d, want %d", got, defaultMaxAsyncStartCleanupObligationsPerTick)
+	}
+	if resolved != defaultMaxAsyncStartCleanupObligationsPerTick || pending != extra {
+		t.Fatalf("first sweep = (resolved=%d pending=%d), want (%d,%d)", resolved, pending, defaultMaxAsyncStartCleanupObligationsPerTick, extra)
+	}
+	if resolved+pending != total {
+		t.Fatalf("first sweep resolved+pending = %d, want %d (no journal silently dropped)", resolved+pending, total)
+	}
+
+	resolved, pending, err = sweepAsyncStartCleanupObligations(provider, store, time.Now(), io.Discard)
+	if err != nil {
+		t.Fatalf("second sweep: %v", err)
+	}
+	if got := provider.probeCalls.Load(); got != int32(total) {
+		t.Fatalf("cumulative probe calls after second sweep = %d, want %d", got, total)
+	}
+	if resolved != extra || pending != 0 {
+		t.Fatalf("second sweep = (resolved=%d pending=%d), want (%d,0)", resolved, pending, extra)
 	}
 }
 
