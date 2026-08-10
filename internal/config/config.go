@@ -784,6 +784,9 @@ type AgentOverride struct {
 	MaxActiveSessions *int `toml:"max_active_sessions,omitempty"`
 	// MinActiveSessions overrides the minimum number of sessions to keep alive.
 	MinActiveSessions *int `toml:"min_active_sessions,omitempty"`
+	// RouteDefault overrides the agent's route_default fallback-routing flag
+	// (see Agent.RouteDefault for semantics).
+	RouteDefault *bool `toml:"route_default,omitempty"`
 	// ScaleCheck overrides the shell command whose output reports new
 	// unassigned session demand for bead-backed reconciliation.
 	ScaleCheck *string `toml:"scale_check,omitempty"`
@@ -3185,6 +3188,15 @@ type Agent struct {
 	// mode="always"; both produce sessions, and gc doctor reports accidental
 	// combinations.
 	MinActiveSessions *int `toml:"min_active_sessions,omitempty"`
+	// RouteDefault marks this agent's template as the fallback demand target
+	// for its scope (rig store if rig-scoped, city store if city-scoped): a
+	// ready, unassigned bead whose routed-to candidates (gc.routed_to, legacy
+	// gc.run_target) match no configured template in that scope counts as
+	// demand for this template instead of being silently dropped. Without a
+	// route_default, such work is demand for nobody — no pool ever scales up
+	// to route it. At most one agent per scope may set this; ValidateAgents
+	// rejects a second.
+	RouteDefault bool `toml:"route_default,omitempty"`
 	// ScaleCheck is a shell command template whose output reports new
 	// unassigned session demand. In bead-backed reconciliation this is
 	// additive: assigned work is resumed separately, and ScaleCheck reports
@@ -3942,6 +3954,7 @@ type validationAgentKey struct{ dir, binding, name string }
 func ValidateAgents(agents []Agent) error {
 	seen := make(map[validationAgentKey]int, len(agents))
 	layoutSeen := make(map[agentKey][]int, len(agents))
+	routeDefaultSeen := make(map[string]string, len(agents))
 	for i, a := range agents {
 		if a.Name == "" {
 			return fmt.Errorf("agent[%d]: name is required", i)
@@ -4011,6 +4024,12 @@ func ValidateAgents(agents []Agent) error {
 			*a.MaxActiveSessions >= 0 && *a.MinActiveSessions > *a.MaxActiveSessions {
 			return fmt.Errorf("agent %q: min_active_sessions (%d) must be <= max_active_sessions (%d)",
 				a.Name, *a.MinActiveSessions, *a.MaxActiveSessions)
+		}
+		if a.RouteDefault {
+			if owner, dup := routeDefaultSeen[a.Dir]; dup {
+				return fmt.Errorf("agent %q: route_default conflicts with %q — at most one agent per scope may set route_default", a.QualifiedName(), owner)
+			}
+			routeDefaultSeen[a.Dir] = a.QualifiedName()
 		}
 	}
 

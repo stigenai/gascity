@@ -1538,6 +1538,7 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 				ready = nil
 			}
 		}
+		defaultTemplate := controllerDemandRouteDefaultTemplate(cfg, group.templates)
 		for _, b := range ready {
 			if strings.TrimSpace(b.Assignee) != "" {
 				continue
@@ -1545,7 +1546,7 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 			if claimQueuedBehindHead(b) {
 				continue
 			}
-			template := controllerDemandRouteTarget(cfg, b, group.templates)
+			template := controllerDemandRouteTarget(cfg, b, group.templates, defaultTemplate)
 			if _, ok := group.templates[template]; !ok {
 				continue
 			}
@@ -1735,12 +1736,46 @@ func defaultNamedSessionDemand(targets []defaultScaleCheckTarget, _ *config.City
 // group.templates (keyed by base template names) and the demand is silently
 // dropped, so the pool never scales up. The returned value is the normalized
 // template name, since callers use it as the counts/demand map key.
-func controllerDemandRouteTarget(cfg *config.City, b beads.Bead, templates map[string]struct{}) string {
+//
+// defaultTemplate is the store group's route_default fallback (see
+// controllerDemandRouteDefaultTemplate), used when none of the bead's
+// candidates match: a bead with no route, or routed to a template absent
+// from this scope, would otherwise count as demand for nobody. Pass "" when
+// the group has no route_default configured.
+func controllerDemandRouteTarget(cfg *config.City, b beads.Bead, templates map[string]struct{}, defaultTemplate string) string {
 	for _, candidate := range controllerDemandRouteCandidates(b) {
 		normalized := agentutil.NormalizePoolRouteTarget(cfg, candidate)
 		if _, ok := templates[normalized]; ok {
 			return normalized
 		}
+	}
+	if defaultTemplate != "" {
+		return defaultTemplate
+	}
+	return ""
+}
+
+// controllerDemandRouteDefaultTemplate returns the store group's designated
+// fallback demand target — the qualified name of the one agent among
+// templates whose config sets route_default = true — or "" if none is
+// configured. config.ValidateAgents enforces at most one route_default agent
+// per scope (keyed by Agent.Dir) at config-load time; if that is ever
+// bypassed, the first match in cfg.Agents order wins rather than
+// double-counting a bead across two templates.
+func controllerDemandRouteDefaultTemplate(cfg *config.City, templates map[string]struct{}) string {
+	if cfg == nil {
+		return ""
+	}
+	for i := range cfg.Agents {
+		agent := &cfg.Agents[i]
+		if !agent.RouteDefault {
+			continue
+		}
+		qualified := agent.QualifiedName()
+		if _, ok := templates[qualified]; !ok {
+			continue
+		}
+		return qualified
 	}
 	return ""
 }
