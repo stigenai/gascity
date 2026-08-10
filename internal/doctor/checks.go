@@ -528,7 +528,18 @@ func (c *ZombieSessionsCheck) Run(_ *CheckContext) *CheckResult {
 			continue
 		}
 		sn := agent.SessionNameFor(c.cityName, a.QualifiedName(), c.sessionTemplate)
-		if c.sp.IsRunning(sn) && !c.sp.ProcessAlive(sn, a.ProcessNames) {
+		if !c.sp.IsRunning(sn) {
+			continue
+		}
+		// A probe that could not confirm liveness either way (e.g. an API
+		// timeout) must not be treated as "confirmed dead" — that would
+		// make a merely-slow backend a false positive for a destructive
+		// Fix(). Skip this tick and let the next one re-probe.
+		alive, err := runtime.ProcessAliveChecked(c.sp, sn, a.ProcessNames)
+		if err != nil {
+			continue
+		}
+		if !alive {
 			zombies = append(zombies, sn)
 		}
 	}
@@ -553,7 +564,16 @@ func (c *ZombieSessionsCheck) Fix(_ *CheckContext) error {
 			continue
 		}
 		sn := agent.SessionNameFor(c.cityName, a.QualifiedName(), c.sessionTemplate)
-		if c.sp.IsRunning(sn) && !c.sp.ProcessAlive(sn, a.ProcessNames) {
+		if !c.sp.IsRunning(sn) {
+			continue
+		}
+		// Same inconclusive-probe guard as Run: do not stop a session whose
+		// liveness we could not actually confirm.
+		alive, err := runtime.ProcessAliveChecked(c.sp, sn, a.ProcessNames)
+		if err != nil {
+			continue
+		}
+		if !alive {
 			if err := c.sp.Stop(sn); err != nil {
 				return fmt.Errorf("killing zombie session %q: %w", sn, err)
 			}

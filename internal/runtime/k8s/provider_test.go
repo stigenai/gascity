@@ -16,6 +16,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	execerr "k8s.io/client-go/util/exec"
 
 	"github.com/gastownhall/gascity/internal/runtime"
 	"github.com/gastownhall/gascity/internal/testutil"
@@ -297,6 +298,193 @@ func TestIsRunning(t *testing.T) {
 
 	if p.IsRunning("gc-test-agent") {
 		t.Error("IsRunning returned true for session with dead tmux")
+	}
+}
+
+// TestIsRunningCheckedDistinguishesConfirmedFromInconclusive proves
+// IsRunningChecked's whole reason to exist: a probe that fails to complete
+// (a lookup or exec transport failure) must report a non-nil error rather
+// than collapsing to the same false a confirmed negative returns, so a
+// destructive caller can tell "definitely not running" apart from "could
+// not tell." IsRunning (the plain bool method) must keep collapsing every
+// case to false — that contract does not change for existing callers.
+func TestIsRunningCheckedDistinguishesConfirmedFromInconclusive(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+
+	// Confirmed negative: no pod at all.
+	running, err := p.IsRunningChecked("gc-test-agent")
+	if running {
+		t.Error("IsRunningChecked reported running with no pod")
+	}
+	if err != nil {
+		t.Errorf("IsRunningChecked returned an error for a confirmed-absent pod: %v", err)
+	}
+
+	// Inconclusive: the pod lookup itself fails (e.g. a timed-out LIST).
+	fake.listErr = context.DeadlineExceeded
+	running, err = p.IsRunningChecked("gc-test-agent")
+	if running {
+		t.Error("IsRunningChecked reported running despite a failed lookup")
+	}
+	if err == nil {
+		t.Fatal("IsRunningChecked swallowed a lookup failure instead of reporting it as inconclusive")
+	}
+	if !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+		t.Errorf("IsRunningChecked error = %v, want it to wrap runtime.ErrRuntimeUnavailable", err)
+	}
+	if p.IsRunning("gc-test-agent") {
+		t.Error("IsRunning true despite a failed lookup")
+	}
+	fake.listErr = nil
+
+	// Confirmed negative: pod exists, tmux ran and confirmed no session
+	// (an exit code, not a transport failure).
+	addRunningPod(fake, "gc-test-agent", "gc-test-agent")
+	fake.setExecResult("gc-test-agent", []string{"tmux", "has-session", "-t", tmuxSession}, "",
+		execerr.CodeExitError{Err: fmt.Errorf("no session: main"), Code: 1})
+	running, err = p.IsRunningChecked("gc-test-agent")
+	if running {
+		t.Error("IsRunningChecked reported running for a confirmed-dead tmux session")
+	}
+	if err != nil {
+		t.Errorf("IsRunningChecked returned an error for a confirmed exit-code result: %v", err)
+	}
+
+	// Inconclusive: exec itself fails to complete (transport), not a
+	// command exit code.
+	fake.setExecResult("gc-test-agent", []string{"tmux", "has-session", "-t", tmuxSession}, "",
+		fmt.Errorf("stream error: broken pipe"))
+	running, err = p.IsRunningChecked("gc-test-agent")
+	if running {
+		t.Error("IsRunningChecked reported running despite an exec transport failure")
+	}
+	if err == nil {
+		t.Fatal("IsRunningChecked swallowed an exec transport failure instead of reporting it as inconclusive")
+	}
+	if p.IsRunning("gc-test-agent") {
+		t.Error("IsRunning true despite an exec transport failure")
+	}
+}
+
+// TestIsRunningCheckedSnapshotPathDistinguishesConfirmedFromInconclusive
+// re-proves the confirmed-vs-inconclusive distinction with
+// runningPodCacheTTL > 0 (the namespace-snapshot path production uses by
+// default — see NewProvider). findRunningPodFromSnapshot needed its own
+// runtime.ErrSessionNotFound wrap, matching the non-snapshot findRunningPod,
+// for IsRunningChecked to make this distinction under the default config;
+// without it every confirmed-absent session would misreport as inconclusive.
+func TestIsRunningCheckedSnapshotPathDistinguishesConfirmedFromInconclusive(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+	p.runningPodCacheTTL = time.Hour
+
+	// Confirmed negative: snapshot refreshes cleanly, session absent from it.
+	running, err := p.IsRunningChecked("gc-test-agent")
+	if running {
+		t.Error("IsRunningChecked reported running with no pod in the snapshot")
+	}
+	if err != nil {
+		t.Errorf("IsRunningChecked returned an error for a confirmed-absent snapshot entry: %v", err)
+	}
+
+	// Inconclusive: the snapshot refresh itself fails.
+	p.invalidateRunningPodSnapshot()
+	fake.listErr = context.DeadlineExceeded
+	running, err = p.IsRunningChecked("gc-test-agent")
+	if running {
+		t.Error("IsRunningChecked reported running despite a failed snapshot refresh")
+	}
+	if err == nil {
+		t.Fatal("IsRunningChecked swallowed a snapshot refresh failure instead of reporting it as inconclusive")
+	}
+}
+
+func TestIsAttached(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+
+	// No pod → not attached.
+	if p.IsAttached("gc-test-agent") {
+		t.Error("IsAttached returned true for non-existent session")
+	}
+
+	// Pod exists, tmux reports attached.
+	addRunningPod(fake, "gc-test-agent", "gc-test-agent")
+	fake.setExecResult("gc-test-agent",
+		[]string{"tmux", "display-message", "-t", tmuxSession, "-p", "#{session_attached}"}, "1\n", nil)
+	if !p.IsAttached("gc-test-agent") {
+		t.Error("IsAttached returned false for an attached session")
+	}
+
+	// Pod exists, tmux reports not attached.
+	fake.setExecResult("gc-test-agent",
+		[]string{"tmux", "display-message", "-t", tmuxSession, "-p", "#{session_attached}"}, "0\n", nil)
+	if p.IsAttached("gc-test-agent") {
+		t.Error("IsAttached returned true for a detached session")
+	}
+}
+
+// TestIsAttachedCheckedDistinguishesConfirmedFromInconclusive is the
+// IsAttached analogue of TestIsRunningCheckedDistinguishesConfirmedFromInconclusive.
+func TestIsAttachedCheckedDistinguishesConfirmedFromInconclusive(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+
+	// Confirmed negative: no pod at all.
+	attached, err := p.IsAttachedChecked("gc-test-agent")
+	if attached {
+		t.Error("IsAttachedChecked reported attached with no pod")
+	}
+	if err != nil {
+		t.Errorf("IsAttachedChecked returned an error for a confirmed-absent pod: %v", err)
+	}
+
+	// Inconclusive: the pod lookup itself fails (e.g. a timed-out LIST).
+	fake.listErr = context.DeadlineExceeded
+	attached, err = p.IsAttachedChecked("gc-test-agent")
+	if attached {
+		t.Error("IsAttachedChecked reported attached despite a failed lookup")
+	}
+	if err == nil {
+		t.Fatal("IsAttachedChecked swallowed a lookup failure instead of reporting it as inconclusive")
+	}
+	if !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+		t.Errorf("IsAttachedChecked error = %v, want it to wrap runtime.ErrRuntimeUnavailable", err)
+	}
+	if p.IsAttached("gc-test-agent") {
+		t.Error("IsAttached true despite a failed lookup")
+	}
+	fake.listErr = nil
+
+	// Confirmed negative: pod exists, exec ran and returned a confirmed
+	// exit code (e.g. a session that disappeared between lookup and exec),
+	// not a transport failure.
+	addRunningPod(fake, "gc-test-agent", "gc-test-agent")
+	fake.setExecResult("gc-test-agent",
+		[]string{"tmux", "display-message", "-t", tmuxSession, "-p", "#{session_attached}"}, "",
+		execerr.CodeExitError{Err: fmt.Errorf("no session: main"), Code: 1})
+	attached, err = p.IsAttachedChecked("gc-test-agent")
+	if attached {
+		t.Error("IsAttachedChecked reported attached for a confirmed exit-code result")
+	}
+	if err != nil {
+		t.Errorf("IsAttachedChecked returned an error for a confirmed exit-code result: %v", err)
+	}
+
+	// Inconclusive: exec itself fails to complete (transport).
+	fake.setExecResult("gc-test-agent",
+		[]string{"tmux", "display-message", "-t", tmuxSession, "-p", "#{session_attached}"}, "",
+		fmt.Errorf("stream error: broken pipe"))
+	attached, err = p.IsAttachedChecked("gc-test-agent")
+	if attached {
+		t.Error("IsAttachedChecked reported attached despite an exec transport failure")
+	}
+	if err == nil {
+		t.Fatal("IsAttachedChecked swallowed an exec transport failure instead of reporting it as inconclusive")
+	}
+	if p.IsAttached("gc-test-agent") {
+		t.Error("IsAttached true despite an exec transport failure")
 	}
 }
 
@@ -1347,6 +1535,67 @@ func TestProcessAlive(t *testing.T) {
 
 	if p.ProcessAlive("gc-test-agent", []string{"claude"}) {
 		t.Error("ProcessAlive returned true for terminating pod")
+	}
+}
+
+// TestProcessAliveCheckedDistinguishesConfirmedFromInconclusive is the
+// ProcessAlive analogue of TestIsRunningCheckedDistinguishesConfirmedFromInconclusive.
+func TestProcessAliveCheckedDistinguishesConfirmedFromInconclusive(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+
+	// Confirmed negative: no pod at all.
+	alive, err := p.ProcessAliveChecked("gc-test-agent", []string{"claude"})
+	if alive {
+		t.Error("ProcessAliveChecked reported alive with no pod")
+	}
+	if err != nil {
+		t.Errorf("ProcessAliveChecked returned an error for a confirmed-absent pod: %v", err)
+	}
+
+	// Inconclusive: the pod lookup itself fails (e.g. a timed-out LIST).
+	fake.listErr = context.DeadlineExceeded
+	alive, err = p.ProcessAliveChecked("gc-test-agent", []string{"claude"})
+	if alive {
+		t.Error("ProcessAliveChecked reported alive despite a failed lookup")
+	}
+	if err == nil {
+		t.Fatal("ProcessAliveChecked swallowed a lookup failure instead of reporting it as inconclusive")
+	}
+	if !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+		t.Errorf("ProcessAliveChecked error = %v, want it to wrap runtime.ErrRuntimeUnavailable", err)
+	}
+	if p.ProcessAlive("gc-test-agent", []string{"claude"}) {
+		t.Error("ProcessAlive true despite a failed lookup")
+	}
+	fake.listErr = nil
+
+	// Confirmed negative: pod exists, pgrep ran and confirmed the process
+	// absent (an exit code, not a transport failure).
+	addRunningPod(fake, "gc-test-agent", "gc-test-agent")
+	fake.setExecResult("gc-test-agent", []string{"pgrep", "-f", "claude"}, "",
+		execerr.CodeExitError{Err: fmt.Errorf("exit status 1"), Code: 1})
+	alive, err = p.ProcessAliveChecked("gc-test-agent", []string{"claude"})
+	if alive {
+		t.Error("ProcessAliveChecked reported alive for a confirmed exit-code result")
+	}
+	if err != nil {
+		t.Errorf("ProcessAliveChecked returned an error for a confirmed exit-code result: %v", err)
+	}
+
+	// Inconclusive: exec itself fails to complete (transport), not a
+	// command exit code.
+	fake.setExecResult("gc-test-agent", []string{"pgrep", "-f", "claude"}, "",
+		fmt.Errorf("stream error: broken pipe"))
+	alive, err = p.ProcessAliveChecked("gc-test-agent", []string{"claude"})
+	if alive {
+		t.Error("ProcessAliveChecked reported alive despite an exec transport failure")
+	}
+	if err == nil {
+		t.Fatal("ProcessAliveChecked swallowed an exec transport failure instead of reporting it as inconclusive")
+	}
+	if p.ProcessAlive("gc-test-agent", []string{"claude"}) {
+		t.Error("ProcessAlive true despite an exec transport failure")
 	}
 }
 

@@ -53,11 +53,23 @@ type Fake struct {
 	// RelaunchErrors configures Fake.Relaunch errors per session name; an absent
 	// entry relaunches successfully (records the call, updates the live config).
 	RelaunchErrors map[string]error
+	// ProcessAliveErrors, IsRunningErrors, and IsAttachedErrors simulate an
+	// inconclusive liveness probe (e.g. an API timeout) for the
+	// corresponding Checked method: when set for a session, the Checked
+	// method returns (false, err) instead of consulting the ordinary fake
+	// state. The plain (unchecked) method is unaffected — it still returns
+	// its best-effort bool as if no error were configured.
+	ProcessAliveErrors map[string]error
+	IsRunningErrors    map[string]error
+	IsAttachedErrors   map[string]error
 }
 
 var (
 	_ ProcessTableScanner = (*Fake)(nil)
 	_ RelaunchProvider    = (*Fake)(nil)
+	_ ProcessAliveChecker = (*Fake)(nil)
+	_ RunningChecker      = (*Fake)(nil)
+	_ AttachedChecker     = (*Fake)(nil)
 )
 
 // Call records a single method invocation on [Fake].
@@ -131,6 +143,9 @@ func NewFake() *Fake {
 		WaitForIdleGates:        make(map[string]chan struct{}),
 		WaitForIdleStarted:      make(map[string]chan struct{}),
 		RelaunchErrors:          make(map[string]error),
+		ProcessAliveErrors:      make(map[string]error),
+		IsRunningErrors:         make(map[string]error),
+		IsAttachedErrors:        make(map[string]error),
 	}
 }
 
@@ -152,6 +167,9 @@ func NewFailFake() *Fake {
 		SleepCapabilityValue:    SessionSleepCapabilityFull,
 		WaitForIdleErrors:       make(map[string]error),
 		WaitForIdleSequence:     make(map[string][]error),
+		ProcessAliveErrors:      make(map[string]error),
+		IsRunningErrors:         make(map[string]error),
+		IsAttachedErrors:        make(map[string]error),
 		DialogErrors:            make(map[string]error),
 		ResetTurnErrors:         make(map[string]error),
 		InterruptBoundaryErrors: make(map[string]error),
@@ -326,6 +344,19 @@ func (f *Fake) IsRunning(name string) bool {
 	return exists
 }
 
+// IsRunningChecked is the checked variant of IsRunning: it returns
+// (false, err) when name has a configured IsRunningErrors entry, simulating
+// an inconclusive probe, and otherwise defers to IsRunning with a nil error.
+func (f *Fake) IsRunningChecked(name string) (bool, error) {
+	f.mu.Lock()
+	err := f.IsRunningErrors[name]
+	f.mu.Unlock()
+	if err != nil {
+		return false, err
+	}
+	return f.IsRunning(name), nil
+}
+
 // SetAttached sets the canned attached state for the named session.
 // Used in test setup.
 func (f *Fake) SetAttached(name string, val bool) {
@@ -368,6 +399,19 @@ func (f *Fake) IsAttached(name string) bool {
 	return f.Attached[name]
 }
 
+// IsAttachedChecked is the checked variant of IsAttached: it returns
+// (false, err) when name has a configured IsAttachedErrors entry, simulating
+// an inconclusive probe, and otherwise defers to IsAttached with a nil error.
+func (f *Fake) IsAttachedChecked(name string) (bool, error) {
+	f.mu.Lock()
+	err := f.IsAttachedErrors[name]
+	f.mu.Unlock()
+	if err != nil {
+		return false, err
+	}
+	return f.IsAttached(name), nil
+}
+
 // Attach records the call but returns immediately (no terminal to attach).
 // When broken, always returns an error.
 func (f *Fake) Attach(name string) error {
@@ -401,6 +445,20 @@ func (f *Fake) ProcessAlive(name string, processNames []string) bool {
 		return false
 	}
 	return !f.Zombies[name]
+}
+
+// ProcessAliveChecked is the checked variant of ProcessAlive: it returns
+// (false, err) when name has a configured ProcessAliveErrors entry,
+// simulating an inconclusive probe, and otherwise defers to ProcessAlive
+// with a nil error.
+func (f *Fake) ProcessAliveChecked(name string, processNames []string) (bool, error) {
+	f.mu.Lock()
+	err := f.ProcessAliveErrors[name]
+	f.mu.Unlock()
+	if err != nil {
+		return false, err
+	}
+	return f.ProcessAlive(name, processNames), nil
 }
 
 // Nudge records the call and returns nil (or an error if broken).
