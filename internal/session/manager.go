@@ -1282,13 +1282,27 @@ func (m *Manager) Suspend(id string) error {
 // without closing its bead or clearing resume metadata immediately.
 func (m *Manager) RequestFreshRestart(id string) error {
 	return withSessionMutationLock(id, func() error {
-		if _, _, err := m.sessionBead(id); err != nil {
+		_, sessName, err := m.sessionBead(id)
+		if err != nil {
 			return err
 		}
-		return m.store.SetMetadataBatch(id, map[string]string{
+		patch := map[string]string{
 			"restart_requested":          "true",
 			"continuation_reset_pending": "true",
-		})
+		}
+		// ComputeAwakeSet's bridge only treats continuation_reset_pending as
+		// pending once reset_committed_at is also set (compute_awake_bridge.go),
+		// which otherwise happens solely inside the reconciler's own
+		// restart-requested consumption. If that never runs for this session,
+		// the flag stays armed forever with no wake and no stall diagnostic
+		// (gcy-9v6). With no live runtime to stop first, the reset can commit
+		// immediately instead of depending on a later reconciler pass. A live
+		// runtime keeps the old behavior — commit waits for the reconciler to
+		// confirm the kill, so a fresh incarnation never races the old one.
+		if m.sp == nil || !m.sp.IsRunning(sessName) {
+			patch[ResetCommittedAtKey] = m.now().UTC().Format(time.RFC3339)
+		}
+		return m.store.SetMetadataBatch(id, patch)
 	})
 }
 
