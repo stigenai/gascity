@@ -43,10 +43,21 @@ during cycle detection:
 | `blocks` | ✓ | Downstream work cannot start until this resolves |
 | `waits-for` | ✓ | Explicit ordering constraint |
 | `conditional-blocks` | ✓ | May create a scheduling gate |
-| `parent-child` | ✓ | Parent waits for all children |
 | *(empty)* | ✓ | Default type, treated as blocks |
+| `parent-child` | ✗ | Structural hierarchy only — a child never waits on its parent to close |
 | `relates-to` | ✗ | Informational only |
 | `tracks` | ✗ | Informational only |
+
+`parent-child` is recorded as the child "depending on" the parent (see
+`beads.BdStore.toBead`), which can look scheduling-relevant at a glance — but
+it isn't one; it's bookkeeping for the hierarchy, not a scheduling gate. The
+"epic can't close until its child does" convention is expressed separately as
+an explicit `blocks` edge from parent to child, which *is* cycle-sensitive on
+its own. Treating `parent-child` as cycle-sensitive too made that standard
+epic+reverse-blocks-edge shape look like a 2-cycle (child → parent →
+child) and incorrectly rejected every sling of such a child (gcy-6m7). This
+mirrors `beads.IsReadyBlockingDependencyType`, which excludes `parent-child`
+for the same reason.
 
 ## When Cycle Detection Runs
 

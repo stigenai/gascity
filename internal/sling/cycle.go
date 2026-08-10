@@ -31,8 +31,9 @@ func (e *CycleError) Error() string {
 // startID, or nil if the reachable subgraph is acyclic.
 //
 // Only scheduling-relevant dependency types are cycle-sensitive
-// ("blocks", "waits-for", "conditional-blocks", "parent-child", and the
-// empty default); informational types ("relates-to", "tracks") are skipped.
+// ("blocks", "waits-for", "conditional-blocks", and the empty default);
+// informational and structural types ("relates-to", "tracks", "parent-child")
+// are skipped.
 func DetectCycle(startID string, dl DepLister) error {
 	// Three-color DFS: white (unvisited), gray (in stack), black (done).
 	const (
@@ -75,10 +76,18 @@ func DetectCycle(startID string, dl DepLister) error {
 
 // isCycleSensitiveDep reports whether a dependency type creates a scheduling
 // obligation that would deadlock if cyclic. Informational relation types
-// ("relates-to", "tracks") are excluded.
+// ("relates-to", "tracks") are excluded. So is "parent-child": in the Dep
+// model the child "depends on" the parent (see beads.BdStore.toBead), but
+// that edge is structural bookkeeping, not a scheduling gate — a child never
+// waits on its parent to close. The real "epic can't close until its child
+// does" gate is a separate, explicit "blocks" edge from parent to child,
+// which this function already treats as cycle-sensitive on its own. Mirrors
+// beads.IsReadyBlockingDependencyType, which excludes "parent-child" for the
+// same reason; treating it as cycle-sensitive here manufactured false
+// cycles for the standard epic+reverse-blocks-edge shape (gcy-6m7).
 func isCycleSensitiveDep(depType string) bool {
 	switch depType {
-	case "blocks", "waits-for", "conditional-blocks", "parent-child", "":
+	case "blocks", "waits-for", "conditional-blocks", "":
 		return true
 	}
 	return false
