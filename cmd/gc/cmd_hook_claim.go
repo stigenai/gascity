@@ -44,11 +44,32 @@ type hookClaimOptions struct {
 }
 
 type hookClaimOps struct {
-	Runner             WorkQueryRunner
-	Claim              hookClaimFunc
-	ListContinuation   hookListContinuationFunc
-	AssignContinuation hookAssignContinuationFunc
-	DrainAck           hookDrainAckFunc
+	Runner WorkQueryRunner
+	Claim  hookClaimFunc
+	// IsAssigneeLive reports whether a routed candidate's non-empty assignee
+	// still corresponds to a live open session. hookCandidateClaimable only
+	// treats an unassigned candidate as freshly claimable; a route-matched
+	// candidate whose assignee is confirmed non-live is reclaimed via
+	// ReclaimStaleAssignee instead of sitting permanently invisible to both
+	// its old and new owner (gcy-72p). Fails closed (reports live=true) on any
+	// read uncertainty, mirroring liveOpenSessionAssignmentExists's own
+	// fail-open-to-live bias (pool_session_name.go), so an ambiguous liveness
+	// read never steals a possibly-active claim.
+	IsAssigneeLive hookAssigneeLiveFunc
+	// ReclaimStaleAssignee clears a candidate's confirmed-non-live assignee
+	// (and reopens it if left in_progress) so the immediately following Claim
+	// call has an unassigned bead to claim. Production reuses
+	// releaseOrphanedPoolAssignment (pool_session_name.go) — the same
+	// conditional-release path (ReleaseIfCurrent CAS, or recheck-then-write)
+	// the background dead-assignee reconciler already uses — so the claim path
+	// can never race a concurrent legitimate claim any more loosely than the
+	// reconciler already tolerates. Reports whether the reclaim applied; false
+	// (no error) means a benign race loss (assignment changed underneath the
+	// check) that the caller skips rather than treats as an operational error.
+	ReclaimStaleAssignee hookReclaimStaleAssigneeFunc
+	ListContinuation     hookListContinuationFunc
+	AssignContinuation   hookAssignContinuationFunc
+	DrainAck             hookDrainAckFunc
 	// EmitClaimRejected publishes a bead.claim_rejected event when a claim is
 	// lost to a different live claimant (ADR-0009). Best-effort.
 	EmitClaimRejected hookEmitClaimRejectedFunc
@@ -68,14 +89,16 @@ type hookClaimOps struct {
 }
 
 type (
-	hookClaimFunc              func(context.Context, string, []string, string, string) (beads.Bead, bool, error)
-	hookListContinuationFunc   func(context.Context, string, []string, string, string) ([]beads.Bead, error)
-	hookAssignContinuationFunc func(context.Context, string, []string, string, string) error
-	hookDrainAckFunc           func(io.Writer) error
-	hookEmitClaimRejectedFunc  func(beadID, existingClaimant, attemptedClaimant string)
-	hookResolveWorkBranchFunc  func(dir string) string
-	hookStampWorkMetaFunc      func(ctx context.Context, dir string, env []string, beadID, assignee string, patch map[string]string) error
-	hookPublishRunMapFunc      func(runID, beadID string, sessionKeys ...string) error
+	hookClaimFunc                func(context.Context, string, []string, string, string) (beads.Bead, bool, error)
+	hookAssigneeLiveFunc         func(ctx context.Context, dir string, env []string, assignee string) bool
+	hookReclaimStaleAssigneeFunc func(ctx context.Context, dir string, env []string, actor string, candidate beads.Bead) bool
+	hookListContinuationFunc     func(context.Context, string, []string, string, string) ([]beads.Bead, error)
+	hookAssignContinuationFunc   func(context.Context, string, []string, string, string) error
+	hookDrainAckFunc             func(io.Writer) error
+	hookEmitClaimRejectedFunc    func(beadID, existingClaimant, attemptedClaimant string)
+	hookResolveWorkBranchFunc    func(dir string) string
+	hookStampWorkMetaFunc        func(ctx context.Context, dir string, env []string, beadID, assignee string, patch map[string]string) error
+	hookPublishRunMapFunc        func(runID, beadID string, sessionKeys ...string) error
 )
 
 type hookClaimJSONResult struct {
@@ -180,6 +203,12 @@ func (ops *hookClaimOps) applyDefaults() {
 	if ops.Claim == nil {
 		ops.Claim = hookClaimWithBdStore
 	}
+	if ops.IsAssigneeLive == nil {
+		ops.IsAssigneeLive = hookAssigneeIsLiveWithBdStore
+	}
+	if ops.ReclaimStaleAssignee == nil {
+		ops.ReclaimStaleAssignee = hookReclaimStaleAssigneeWithBdStore
+	}
 	if ops.ListContinuation == nil {
 		ops.ListContinuation = hookListContinuationWithBdStore
 	}
@@ -218,7 +247,8 @@ func claimFirstEligibleHookCandidate(candidates []beads.Bead, opts hookClaimOpti
 	defer cancel()
 	claimsErrored := false
 	for _, candidate := range candidates {
-		if !hookCandidateClaimable(candidate, opts.RouteTargets) {
+		claimable := hookCandidateClaimable(candidate, opts.RouteTargets)
+		if !claimable && !hookCandidateStaleAssigned(candidate, opts.RouteTargets) {
 			continue
 		}
 		if ctx.Err() != nil {
@@ -228,6 +258,20 @@ func claimFirstEligibleHookCandidate(candidates []beads.Bead, opts hookClaimOpti
 			// deadline-exceeded skips on ids never really tried; they are reclaimed
 			// next tick (NDI).
 			break
+		}
+		if !claimable {
+			// Routed here but held by a non-empty assignee (gcy-72p): the prior
+			// claimant might still be a live session actively working it (the
+			// existing_assignment/ready_assignment tiers already served that case
+			// under this session's own identity, earlier in tryHookClaim), so
+			// reclaim only after confirming the assignee is both foreign and
+			// non-live. A benign race loss on either check just skips to the next
+			// candidate — the work is reclaimed next tick (NDI) either way.
+			if hookClaimHasIdentity(candidate.Assignee, opts.IdentityCandidates) ||
+				ops.IsAssigneeLive(ctx, dir, opts.Env, candidate.Assignee) ||
+				!ops.ReclaimStaleAssignee(ctx, dir, opts.Env, opts.Assignee, candidate) {
+				continue
+			}
 		}
 		claimed, ok, err := ops.Claim(ctx, dir, opts.Env, candidate.ID, opts.Assignee)
 		if err != nil {
@@ -287,6 +331,18 @@ func claimFirstEligibleHookCandidate(candidates []beads.Bead, opts hookClaimOpti
 func hookCandidateClaimable(candidate beads.Bead, routeTargets []string) bool {
 	return strings.TrimSpace(candidate.ID) != "" &&
 		strings.TrimSpace(candidate.Assignee) == "" &&
+		hookClaimMatchesRoute(candidate, routeTargets)
+}
+
+// hookCandidateStaleAssigned is hookCandidateClaimable's mirror image: a
+// route-matched candidate that currently holds a non-empty assignee, left by
+// a prior claimant (a hand-rolled handoff that forgot to clear it, or a
+// routing-scheme migration). It is a structural check only, with no opinion
+// on whether that assignee is still live — the caller consults
+// hookClaimOps.IsAssigneeLive before treating it as reclaimable (gcy-72p).
+func hookCandidateStaleAssigned(candidate beads.Bead, routeTargets []string) bool {
+	return strings.TrimSpace(candidate.ID) != "" &&
+		strings.TrimSpace(candidate.Assignee) != "" &&
 		hookClaimMatchesRoute(candidate, routeTargets)
 }
 
@@ -1144,6 +1200,28 @@ func hookClaimBdStore(dir string, env []string, actor string) *beads.BdStore {
 // the underlying bd update stalls.
 func hookClaimBdStoreContext(ctx context.Context, dir string, env []string, actor string) *beads.BdStore {
 	return beads.NewBdStore(dir, hookClaimCommandRunnerWithEnvContext(ctx, hookClaimEnvMap(env, dir, actor)))
+}
+
+// hookAssigneeIsLiveWithBdStore is IsAssigneeLive's production implementation.
+// It reuses liveOpenSessionAssignmentExists (pool_session_name.go) — the same
+// liveness signal the background dead-assignee reconciler uses to decide an
+// assignment is orphaned — so the claim path (gcy-72p) and the reconciler
+// never disagree about what "live" means for the same assignee string.
+func hookAssigneeIsLiveWithBdStore(ctx context.Context, dir string, env []string, assignee string) bool {
+	return liveOpenSessionAssignmentExists(hookClaimBdStoreContext(ctx, dir, env, ""), assignee)
+}
+
+// hookReclaimStaleAssigneeWithBdStore is ReclaimStaleAssignee's production
+// implementation. It reuses releaseOrphanedPoolAssignment (pool_session_name.go)
+// — the same conditional-release path (ReleaseIfCurrent CAS when the store
+// supports it, otherwise recheck-then-write) the background dead-assignee
+// reconciler already uses — so a claim-path reclaim is exactly as race-safe as
+// the reconciler's own orphan release, not a separately invented mutation.
+// clearDetached is false: the claim path has not run the reconciler's
+// detached-process probe, so it makes no claim about detachment and leaves
+// that metadata for the reconciler's own pass.
+func hookReclaimStaleAssigneeWithBdStore(ctx context.Context, dir string, env []string, actor string, candidate beads.Bead) bool {
+	return releaseOrphanedPoolAssignment(hookClaimBdStoreContext(ctx, dir, env, actor), candidate, false)
 }
 
 func hookClaimEnvMap(env []string, dir string, actor string) map[string]string {

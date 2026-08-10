@@ -217,3 +217,199 @@ func TestDoHookClaimSkipsBlockedRoutedHeadAndClaimsReadyBehindIt(t *testing.T) {
 		t.Fatalf("claimedBead = %q, want ready-behind (blocked-head must be skipped)", claimedBead)
 	}
 }
+
+// TestDoHookClaimUnassignedRoutedCandidateNeverConsultsLiveness guards the
+// common case against regression: an already-unassigned, routed candidate
+// must claim exactly as before and must never pay for a liveness check or
+// reclaim call. IsAssigneeLive/ReclaimStaleAssignee (gcy-72p) only exist for
+// a candidate that already carries a non-empty assignee.
+func TestDoHookClaimUnassignedRoutedCandidateNeverConsultsLiveness(t *testing.T) {
+	candidates := []beads.Bead{
+		{ID: "work-1", Status: "open", Metadata: map[string]string{"gc.routed_to": "route-1"}},
+	}
+	output, err := json.Marshal(candidates)
+	if err != nil {
+		t.Fatalf("marshal candidates: %v", err)
+	}
+
+	var claimedBead string
+	ops := hookClaimOps{
+		Runner: func(string, string) (string, error) { return string(output), nil },
+		IsAssigneeLive: func(context.Context, string, []string, string) bool {
+			t.Fatal("IsAssigneeLive called for an already-unassigned candidate")
+			return true
+		},
+		ReclaimStaleAssignee: func(context.Context, string, []string, string, beads.Bead) bool {
+			t.Fatal("ReclaimStaleAssignee called for an already-unassigned candidate")
+			return false
+		},
+		Claim: func(_ context.Context, _ string, _ []string, beadID, assignee string) (beads.Bead, bool, error) {
+			claimedBead = beadID
+			return beads.Bead{ID: beadID, Assignee: assignee, Status: "in_progress"}, true, nil
+		},
+		DrainAck: func(io.Writer) error { return nil },
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := doHookClaim("query", ".", hookClaimOptions{
+		Assignee:           "worker-1",
+		IdentityCandidates: []string{"worker-1"},
+		RouteTargets:       []string{"route-1"},
+		JSON:               true,
+	}, ops, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doHookClaim() = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	if claimedBead != "work-1" {
+		t.Fatalf("claimedBead = %q, want work-1", claimedBead)
+	}
+}
+
+// TestDoHookClaimReclaimsRoutedCandidateWithStaleAssignee guards the gcy-72p
+// fix itself: a routed candidate whose assignee belongs to a confirmed
+// non-live session is reclaimed (assignee cleared via ReclaimStaleAssignee)
+// and then claimed, instead of sitting invisible to both its old and new
+// owner forever — routed_to matched, but a non-empty assignee alone used to
+// short-circuit before the route match was ever consulted.
+func TestDoHookClaimReclaimsRoutedCandidateWithStaleAssignee(t *testing.T) {
+	candidates := []beads.Bead{
+		{ID: "work-1", Status: "in_progress", Assignee: "ghost-worker", Metadata: map[string]string{"gc.routed_to": "route-1"}},
+	}
+	output, err := json.Marshal(candidates)
+	if err != nil {
+		t.Fatalf("marshal candidates: %v", err)
+	}
+
+	var liveChecked, reclaimedBead, claimedBead string
+	ops := hookClaimOps{
+		Runner: func(string, string) (string, error) { return string(output), nil },
+		IsAssigneeLive: func(_ context.Context, _ string, _ []string, assignee string) bool {
+			liveChecked = assignee
+			return false // confirmed non-live
+		},
+		ReclaimStaleAssignee: func(_ context.Context, _ string, _ []string, actor string, candidate beads.Bead) bool {
+			reclaimedBead = candidate.ID
+			if actor != "worker-1" {
+				t.Fatalf("reclaim actor = %q, want worker-1", actor)
+			}
+			return true
+		},
+		Claim: func(_ context.Context, _ string, _ []string, beadID, assignee string) (beads.Bead, bool, error) {
+			claimedBead = beadID
+			return beads.Bead{ID: beadID, Assignee: assignee, Status: "in_progress"}, true, nil
+		},
+		DrainAck: func(io.Writer) error { return nil },
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := doHookClaim("query", ".", hookClaimOptions{
+		Assignee:           "worker-1",
+		IdentityCandidates: []string{"worker-1"},
+		RouteTargets:       []string{"route-1"},
+		JSON:               true,
+	}, ops, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doHookClaim() = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	if liveChecked != "ghost-worker" {
+		t.Fatalf("IsAssigneeLive checked %q, want ghost-worker", liveChecked)
+	}
+	if reclaimedBead != "work-1" {
+		t.Fatalf("ReclaimStaleAssignee called for %q, want work-1", reclaimedBead)
+	}
+	if claimedBead != "work-1" {
+		t.Fatalf("claimedBead = %q, want work-1", claimedBead)
+	}
+}
+
+// TestDoHookClaimSkipsRoutedCandidateWithLiveAssignee guards the safety half
+// of gcy-72p: a routed candidate whose assignee IS confirmed live must never
+// be reclaimed or claimed, even though it route-matches — a still-active
+// prior claimant's in-flight work must never be stolen out from under it.
+func TestDoHookClaimSkipsRoutedCandidateWithLiveAssignee(t *testing.T) {
+	candidates := []beads.Bead{
+		{ID: "work-1", Status: "in_progress", Assignee: "live-worker", Metadata: map[string]string{"gc.routed_to": "route-1"}},
+	}
+	output, err := json.Marshal(candidates)
+	if err != nil {
+		t.Fatalf("marshal candidates: %v", err)
+	}
+
+	reclaimCalled := false
+	claimCalled := false
+	ops := hookClaimOps{
+		Runner:         func(string, string) (string, error) { return string(output), nil },
+		IsAssigneeLive: func(context.Context, string, []string, string) bool { return true },
+		ReclaimStaleAssignee: func(context.Context, string, []string, string, beads.Bead) bool {
+			reclaimCalled = true
+			return true
+		},
+		Claim: func(_ context.Context, _ string, _ []string, beadID, assignee string) (beads.Bead, bool, error) {
+			claimCalled = true
+			return beads.Bead{ID: beadID, Assignee: assignee, Status: "in_progress"}, true, nil
+		},
+		DrainAck: func(io.Writer) error { return nil },
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := doHookClaim("query", ".", hookClaimOptions{
+		Assignee:           "worker-1",
+		IdentityCandidates: []string{"worker-1"},
+		RouteTargets:       []string{"route-1"},
+		JSON:               true,
+	}, ops, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doHookClaim() = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	if reclaimCalled {
+		t.Fatal("ReclaimStaleAssignee called for a live assignee — must never steal a live claim")
+	}
+	if claimCalled {
+		t.Fatal("Claim called for a bead still held by a live assignee")
+	}
+	if !strings.Contains(stdout.String(), `"reason":"no_work"`) {
+		t.Fatalf("stdout = %q, want a no_work drain", stdout.String())
+	}
+}
+
+// TestDoHookClaimTreatsLostReclaimRaceAsNoWorkNotError guards that a benign
+// reclaim race loss (the assignment changed underneath the liveness check —
+// e.g. a legitimate concurrent claim landed first) drains as ordinary
+// no_work, not claims_errored: it is a race the next tick resolves, not an
+// operational failure.
+func TestDoHookClaimTreatsLostReclaimRaceAsNoWorkNotError(t *testing.T) {
+	candidates := []beads.Bead{
+		{ID: "work-1", Status: "in_progress", Assignee: "ghost-worker", Metadata: map[string]string{"gc.routed_to": "route-1"}},
+	}
+	output, err := json.Marshal(candidates)
+	if err != nil {
+		t.Fatalf("marshal candidates: %v", err)
+	}
+
+	ops := hookClaimOps{
+		Runner:         func(string, string) (string, error) { return string(output), nil },
+		IsAssigneeLive: func(context.Context, string, []string, string) bool { return false },
+		ReclaimStaleAssignee: func(context.Context, string, []string, string, beads.Bead) bool {
+			return false // lost the race: assignment changed underneath the check
+		},
+		Claim: func(_ context.Context, _ string, _ []string, beadID, assignee string) (beads.Bead, bool, error) {
+			t.Fatal("Claim called after a lost reclaim race")
+			return beads.Bead{}, false, nil
+		},
+		DrainAck: func(io.Writer) error { return nil },
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := doHookClaim("query", ".", hookClaimOptions{
+		Assignee:           "worker-1",
+		IdentityCandidates: []string{"worker-1"},
+		RouteTargets:       []string{"route-1"},
+		JSON:               true,
+	}, ops, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doHookClaim() = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"reason":"no_work"`) {
+		t.Fatalf("stdout = %q, want reason no_work (benign race loss, not claims_errored)", stdout.String())
+	}
+}
