@@ -413,3 +413,60 @@ func TestDoHookClaimTreatsLostReclaimRaceAsNoWorkNotError(t *testing.T) {
 		t.Fatalf("stdout = %q, want reason no_work (benign race loss, not claims_errored)", stdout.String())
 	}
 }
+
+// TestDoHookClaimCachesLivenessCheckAcrossCandidatesSharingAnAssignee guards
+// the gcy-ar1 follow-up: a single dead session commonly leaves several routed
+// candidates stamped with its identity in the same batch, and IsAssigneeLive's
+// answer for that identity cannot change bead-to-bead within one tick, so a
+// second candidate sharing an already-checked assignee must reuse the first
+// answer instead of paying its own bd round-trip.
+func TestDoHookClaimCachesLivenessCheckAcrossCandidatesSharingAnAssignee(t *testing.T) {
+	candidates := []beads.Bead{
+		{ID: "work-1", Status: "in_progress", Assignee: "ghost-worker", Metadata: map[string]string{"gc.routed_to": "route-1"}},
+		{ID: "work-2", Status: "in_progress", Assignee: "ghost-worker", Metadata: map[string]string{"gc.routed_to": "route-1"}},
+	}
+	output, err := json.Marshal(candidates)
+	if err != nil {
+		t.Fatalf("marshal candidates: %v", err)
+	}
+
+	liveCalls := 0
+	var claimedBead string
+	ops := hookClaimOps{
+		Runner: func(string, string) (string, error) { return string(output), nil },
+		IsAssigneeLive: func(_ context.Context, _ string, _ []string, assignee string) bool {
+			liveCalls++
+			if assignee != "ghost-worker" {
+				t.Fatalf("IsAssigneeLive checked %q, want ghost-worker", assignee)
+			}
+			return false // confirmed non-live, whichever candidate asks
+		},
+		ReclaimStaleAssignee: func(_ context.Context, _ string, _ []string, _ string, candidate beads.Bead) bool {
+			// work-1 loses a benign reclaim race so the loop reaches work-2, the
+			// case that actually exercises the cached (second) liveness lookup.
+			return candidate.ID == "work-2"
+		},
+		Claim: func(_ context.Context, _ string, _ []string, beadID, assignee string) (beads.Bead, bool, error) {
+			claimedBead = beadID
+			return beads.Bead{ID: beadID, Assignee: assignee, Status: "in_progress"}, true, nil
+		},
+		DrainAck: func(io.Writer) error { return nil },
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := doHookClaim("query", ".", hookClaimOptions{
+		Assignee:           "worker-1",
+		IdentityCandidates: []string{"worker-1"},
+		RouteTargets:       []string{"route-1"},
+		JSON:               true,
+	}, ops, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doHookClaim() = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	if claimedBead != "work-2" {
+		t.Fatalf("claimedBead = %q, want work-2", claimedBead)
+	}
+	if liveCalls != 1 {
+		t.Fatalf("IsAssigneeLive called %d times, want 1 (work-2 should reuse work-1's cached answer)", liveCalls)
+	}
+}

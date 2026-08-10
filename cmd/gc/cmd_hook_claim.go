@@ -246,6 +246,7 @@ func claimFirstEligibleHookCandidate(candidates []beads.Bead, opts hookClaimOpti
 	ctx, cancel := context.WithTimeout(context.Background(), hookClaimMutationTimeout)
 	defer cancel()
 	claimsErrored := false
+	liveCache := map[string]bool{}
 	for _, candidate := range candidates {
 		claimable := hookCandidateClaimable(candidate, opts.RouteTargets)
 		if !claimable && !hookCandidateStaleAssigned(candidate, opts.RouteTargets) {
@@ -268,7 +269,7 @@ func claimFirstEligibleHookCandidate(candidates []beads.Bead, opts hookClaimOpti
 			// non-live. A benign race loss on either check just skips to the next
 			// candidate — the work is reclaimed next tick (NDI) either way.
 			if hookClaimHasIdentity(candidate.Assignee, opts.IdentityCandidates) ||
-				ops.IsAssigneeLive(ctx, dir, opts.Env, candidate.Assignee) ||
+				hookAssigneeLiveCached(ctx, dir, opts, ops, candidate.Assignee, liveCache) ||
 				!ops.ReclaimStaleAssignee(ctx, dir, opts.Env, opts.Assignee, candidate) {
 				continue
 			}
@@ -344,6 +345,23 @@ func hookCandidateStaleAssigned(candidate beads.Bead, routeTargets []string) boo
 	return strings.TrimSpace(candidate.ID) != "" &&
 		strings.TrimSpace(candidate.Assignee) != "" &&
 		hookClaimMatchesRoute(candidate, routeTargets)
+}
+
+// hookAssigneeLiveCached wraps hookClaimOps.IsAssigneeLive with a memo keyed by
+// assignee string and scoped to a single claimFirstEligibleHookCandidate call.
+// One dead session commonly leaves several routed candidates stamped with its
+// identity in the same ready-query batch (gcy-ar1); liveness of an assignee
+// string is a property of that session, not of any one candidate bead, so a
+// second candidate sharing an already-checked assignee reuses the first
+// answer instead of spending its own bd round-trip(s) from the shared
+// hookClaimMutationTimeout budget.
+func hookAssigneeLiveCached(ctx context.Context, dir string, opts hookClaimOptions, ops hookClaimOps, assignee string, cache map[string]bool) bool {
+	if live, ok := cache[assignee]; ok {
+		return live
+	}
+	live := ops.IsAssigneeLive(ctx, dir, opts.Env, assignee)
+	cache[assignee] = live
+	return live
 }
 
 // reportHookClaimRejected publishes a bead.claim_rejected event (ADR-0009) when a
