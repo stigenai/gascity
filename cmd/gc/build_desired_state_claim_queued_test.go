@@ -1,12 +1,17 @@
 package main
 
 import (
+	"io"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/config"
+	"github.com/gastownhall/gascity/internal/runtime"
 )
 
 // TestClaimQueuedBehindHead covers the demand suppressor added after the
@@ -183,6 +188,100 @@ func TestDefaultScaleCheckCountsAndDemandDedupsSuppressionAcrossAliasedStores(t 
 	}
 	if got := stringSet(suppression.BeadIDs); !reflect.DeepEqual(got, []string{queued.ID}) {
 		t.Fatalf("suppression.BeadIDs = %v, want [%s]", suppression.BeadIDs, queued.ID)
+	}
+}
+
+// TestBuildDesiredStateSurfacesClaimQueuedSuppressionDiagnostic drives a
+// claim_state=queued bead through buildDesiredStateWithSessionBeads, unlike
+// the three tests above which all call defaultScaleCheckCountsAndDemand
+// directly. That tally is correctly implemented and covered, but the stderr
+// line and demand_snapshot.default_scale_demand trace field it feeds — the
+// literal fix for gcy-kcy's "no log line ... nothing in gc status" complaint
+// — are only ever emitted from buildDesiredStateWithSessionBeads
+// (cmd/gc/build_desired_state.go), so a regression there would leave the
+// tests above green while silently reproducing gcy-kcy.
+func TestBuildDesiredStateSurfacesClaimQueuedSuppressionDiagnostic(t *testing.T) {
+	const template = "coder"
+	cityDir := t.TempDir()
+	store := beads.NewMemStore()
+	queued, err := store.Create(beads.Bead{
+		Title:  "queued behind head",
+		Type:   "task",
+		Status: "open",
+		Metadata: map[string]string{
+			beadmeta.RoutedToMetadataKey:         template,
+			beadmeta.ClaimStateMetadataKey:       beadmeta.ClaimStateQueued,
+			beadmeta.ClaimQueueReasonMetadataKey: "behind_head",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create queued bead: %v", err)
+	}
+
+	// A single agent with no custom scale_check is enough to populate
+	// defaultScaleTargets (see defaultScaleCheckTargetForAgent) and drive the
+	// diagnostic in buildDesiredStateWithSessionBeads.
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:         template,
+			StartCommand: "true",
+		}},
+	}
+
+	tracer := newSessionReconcilerTracer(cityDir, "trace-town", io.Discard)
+	if !tracer.Enabled() {
+		t.Fatal("tracer should be enabled")
+	}
+	cycle := tracer.BeginCycle(TraceTickTriggerPatrol, "", time.Now().UTC(), cfg)
+	if cycle == nil {
+		t.Fatal("BeginCycle returned nil")
+	}
+
+	sessionSnapshot, err := loadSessionBeadSnapshot(store)
+	if err != nil {
+		t.Fatalf("load session snapshot: %v", err)
+	}
+	var stderr strings.Builder
+	buildDesiredStateWithSessionBeads(
+		"trace-town", cityDir, time.Now().UTC(), cfg, runtime.NewFake(),
+		store, nil, sessionSnapshot, cycle, &stderr,
+	)
+
+	if !strings.Contains(stderr.String(), "scaleCheck: 1 ready bead(s) suppressed from pool demand") {
+		t.Fatalf("stderr = %q, want claim-queued suppression diagnostic", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), queued.ID) {
+		t.Fatalf("stderr = %q, want suppressed bead ID %s", stderr.String(), queued.ID)
+	}
+
+	if err := cycle.End(TraceCompletionCompleted, map[string]any{}); err != nil {
+		t.Fatalf("End: %v", err)
+	}
+	if err := tracer.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	records, err := ReadTraceRecords(traceCityRuntimeDir(cityDir), TraceFilter{})
+	if err != nil {
+		t.Fatalf("ReadTraceRecords: %v", err)
+	}
+	var found bool
+	for i := range records {
+		r := &records[i]
+		if r.RecordType != TraceRecordOperation || r.SiteCode != TraceSiteDemandSnapshot {
+			continue
+		}
+		if name, _ := r.Fields["operation_name"].(string); name != "demand_snapshot.default_scale_demand" {
+			continue
+		}
+		found = true
+		if got := traceFieldInt(r.Fields["claim_queued_suppressed"]); got != 1 {
+			t.Fatalf("claim_queued_suppressed = %#v, want 1", r.Fields["claim_queued_suppressed"])
+		}
+	}
+	if !found {
+		t.Fatal("missing demand_snapshot.default_scale_demand operation record")
 	}
 }
 
