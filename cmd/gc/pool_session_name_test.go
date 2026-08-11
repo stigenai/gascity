@@ -2173,6 +2173,7 @@ type conditionalReleaseProbeStore struct {
 	mem *beads.MemStore
 
 	releaseUnsupported bool
+	releaseErr         error
 	claimID            string
 	claimAssignee      string
 	claimAfterLiveGate bool
@@ -2236,6 +2237,9 @@ func (s *conditionalReleaseProbeStore) ReleaseIfCurrent(id, expectedAssignee str
 		return false, beads.ErrConditionalReleaseUnsupported
 	}
 	s.releaseCalls = append(s.releaseCalls, releaseProbeCall{id: id, assignee: expectedAssignee})
+	if s.releaseErr != nil {
+		return false, s.releaseErr
+	}
 	return s.mem.ReleaseIfCurrent(id, expectedAssignee)
 }
 
@@ -2383,6 +2387,38 @@ func TestReleaseOrphanedPoolAssignments_ConditionalReleaseLosesRaceNoClobber(t *
 	}
 	if got.Status != "in_progress" || got.Assignee != "worker-live" {
 		t.Fatalf("work = status %q assignee %q, want the concurrent claim preserved (in_progress/worker-live)", got.Status, got.Assignee)
+	}
+}
+
+// TestReleaseOrphanedPoolAssignment_SurfacesConditionalReleaseWriteError
+// guards the gcy-v1ga fix at its source, one level below the reconciler sweep:
+// a genuine CAS write failure (the store supports conditional release, but
+// this attempt itself errored — distinct from ErrConditionalReleaseUnsupported,
+// and distinct from a benign lost race where ReleaseIfCurrent answers
+// released=false with a nil err, see the sibling
+// ConditionalReleaseLosesRaceNoClobber test above) must come back from
+// releaseOrphanedPoolAssignment as a non-nil error instead of collapsing into
+// the same (false, nil) a benign race loss returns. Before this fix, this
+// branch (pool_session_name.go's "conditional release failed" log line) had
+// no test coverage at any level.
+func TestReleaseOrphanedPoolAssignment_SurfacesConditionalReleaseWriteError(t *testing.T) {
+	store, work := newConditionalReleaseProbeStore(t)
+	store.releaseErr = errors.New("dolt: connection reset")
+
+	released, err := releaseOrphanedPoolAssignment(store, work, false)
+	if err == nil {
+		t.Fatal("err = nil, want the conditional release's write error surfaced")
+	}
+	if released {
+		t.Fatal("released = true, want false alongside the error")
+	}
+
+	got, getErr := store.Get(work.ID)
+	if getErr != nil {
+		t.Fatalf("Get work bead: %v", getErr)
+	}
+	if got.Status != "in_progress" || got.Assignee != "worker-dead" {
+		t.Fatalf("work = status %q assignee %q, want untouched after a failed release write", got.Status, got.Assignee)
 	}
 }
 

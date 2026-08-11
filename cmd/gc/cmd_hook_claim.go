@@ -64,8 +64,11 @@ type hookClaimOps struct {
 	// the background dead-assignee reconciler already uses — so the claim path
 	// can never race a concurrent legitimate claim any more loosely than the
 	// reconciler already tolerates. Reports whether the reclaim applied; false
-	// (no error) means a benign race loss (assignment changed underneath the
-	// check) that the caller skips rather than treats as an operational error.
+	// with a nil error means a benign race loss (assignment changed underneath
+	// the check) that the caller skips without treating it as an operational
+	// error. A non-nil error means the underlying write itself failed — the
+	// caller counts that toward claimsErrored instead (gcy-v1ga), mirroring how
+	// the sibling Claim call's own err branch is handled two lines below.
 	ReclaimStaleAssignee hookReclaimStaleAssigneeFunc
 	ListContinuation     hookListContinuationFunc
 	AssignContinuation   hookAssignContinuationFunc
@@ -91,7 +94,7 @@ type hookClaimOps struct {
 type (
 	hookClaimFunc                func(context.Context, string, []string, string, string) (beads.Bead, bool, error)
 	hookAssigneeLiveFunc         func(ctx context.Context, dir string, env []string, assignee string) bool
-	hookReclaimStaleAssigneeFunc func(ctx context.Context, dir string, env []string, actor string, candidate beads.Bead) bool
+	hookReclaimStaleAssigneeFunc func(ctx context.Context, dir string, env []string, actor string, candidate beads.Bead) (bool, error)
 	hookListContinuationFunc     func(context.Context, string, []string, string, string) ([]beads.Bead, error)
 	hookAssignContinuationFunc   func(context.Context, string, []string, string, string) error
 	hookDrainAckFunc             func(io.Writer) error
@@ -266,11 +269,22 @@ func claimFirstEligibleHookCandidate(candidates []beads.Bead, opts hookClaimOpti
 			// existing_assignment/ready_assignment tiers already served that case
 			// under this session's own identity, earlier in tryHookClaim), so
 			// reclaim only after confirming the assignee is both foreign and
-			// non-live. A benign race loss on either check just skips to the next
-			// candidate — the work is reclaimed next tick (NDI) either way.
+			// non-live. A benign race loss just skips to the next candidate — the
+			// work is reclaimed next tick (NDI) either way. A reclaim write that
+			// fails outright is distinct from that benign loss and is counted via
+			// claimsErrored below, mirroring the sibling ops.Claim err branch
+			// immediately after this block (gcy-v1ga).
 			if hookClaimHasIdentity(candidate.Assignee, opts.IdentityCandidates) ||
-				hookAssigneeLiveCached(ctx, dir, opts, ops, candidate.Assignee, liveCache) ||
-				!ops.ReclaimStaleAssignee(ctx, dir, opts.Env, opts.Assignee, candidate) {
+				hookAssigneeLiveCached(ctx, dir, opts, ops, candidate.Assignee, liveCache) {
+				continue
+			}
+			reclaimed, err := ops.ReclaimStaleAssignee(ctx, dir, opts.Env, opts.Assignee, candidate)
+			if err != nil {
+				fmt.Fprintf(stderr, "gc hook --claim: reclaiming %s: %v\n", candidate.ID, err) //nolint:errcheck
+				claimsErrored = true
+				continue
+			}
+			if !reclaimed {
 				continue
 			}
 		}
@@ -1238,7 +1252,7 @@ func hookAssigneeIsLiveWithBdStore(ctx context.Context, dir string, env []string
 // clearDetached is false: the claim path has not run the reconciler's
 // detached-process probe, so it makes no claim about detachment and leaves
 // that metadata for the reconciler's own pass.
-func hookReclaimStaleAssigneeWithBdStore(ctx context.Context, dir string, env []string, actor string, candidate beads.Bead) bool {
+func hookReclaimStaleAssigneeWithBdStore(ctx context.Context, dir string, env []string, actor string, candidate beads.Bead) (bool, error) {
 	return releaseOrphanedPoolAssignment(hookClaimBdStoreContext(ctx, dir, env, actor), candidate, false)
 }
 
