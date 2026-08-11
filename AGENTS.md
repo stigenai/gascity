@@ -377,13 +377,17 @@ becoming more useful as models improve — it becomes LESS useful instead.
   merge body `applyAgentMutation` (in `internal/config/patch.go`) — and, for
   the rig-override path, copy it in `AgentOverride.toAgentPatch` — and, if the
   field is a slice/map/pointer, deep-copy it in `Agent.Clone`
-  (`internal/config/config.go`). All four are test-guarded, so a missed field
-  fails the build: `TestAgentFieldSync` (struct field sets),
+  (`internal/config/config.go`) — and copy it in `cmd/gc/pool.go`'s
+  `deepCopyAgent`, which is a separate, hand-rolled, explicit-field-list
+  copy, NOT based on `Agent.Clone`. All five are test-guarded, so a missed
+  field fails the build: `TestAgentFieldSync` (struct field sets),
   `TestApplyAgentPatchCoversAllFields` / `TestApplyAgentOverrideCoversAllFields`
-  (merge + `toAgentPatch` completeness), and `TestAgentCloneIsDeep` (clone
-  deepness). Both patch and rig override share `applyAgentMutation`, and both
-  the pack-load cache (`deepCopyAgents`) and pool expansion
-  (`cmd/gc/pool.go` `deepCopyAgent`) share `Agent.Clone`.
+  (merge + `toAgentPatch` completeness), `TestAgentCloneIsDeep` (clone
+  deepness), and `TestDeepCopyAgentCoversAllFields` (`cmd/gc/pool_test.go`,
+  pool-expansion copy completeness). Both patch and rig override share
+  `applyAgentMutation`. The pack-load cache (`deepCopyAgents`) shares
+  `Agent.Clone`, but pool expansion (`cmd/gc/pool.go` `deepCopyAgent`) does
+  NOT — it must be updated by hand for every new field.
 - **Adding rig config fields:** When adding a field to `config.Rig`, also
   add the corresponding optional field to `RigPatch` and wire the merge
   into `applyRigPatch` so layered configs (fragments, patches) can
