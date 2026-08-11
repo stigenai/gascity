@@ -10304,6 +10304,88 @@ func TestReconcileSessionBeads_RecordsResetStallDiagnostic(t *testing.T) {
 	}
 }
 
+// TestRecordResetStallIfDue_UncommittedResetPendingStalledSeparately verifies
+// the healStatePatchWithRollbackInfo shape (continuation_reset_pending=true
+// armed without reset_committed_at ever being stamped, gcy-y9h/gcy-77f) gets
+// its own stall diagnostic instead of silently producing nothing. Unlike the
+// committed-reset case, there is no persisted timestamp to measure elapsed
+// time from, so this exercises the in-memory first-observed tracking in
+// drainTracker directly, across several ticks.
+func TestRecordResetStallIfDue_UncommittedResetPendingStalledSeparately(t *testing.T) {
+	env := newReconcilerTestEnv()
+	rec := events.NewFake()
+	dt := newDrainTracker()
+	startupTimeout := 60 * time.Second
+
+	session := env.createSessionBead("worker", "worker")
+	env.setSessionMetadata(&session, map[string]string{
+		"continuation_reset_pending": "true",
+	})
+	info := sessiontest.SeedBead(t, session)
+
+	// First observation: the shape just started, nothing has elapsed yet.
+	recordResetStallIfDue(info, "worker", "worker", false, startupTimeout, env.clk.Now().UTC(), dt, rec, &env.stderr, nil)
+	if got := strings.TrimSpace(env.stderr.String()); got != "" {
+		t.Fatalf("first-observed pass stderr = %q, want silence", got)
+	}
+	if len(rec.Events) != 0 {
+		t.Fatalf("recorded events after first observation = %d, want 0", len(rec.Events))
+	}
+
+	// 75s later (still no reset_committed_at): past the 60s threshold,
+	// measured from first observation since there's no durable timestamp.
+	env.clk.Time = env.clk.Time.Add(75 * time.Second)
+	recordResetStallIfDue(info, "worker", "worker", false, startupTimeout, env.clk.Now().UTC(), dt, rec, &env.stderr, nil)
+	wantMessage := fmt.Sprintf(
+		"session reconciler: reset pending without commit stalled for worker: elapsed_s=75 bead_id=%s",
+		session.ID,
+	)
+	if got := strings.TrimSpace(env.stderr.String()); got != wantMessage {
+		t.Fatalf("stderr = %q, want %q", got, wantMessage)
+	}
+	if len(rec.Events) != 1 {
+		t.Fatalf("recorded events = %d, want 1: %#v", len(rec.Events), rec.Events)
+	}
+	gotEvent := rec.Events[0]
+	if gotEvent.Type != events.SessionResetStalled {
+		t.Fatalf("event type = %q, want %q", gotEvent.Type, events.SessionResetStalled)
+	}
+	if gotEvent.Message != wantMessage {
+		t.Fatalf("event message = %q, want %q", gotEvent.Message, wantMessage)
+	}
+	var payload events.SessionResetStalledPayload
+	if err := json.Unmarshal(gotEvent.Payload, &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload.SessionName != "worker" || payload.Template != "worker" || payload.ResetCommittedAt != "" || payload.ElapsedSeconds != 75 {
+		t.Fatalf("payload = %+v, want session/template worker, empty reset_committed_at, elapsed_s 75", payload)
+	}
+
+	// Debounce: a second past-threshold pass shouldn't re-fire.
+	env.stderr.Reset()
+	recordResetStallIfDue(info, "worker", "worker", false, startupTimeout, env.clk.Now().UTC(), dt, rec, &env.stderr, nil)
+	if got := strings.TrimSpace(env.stderr.String()); got != "" {
+		t.Fatalf("second stalled pass stderr = %q, want debounce silence", got)
+	}
+	if len(rec.Events) != 1 {
+		t.Fatalf("recorded events after duplicate pass = %d, want 1", len(rec.Events))
+	}
+
+	// Once reset_committed_at is finally stamped, the session has moved to
+	// the committed shape (mutually exclusive with the uncommitted one) --
+	// no further uncommitted-shape events, even though
+	// continuation_reset_pending is still "true".
+	env.setSessionMetadata(&session, map[string]string{
+		sessionpkg.ResetCommittedAtKey: env.clk.Now().UTC().Format(time.RFC3339),
+	})
+	info = sessiontest.SeedBead(t, session)
+	env.clk.Time = env.clk.Time.Add(1 * time.Second)
+	recordResetStallIfDue(info, "worker", "worker", false, startupTimeout, env.clk.Now().UTC(), dt, rec, &env.stderr, nil)
+	if len(rec.Events) != 1 {
+		t.Fatalf("recorded events after commit = %d, want still 1", len(rec.Events))
+	}
+}
+
 // TestReconcileSessionBeads_ClosedOnDemandBeadReopensWhenInDesiredState
 // verifies the full reconciler-level cycle for on_demand named session
 // recovery: a closed session bead that is still in the desired state

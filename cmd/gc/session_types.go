@@ -76,14 +76,26 @@ type drainTracker struct {
 	resetStalls      map[string]bool            // session bead ID -> reset stall event emitted
 	suspendDeferrals map[string]int             // session bead ID -> consecutive ticks a named session has been suspend-drain-eligible with its spec absent (#3630)
 	idleProbeCursor  int
+	// resetPendingNoCommitSince/resetPendingNoCommitStalls track
+	// healStatePatchWithRollbackInfo's shape (gcy-y9h, gcy-77f):
+	// continuation_reset_pending=true armed without reset_committed_at ever
+	// being stamped. There is no durable timestamp to measure elapsed time
+	// against for this shape (unlike resetStalls above, which reads the real
+	// reset_committed_at bead field), so the first-observed time is tracked
+	// here in memory instead -- reset on controller restart, same as every
+	// other drainTracker map.
+	resetPendingNoCommitSince  map[string]time.Time // session bead ID -> first tick this shape was observed
+	resetPendingNoCommitStalls map[string]bool      // session bead ID -> reset-pending-without-commit stall event emitted
 }
 
 func newDrainTracker() *drainTracker {
 	return &drainTracker{
-		drains:           make(map[string]*drainState),
-		idleProbes:       make(map[string]*idleProbeState),
-		resetStalls:      make(map[string]bool),
-		suspendDeferrals: make(map[string]int),
+		drains:                     make(map[string]*drainState),
+		idleProbes:                 make(map[string]*idleProbeState),
+		resetStalls:                make(map[string]bool),
+		suspendDeferrals:           make(map[string]int),
+		resetPendingNoCommitSince:  make(map[string]time.Time),
+		resetPendingNoCommitStalls: make(map[string]bool),
 	}
 }
 
@@ -236,6 +248,52 @@ func (dt *drainTracker) clearResetStall(beadID string) {
 	dt.mu.Lock()
 	defer dt.mu.Unlock()
 	delete(dt.resetStalls, beadID)
+}
+
+// observeResetPendingNoCommit records the first time beadID was seen in the
+// reset-pending-without-commit shape and returns that time (unchanged on
+// later calls for the same beadID until clearResetPendingNoCommit runs).
+// Callers use now() - the returned time as the elapsed duration in place of
+// resetStalls' committedAt-based diff, since this shape has no durable
+// timestamp to diff against.
+func (dt *drainTracker) observeResetPendingNoCommit(beadID string, now time.Time) time.Time {
+	if dt == nil || strings.TrimSpace(beadID) == "" {
+		return now
+	}
+	dt.mu.Lock()
+	defer dt.mu.Unlock()
+	if first, ok := dt.resetPendingNoCommitSince[beadID]; ok {
+		return first
+	}
+	dt.resetPendingNoCommitSince[beadID] = now
+	return now
+}
+
+// clearResetPendingNoCommit drops both the first-observed time and the
+// debounce flag for beadID, called once the reset-pending-without-commit
+// shape no longer holds (continuation_reset_pending cleared, or
+// reset_committed_at finally got stamped).
+func (dt *drainTracker) clearResetPendingNoCommit(beadID string) {
+	if dt == nil || strings.TrimSpace(beadID) == "" {
+		return
+	}
+	dt.mu.Lock()
+	defer dt.mu.Unlock()
+	delete(dt.resetPendingNoCommitSince, beadID)
+	delete(dt.resetPendingNoCommitStalls, beadID)
+}
+
+func (dt *drainTracker) markResetPendingNoCommitStall(beadID string) bool {
+	if dt == nil || strings.TrimSpace(beadID) == "" {
+		return true
+	}
+	dt.mu.Lock()
+	defer dt.mu.Unlock()
+	if dt.resetPendingNoCommitStalls[beadID] {
+		return false
+	}
+	dt.resetPendingNoCommitStalls[beadID] = true
+	return true
 }
 
 // Reconciler tuning defaults.

@@ -1756,6 +1756,29 @@ func TestResetPendingCommittedAtInfo(t *testing.T) {
 	}
 }
 
+func TestResetPendingNoCommitInfo(t *testing.T) {
+	tests := []struct {
+		name string
+		md   map[string]string
+		want bool
+	}{
+		{"not pending", map[string]string{}, false},
+		{"not pending but has commit", map[string]string{session.ResetCommittedAtKey: "2026-03-08T12:00:00Z"}, false},
+		{"pending + no commit key at all", map[string]string{"continuation_reset_pending": "true"}, true},
+		{"pending + empty commit", map[string]string{"continuation_reset_pending": "true", session.ResetCommittedAtKey: ""}, true},
+		{"pending + invalid commit", map[string]string{"continuation_reset_pending": "true", session.ResetCommittedAtKey: "not-a-time"}, true},
+		{"pending + valid commit", map[string]string{"continuation_reset_pending": "true", session.ResetCommittedAtKey: "2026-03-08T12:00:00Z"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := seedSessionInfo(makeBead("b1", tt.md))
+			if got := resetPendingNoCommitInfo(info); got != tt.want {
+				t.Fatalf("resetPendingNoCommitInfo = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSessionHasProviderTerminalErrorInfo(t *testing.T) {
 	tests := []struct {
 		name string

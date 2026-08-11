@@ -130,6 +130,7 @@ const (
 	TraceSiteLifecycleStartTerminalProviderError TraceSiteCode = "reconciler.start.terminal_provider_error"
 	TraceSiteLifecycleStartRateLimitHold         TraceSiteCode = "reconciler.start.rate_limit_hold"
 	TraceSiteLifecycleShutdownPreserveSessions   TraceSiteCode = "lifecycle.shutdown.preserve_sessions"
+	TraceSiteReconcilerResetPendingUncommitted   TraceSiteCode = "reconciler.session.reset_pending_uncommitted"
 )
 
 type TraceReasonCode string
@@ -167,6 +168,8 @@ const (
 	TraceReasonNoWakeReason           TraceReasonCode = "no_wake_reason"
 	TraceReasonFSPressure             TraceReasonCode = "fs_pressure"
 	TraceReasonResetStalled           TraceReasonCode = "reset_stalled"
+
+	TraceReasonResetPendingUncommitted TraceReasonCode = "reset_pending_uncommitted"
 
 	TraceReasonRateLimit                     TraceReasonCode = "rate_limit"
 	TraceReasonPendingCreate                 TraceReasonCode = "pending_create"
