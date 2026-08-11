@@ -293,9 +293,31 @@ func ephemeralAssignedReadyProbeScript(shellVar string, includeEphemeralReady bo
 		`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; `
 }
 
+// poolDemandOriginGateScript gates Tier 3 (routed_to pool demand) to sessions
+// the reconciler currently manages as pool-fill capacity. Ephemeral/empty
+// origin passes unconditionally, matching documented intent (only ephemeral
+// sessions check unassigned routed_to by default). A "manual" origin also
+// passes when the session's OWN bead carries pool_managed=true: the
+// reconciler's pool-fill adoption branch (buildDesiredState) stamps that key
+// on a manual-origin session it has selected to fulfill live pool demand this
+// tick (gcy-chr) — session_origin itself is never reclassified, so every
+// other manual/ephemeral classifier (isManualSessionInfo, sleep eligibility,
+// Tiers 1/2) is unaffected. Any other origin (e.g. "named") is unchanged:
+// named sessions intentionally stop at explicit ownership. The pool_managed
+// lookup is a live bd query (not a session-start env var) because adoption
+// can happen on a later reconcile tick, after a long-lived singleton like
+// rig-basic.triage already started with a stale snapshot baked into its
+// process env — see engdocs/design/session-model-unification.md.
 func poolDemandOriginGateScript() string {
 	return `case "$GC_SESSION_ORIGIN" in ` +
 		`ephemeral|"") ;; ` +
+		`manual) ` +
+		`pm=""; ` +
+		`if [ -n "$GC_SESSION_ID" ] && [ -n "$GC_CITY_PATH" ]; then ` +
+		`pm=$(bd -C "$GC_CITY_PATH" show "$GC_SESSION_ID" --json 2>/dev/null | jq -r 'if type=="array" then .[0] else . end | .metadata.pool_managed // empty' 2>/dev/null); ` +
+		`fi; ` +
+		`case "$pm" in true) ;; *) exit 0 ;; esac ` +
+		`;; ` +
 		`*) exit 0 ;; ` +
 		`esac; `
 }

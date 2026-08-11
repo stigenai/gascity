@@ -7847,6 +7847,22 @@ func TestBuildDesiredState_ManualZeroScaledPoolSessionStaysDesiredAndKeepsDepend
 	if dbSlots != 1 {
 		t.Fatalf("db desired slots = %d, want 1; stderr=%s", dbSlots, stderr.String())
 	}
+	// gcy-chr: the reconciler adopted this manual-origin session into the
+	// "api" pool's desired state above (it's a MinActiveSessions/
+	// MaxActiveSessions-configured agent), so its bead must now carry
+	// pool_managed=true — the signal the Tier-3 claim gate
+	// (poolDemandOriginGateScript) reads to let it claim routed_to work,
+	// without session_origin itself ever being reclassified.
+	stored, err := store.Get("s-gc-200")
+	if err != nil {
+		t.Fatalf("store.Get(s-gc-200): %v", err)
+	}
+	if got := stored.Metadata[poolManagedMetadataKey]; got != boolMetadata(true) {
+		t.Fatalf("pool_managed metadata = %q, want %q after pool adoption", got, boolMetadata(true))
+	}
+	if got := stored.Metadata["session_origin"]; got != "manual" {
+		t.Fatalf("session_origin = %q, want unchanged %q (pool_managed stamp must not reclassify origin)", got, "manual")
+	}
 }
 
 func TestRefreshDesiredStateWithSessionBeadsIncludesManualCreatedDuringBuild(t *testing.T) {

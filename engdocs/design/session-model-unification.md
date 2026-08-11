@@ -630,7 +630,14 @@ The synthesized default remains, but becomes origin-aware at runtime:
 
 - all sessions check assigned `in_progress`
 - all sessions check assigned ready work
-- only `origin=ephemeral` checks unassigned `gc.routed_to=$GC_TEMPLATE`
+- only `origin=ephemeral` checks unassigned `gc.routed_to=$GC_TEMPLATE` —
+  with one scoped carve-out (gcy-chr): a `manual`-origin session the
+  reconciler has adopted into active pool demand (its own bead metadata
+  carries `pool_managed=true`, stamped by the pool-fill adoption path when
+  it selects the session to fulfill live demand) may also claim Tier-3
+  `routed_to` work for that demand. This does not reclassify
+  `session_origin` and does not affect sleep/idle eligibility or Tiers
+  1/2 — a manual session never adopted into pool duty is unaffected.
 
 The assigned `in_progress` check (Tier 1) is an ownership read and must key
 off `${GC_ALIAS:-$GC_TEMPLATE}`, not the bare template — see "Claim Identity
@@ -640,7 +647,8 @@ cross-adopt another live session's in-progress claim on templates with more
 than one concurrent identity (a `[[named_session]]` paired with a
 multi-slot pool).
 
-Named and manual sessions stop at explicit ownership.
+Named and manual sessions stop at explicit ownership, except the
+pool-adopted-manual carve-out above.
 
 Custom `work_query` and `scale_check` remain escape hatches.
 

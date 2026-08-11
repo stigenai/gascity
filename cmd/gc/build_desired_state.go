@@ -2892,6 +2892,25 @@ func realizePoolDesiredSessions(
 			// Manual sessions are user-owned, even when they still carry legacy
 			// pool_slot metadata from before singleton normalization.
 			tp.PoolSlot = 0
+			// This item reached the pool-fill loop, so the reconciler is
+			// actively adopting this manual-origin session to fulfill
+			// cfgAgent's pool demand this tick. Stamp pool_managed=true (idempotent)
+			// so the Tier-3 claim-eligibility gate (poolDemandOriginGateScript,
+			// gcy-chr) can recognize a legitimately pool-adopted manual session
+			// without session_origin itself ever being reclassified — every other
+			// manual/ephemeral classifier keys off session_origin directly and is
+			// unaffected. Best-effort: a failed stamp just leaves Tier-3 gated for
+			// this bead until a later tick retries, not a reconcile failure.
+			if !sbInfo.PoolManaged {
+				patch := session.MetadataPatch{poolManagedMetadataKey: boolMetadata(true)}
+				if bp == nil || bp.beadStore == nil {
+					sbInfo = sbInfo.ApplyPatch(patch)
+				} else if bound, err := sessionFrontDoor(bp.beadStore).UpdateMetadataInfo(sbInfo, patch); err != nil {
+					fmt.Fprintf(stderr, "buildDesiredState: pool %q session %s: stamping pool_managed on adopted manual session: %v (continuing)\n", qualifiedName, sbInfo.ID, err) //nolint:errcheck
+				} else {
+					sbInfo = bound
+				}
+			}
 		} else {
 			tp.Alias = qualifiedInstance
 			tp.InstanceName = qualifiedInstance
