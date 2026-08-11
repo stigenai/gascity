@@ -109,12 +109,20 @@ func assignedWorkIndexReachableFromAgent(cityPath string, cfg *config.City, agen
 
 // filterAssignedWorkBeadsForPoolDemand resolves work through the routed
 // backing template because pool scale decisions are per agent template.
+// readyAssigned is collectAssignedWorkBeadsWithStores' store-scoped
+// wake-demand verdict (DesiredStateResult.ReadyAssigned): in-progress work,
+// assigned molecule roots, and store-Ready()/deps-gated open work are true;
+// open work admitted only by the open-routed orphan-release pass is absent.
+// A nil/empty map is treated as "nothing open is ready", matching every
+// caller's readyAssigned being computed alongside assignedWorkBeads in the
+// same collection pass.
 func filterAssignedWorkBeadsForPoolDemand(
 	cfg *config.City,
 	cityPath string,
 	sessionInfos []sessionpkg.Info,
 	assignedWorkBeads []beads.Bead,
 	assignedWorkStoreRefs []string,
+	readyAssigned map[storeScopedBeadKey]bool,
 ) []beads.Bead {
 	if len(assignedWorkBeads) == 0 || len(assignedWorkStoreRefs) == 0 {
 		return assignedWorkBeads
@@ -141,6 +149,26 @@ func filterAssignedWorkBeadsForPoolDemand(
 	}
 	filtered := make([]beads.Bead, 0, len(assignedWorkBeads))
 	for i, wb := range assignedWorkBeads {
+		// Open work with no readiness verdict came in only via the
+		// open-routed orphan-release pass (kept so releaseOrphanedPoolAssignments
+		// can clear a dead session's abandoned beads — it reads the unfiltered
+		// AssignedWorkBeads snapshot directly, not this filtered result). Such a
+		// bead must not synthesize pool-demand resume requests: when its
+		// orphaned assignee still resolves to a not-yet-closed session bead (a
+		// real, transient window), computePoolDesiredStates' resume tier would
+		// otherwise treat it as "this session must stay alive" for blocked,
+		// non-actionable work (gcy-jkf0). Mirrors buildAwakeInputFromReconciler's
+		// identical open-status handling in compute_awake_bridge.go, which fixed
+		// the same gap on the sleep/wake side.
+		if wb.Status == "open" {
+			ref := ""
+			if i < len(assignedWorkStoreRefs) {
+				ref = assignedWorkStoreRefs[i]
+			}
+			if !readyAssigned[storeScopedBeadKey{StoreRef: ref, ID: wb.ID}] {
+				continue
+			}
+		}
 		template := routedToOrLegacyWorkflowTarget(wb)
 		if template == "" {
 			if sessionBeadID := assigneeToSessionBeadID[strings.TrimSpace(wb.Assignee)]; sessionBeadID != "" {

@@ -131,7 +131,7 @@ func TestFilterAssignedWorkBeadsForPoolDemandKeepsDirectAssigneeAfterTemplateFal
 		Metadata: map[string]string{},
 	}}
 
-	got := filterAssignedWorkBeadsForPoolDemand(cfg, "", sessionInfosFromBeads(sessions), work, []string{""})
+	got := filterAssignedWorkBeadsForPoolDemand(cfg, "", sessionInfosFromBeads(sessions), work, []string{""}, nil)
 
 	if len(got) != 1 || got[0].ID != "direct-assigned" {
 		t.Fatalf("filtered work = %#v, want direct-assigned work preserved through template fallback", got)
@@ -154,7 +154,7 @@ func TestFilterAssignedWorkBeadsForPoolDemandKeepsLegacyWorkflowRunTarget(t *tes
 		},
 	}}
 
-	got := filterAssignedWorkBeadsForPoolDemand(cfg, "", nil, work, []string{""})
+	got := filterAssignedWorkBeadsForPoolDemand(cfg, "", nil, work, []string{""}, nil)
 
 	if len(got) != 1 || got[0].ID != "legacy-workflow-root" {
 		t.Fatalf("filtered work = %#v, want legacy workflow root preserved through run_target fallback", got)
@@ -190,7 +190,7 @@ func TestFilterAssignedWorkBeadsForPoolDemandKeepsPersistedBoundRoute(t *testing
 		},
 	}}
 
-	got := filterAssignedWorkBeadsForPoolDemand(cfg, cityPath, sessionInfosFromBeads(sessions), work, []string{"gascity-packs"})
+	got := filterAssignedWorkBeadsForPoolDemand(cfg, cityPath, sessionInfosFromBeads(sessions), work, []string{"gascity-packs"}, nil)
 
 	if len(got) != 1 || got[0].ID != "gp-qx0o" {
 		t.Fatalf("filtered work = %#v, want persisted bound route preserved", got)
@@ -214,7 +214,7 @@ func TestFilterAssignedWorkBeadsForPoolDemandNormalizesInstanceSuffixedRouteTarg
 		},
 	}}
 
-	got := filterAssignedWorkBeadsForPoolDemand(cfg, "", nil, work, []string{""})
+	got := filterAssignedWorkBeadsForPoolDemand(cfg, "", nil, work, []string{""}, nil)
 
 	if len(got) != 1 || got[0].ID != "instance-routed" {
 		t.Fatalf("filtered work = %#v, want instance-suffixed route target normalized to the base template and kept", got)
@@ -238,7 +238,7 @@ func TestFilterAssignedWorkBeadsForPoolDemandLeavesUnmatchedInstanceSuffixAlone(
 		},
 	}}
 
-	got := filterAssignedWorkBeadsForPoolDemand(cfg, "", nil, work, []string{""})
+	got := filterAssignedWorkBeadsForPoolDemand(cfg, "", nil, work, []string{""}, nil)
 
 	if len(got) != 0 {
 		t.Fatalf("filtered work = %#v, want out-of-range instance suffix left unmatched and dropped", got)
@@ -270,10 +270,77 @@ func TestFilterAssignedWorkBeadsForPoolDemandDropsDirectAssigneeFromUnreachableS
 		Metadata: map[string]string{},
 	}}
 
-	got := filterAssignedWorkBeadsForPoolDemand(cfg, cityPath, sessionInfosFromBeads(sessions), work, []string{"riga"})
+	got := filterAssignedWorkBeadsForPoolDemand(cfg, cityPath, sessionInfosFromBeads(sessions), work, []string{"riga"}, nil)
 
 	if len(got) != 0 {
 		t.Fatalf("filtered work = %#v, want unreachable rig-store direct assignment dropped", got)
+	}
+}
+
+// Regression (gcy-jkf0): open work admitted only by the open-routed
+// orphan-release pass carries no readiness verdict (readyAssigned excludes
+// it by construction — collectAssignedWorkBeadsWithStores never calls
+// markReadyAssigned for it). Such a bead would otherwise pass every other
+// filter here (template resolves, store is reachable), so a nil/empty
+// readyAssigned must drop it on status alone.
+func TestFilterAssignedWorkBeadsForPoolDemandDropsOpenWorkWithoutReadyVerdict(t *testing.T) {
+	cfg := &config.City{
+		Agents: []config.Agent{{Name: "worker"}},
+	}
+	sessions := []beads.Bead{{
+		ID:     "session-1",
+		Status: "open",
+		Type:   sessionBeadType,
+		Metadata: map[string]string{
+			"template":     "worker",
+			"session_name": "worker-session",
+		},
+	}}
+	work := []beads.Bead{{
+		ID:       "orphan-routed",
+		Status:   "open",
+		Assignee: "session-1",
+		Metadata: map[string]string{"gc.routed_to": "worker"},
+	}}
+
+	got := filterAssignedWorkBeadsForPoolDemand(cfg, "", sessionInfosFromBeads(sessions), work, []string{""}, nil)
+
+	if len(got) != 0 {
+		t.Fatalf("filtered work = %#v, want open work with no readiness verdict dropped", got)
+	}
+}
+
+// Companion to the above: open work that DID pass a readiness gate (an
+// assigned molecule root, or the store Ready()/deps pass — both mark
+// readyAssigned true) must not be suppressed. Only the ungated
+// orphan-release-pass case is dropped.
+func TestFilterAssignedWorkBeadsForPoolDemandKeepsOpenWorkWithReadyVerdict(t *testing.T) {
+	cfg := &config.City{
+		Agents: []config.Agent{{Name: "worker"}},
+	}
+	sessions := []beads.Bead{{
+		ID:     "session-1",
+		Status: "open",
+		Type:   sessionBeadType,
+		Metadata: map[string]string{
+			"template":     "worker",
+			"session_name": "worker-session",
+		},
+	}}
+	work := []beads.Bead{{
+		ID:       "ready-molecule-root",
+		Status:   "open",
+		Assignee: "session-1",
+		Metadata: map[string]string{"gc.routed_to": "worker"},
+	}}
+	readyAssigned := map[storeScopedBeadKey]bool{
+		{StoreRef: "", ID: "ready-molecule-root"}: true,
+	}
+
+	got := filterAssignedWorkBeadsForPoolDemand(cfg, "", sessionInfosFromBeads(sessions), work, []string{""}, readyAssigned)
+
+	if len(got) != 1 || got[0].ID != "ready-molecule-root" {
+		t.Fatalf("filtered work = %#v, want ready-verdict open work preserved", got)
 	}
 }
 
