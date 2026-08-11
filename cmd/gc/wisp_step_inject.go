@@ -2,13 +2,28 @@ package main
 
 import (
 	"fmt"
+	"hash/fnv"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/extmsg"
+)
+
+// wispStepInjectedToMetadataKey records the session ID that last received a
+// bead's title+description via wisp-step injection. wispStepInjectedFingerprintMetadataKey
+// records a fingerprint of that content at the time. Together they let a
+// long-running session's per-turn nudge hook skip re-rendering an unchanged
+// assigned bead into context on every wake (gcy-5rkt) — keyed by session ID
+// rather than bead assignee so a recycled/restarted successor, which carries
+// a new session ID even under the same role or alias, still gets its own
+// first read.
+const (
+	wispStepInjectedToMetadataKey          = "wisp_step_injected_to_session"
+	wispStepInjectedFingerprintMetadataKey = "wisp_step_injected_fingerprint"
 )
 
 // wispStepInjectionContent resolves the agent's current in-progress formula
@@ -28,7 +43,16 @@ func wispStepInjectionContent(cityPath string) string {
 	if store == nil {
 		return ""
 	}
-	assignees := wispStepAssignees()
+	sessionID := strings.TrimSpace(os.Getenv("GC_SESSION_ID"))
+	return wispStepInjectionContentForStore(store, wispStepAssignees(), sessionID)
+}
+
+// wispStepInjectionContentForStore is wispStepInjectionContent's testable
+// core: resolve the active step, skip it if this exact content was already
+// injected to this exact session, otherwise stamp the marker and render it.
+// sessionID == "" (no session context available) always injects, the same
+// as the pre-dedup behavior — a missing cache key must never suppress a read.
+func wispStepInjectionContentForStore(store beads.Store, assignees []string, sessionID string) string {
 	if len(assignees) == 0 {
 		return ""
 	}
@@ -36,7 +60,45 @@ func wispStepInjectionContent(cityPath string) string {
 	if err != nil || b == nil {
 		return ""
 	}
+	if sessionID != "" {
+		if wispStepAlreadyInjected(b, sessionID) {
+			return ""
+		}
+		stampWispStepInjected(store, b, sessionID)
+	}
 	return formatWispStepReminder(b)
+}
+
+// wispStepAlreadyInjected reports whether b's current title+description have
+// already been injected to sessionID, per the markers stamped by
+// stampWispStepInjected.
+func wispStepAlreadyInjected(b *beads.Bead, sessionID string) bool {
+	return b.Metadata[wispStepInjectedToMetadataKey] == sessionID &&
+		b.Metadata[wispStepInjectedFingerprintMetadataKey] == wispStepContentFingerprint(b)
+}
+
+// stampWispStepInjected records that b's current content has been shown to
+// sessionID. Best-effort: a write failure just costs one extra repeat
+// injection next turn, not a broken hook, so it only logs.
+func stampWispStepInjected(store beads.Store, b *beads.Bead, sessionID string) {
+	err := store.SetMetadataBatch(b.ID, map[string]string{
+		wispStepInjectedToMetadataKey:          sessionID,
+		wispStepInjectedFingerprintMetadataKey: wispStepContentFingerprint(b),
+	})
+	if err != nil {
+		log.Printf("wisp step inject: stamping injected marker on %s: %v", b.ID, err)
+	}
+}
+
+// wispStepContentFingerprint hashes b's title+description so a repeat-
+// injection check doesn't have to store a second full-size copy of
+// (potentially multi-KB) description text as bead metadata just to compare it.
+func wispStepContentFingerprint(b *beads.Bead) string {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(b.Title))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(b.Description))
+	return strconv.FormatUint(h.Sum64(), 16)
 }
 
 // openWispStepStore opens the bead store to query for active wisp steps.
