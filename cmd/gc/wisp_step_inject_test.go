@@ -351,6 +351,147 @@ func TestWispStepAssignees_Empty(t *testing.T) {
 	}
 }
 
+// --- Repeat-injection dedup (gcy-5rkt): a long-running session's nudge hook
+// calls wispStepInjectionContent on every UserPromptSubmit turn. Without a
+// cache keyed by (session, content), an unchanged assigned bead gets its full
+// title+description re-rendered into context every single wake.
+
+func TestWispStepContentFingerprint_StableForSameContent(t *testing.T) {
+	b1 := &beads.Bead{Title: "T", Description: "D"}
+	b2 := &beads.Bead{Title: "T", Description: "D"}
+	if wispStepContentFingerprint(b1) != wispStepContentFingerprint(b2) {
+		t.Fatal("expected identical fingerprint for identical title+description")
+	}
+}
+
+func TestWispStepContentFingerprint_ChangesWithContent(t *testing.T) {
+	b1 := &beads.Bead{Title: "T", Description: "D"}
+	b2 := &beads.Bead{Title: "T", Description: "D changed"}
+	if wispStepContentFingerprint(b1) == wispStepContentFingerprint(b2) {
+		t.Fatal("expected different fingerprint after description changes")
+	}
+}
+
+func TestWispStepAlreadyInjected_FalseWhenNoMarker(t *testing.T) {
+	b := &beads.Bead{Title: "T", Description: "D"}
+	if wispStepAlreadyInjected(b, "sess-1") {
+		t.Fatal("expected false with no injected marker set")
+	}
+}
+
+func TestWispStepAlreadyInjected_TrueAfterStampSameSessionUnchanged(t *testing.T) {
+	store := beads.NewMemStore()
+	created, err := store.Create(beads.Bead{Title: "T", Description: "D", Assignee: "alice"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	stampWispStepInjected(store, &created, "sess-1")
+
+	fresh, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !wispStepAlreadyInjected(&fresh, "sess-1") {
+		t.Fatal("expected true: same session, content unchanged since stamp")
+	}
+}
+
+func TestWispStepAlreadyInjected_FalseForDifferentSession(t *testing.T) {
+	store := beads.NewMemStore()
+	created, err := store.Create(beads.Bead{Title: "T", Description: "D"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	stampWispStepInjected(store, &created, "sess-1")
+
+	fresh, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if wispStepAlreadyInjected(&fresh, "sess-2") {
+		t.Fatal("expected false for a different session ID (e.g. a recycled successor) — it must get its own first read")
+	}
+}
+
+func TestWispStepAlreadyInjected_FalseAfterContentChanges(t *testing.T) {
+	store := beads.NewMemStore()
+	created, err := store.Create(beads.Bead{Title: "T", Description: "D"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	stampWispStepInjected(store, &created, "sess-1")
+
+	changed := "D changed"
+	if err := store.Update(created.ID, beads.UpdateOpts{Description: &changed}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	fresh, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if wispStepAlreadyInjected(&fresh, "sess-1") {
+		t.Fatal("expected false after the description changed — new content is new information")
+	}
+}
+
+func TestWispStepInjectionContentForStore_SkipsUnchangedRepeatSameSession(t *testing.T) {
+	store := beads.NewMemStore()
+	mustCreateInProgress(t, store, beads.Bead{
+		Title:       "Fix the bug",
+		Description: "The bug is in line 42",
+		Type:        "task",
+		Assignee:    "alice",
+	})
+
+	first := wispStepInjectionContentForStore(store, []string{"alice"}, "sess-1")
+	if first == "" || !contains(first, "Fix the bug") {
+		t.Fatalf("expected first call to render the reminder, got %q", first)
+	}
+
+	second := wispStepInjectionContentForStore(store, []string{"alice"}, "sess-1")
+	if second != "" {
+		t.Fatalf("expected second call (unchanged, same session) to be suppressed, got %q", second)
+	}
+}
+
+func TestWispStepInjectionContentForStore_ReinjectsForDifferentSession(t *testing.T) {
+	store := beads.NewMemStore()
+	mustCreateInProgress(t, store, beads.Bead{
+		Title:       "Fix the bug",
+		Description: "The bug is in line 42",
+		Type:        "task",
+		Assignee:    "alice",
+	})
+
+	if out := wispStepInjectionContentForStore(store, []string{"alice"}, "sess-1"); out == "" {
+		t.Fatal("expected first session to see the reminder")
+	}
+	// A recycled/restarted successor carries a different session ID even
+	// under the same assignee/alias — it must still get its own first read.
+	out := wispStepInjectionContentForStore(store, []string{"alice"}, "sess-2")
+	if out == "" || !contains(out, "Fix the bug") {
+		t.Fatalf("expected a different session ID to still receive the reminder, got %q", out)
+	}
+}
+
+func TestWispStepInjectionContentForStore_NoSessionIDAlwaysInjects(t *testing.T) {
+	store := beads.NewMemStore()
+	mustCreateInProgress(t, store, beads.Bead{
+		Title:       "Fix the bug",
+		Description: "The bug is in line 42",
+		Type:        "task",
+		Assignee:    "alice",
+	})
+
+	// No session ID available: skip the dedup cache entirely rather than
+	// risk suppressing a legitimate read (safe fallback to prior behavior).
+	first := wispStepInjectionContentForStore(store, []string{"alice"}, "")
+	second := wispStepInjectionContentForStore(store, []string{"alice"}, "")
+	if first == "" || second == "" {
+		t.Fatalf("expected both calls to inject when no session ID is available, got %q then %q", first, second)
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
 		func() bool {
