@@ -1815,3 +1815,52 @@ func TestComputePoolDesiredStates_OpenAssigneeWithReadyVerdictStillResumes(t *te
 		t.Errorf("request tier = %q, want resume", result[0].Requests[0].Tier)
 	}
 }
+
+// Regression (gcy-3cxk): filterAssignedWorkBeadsForPoolDemand's readiness
+// filter (gcy-jkf0) drops unready open orphan-release beads before
+// ComputePoolDesiredStates runs at all, so it protects every downstream
+// tier the same way -- not just the resume tier the original fix's own
+// tests exercised. This confirms the wake-known-identity tier specifically:
+// a bead whose Assignee is the bare template identity itself (no concrete
+// session bead resolves it) reaches that tier instead of the resume tier,
+// via the isKnownPoolTemplate/agentTemplateIdentitiesEquivalent path
+// (pool_desired_state.go, resume-tier loop) rather than the
+// assigneeToSessionBeadID path TestComputePoolDesiredStates_
+// OpenOrphanedAssigneeWithoutReadyVerdictDoesNotResume exercises.
+func TestComputePoolDesiredStates_OpenOrphanedKnownTemplateAssigneeWithoutReadyVerdictDoesNotWake(t *testing.T) {
+	cfg := &config.City{
+		Agents: []config.Agent{poolAgent("claude", "", intPtr(5), 0)},
+	}
+	work := []beads.Bead{
+		workBead("w1", "claude", "claude", "open", 5),
+	}
+	sessionInfos := sessionInfosFromBeads(nil) // no live session bead at all
+
+	// Sanity check: unfiltered, this bead's assignee ("claude") is the bare
+	// template identity with no resolvable session bead -- exactly the
+	// wake-known-identity tier's condition -- so it must generate a request
+	// pre-filter. If this fails, the scenario below isn't actually
+	// exercising the tier this test claims to cover.
+	unfiltered := ComputePoolDesiredStates(cfg, work, sessionInfos, nil)
+	unfilteredTotal := 0
+	for _, ds := range unfiltered {
+		unfilteredTotal += len(ds.Requests)
+	}
+	if unfilteredTotal != 1 {
+		t.Fatalf("sanity check: unfiltered total = %d, want 1 (bare-template assignee must reach wake-known-identity pre-filter)", unfilteredTotal)
+	}
+	if unfiltered[0].Requests[0].Tier != "wake-known-identity" {
+		t.Fatalf("sanity check: unfiltered tier = %q, want wake-known-identity", unfiltered[0].Requests[0].Tier)
+	}
+
+	poolWorkBeads := filterAssignedWorkBeadsForPoolDemand(cfg, "", sessionInfos, work, []string{""}, nil)
+	result := ComputePoolDesiredStates(cfg, poolWorkBeads, sessionInfos, nil)
+
+	total := 0
+	for _, ds := range result {
+		total += len(ds.Requests)
+	}
+	if total != 0 {
+		t.Fatalf("total requests = %d, want 0 (open work with no readiness verdict must not wake a known identity either)", total)
+	}
+}
