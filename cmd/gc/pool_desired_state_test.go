@@ -1752,3 +1752,66 @@ func TestCanonicalSingletonAliasHeldTemplates_ExcludesFailedCreateHolder(t *test
 		t.Fatalf("drained holder released its alias and must NOT mark mayor held; got held")
 	}
 }
+
+// Regression (gcy-jkf0): an open bead admitted only by the open-routed
+// orphan-release pass carries no readiness verdict. When its orphaned
+// assignee still resolves to a not-yet-closed session bead — a real,
+// transient window before the dead session's own bead is swept/closed — the
+// resume tier must not treat it as live demand. Structurally the same waste
+// PR #58 (gcy-lg2) fixed for in_progress+IsBlocked work, reached here via
+// open+not-ready instead. The fix lives in filterAssignedWorkBeadsForPoolDemand
+// (upstream of computePoolDesiredStates), so this exercises the same two-call
+// pipeline every real caller uses: filter, then compute.
+func TestComputePoolDesiredStates_OpenOrphanedAssigneeWithoutReadyVerdictDoesNotResume(t *testing.T) {
+	cfg := &config.City{
+		Agents: []config.Agent{poolAgent("claude", "", intPtr(5), 0)},
+	}
+	work := []beads.Bead{
+		workBead("w1", "claude", "sess-1", "open", 5),
+	}
+	sessions := []beads.Bead{sessionBead("sess-1", "open")}
+	sessionInfos := sessionInfosFromBeads(sessions)
+
+	poolWorkBeads := filterAssignedWorkBeadsForPoolDemand(cfg, "", sessionInfos, work, []string{""}, nil)
+	result := ComputePoolDesiredStates(cfg, poolWorkBeads, sessionInfos, nil)
+
+	total := 0
+	for _, ds := range result {
+		total += len(ds.Requests)
+	}
+	if total != 0 {
+		t.Fatalf("total requests = %d, want 0 (open work with no readiness verdict must not resume)", total)
+	}
+}
+
+// Companion to the above: open, assigned work that DID pass a readiness gate
+// (an assigned molecule root, or the store Ready()/deps pass —
+// collectAssignedWorkBeadsWithStores marks both true in ReadyAssigned) must
+// keep generating its resume request. This filing must suppress only the
+// ungated orphan-release-pass case, not legitimate open-work resume demand —
+// the regression gcy-jkf0 explicitly warns a naive fix could introduce.
+func TestComputePoolDesiredStates_OpenAssigneeWithReadyVerdictStillResumes(t *testing.T) {
+	cfg := &config.City{
+		Agents: []config.Agent{poolAgent("claude", "", intPtr(5), 0)},
+	}
+	work := []beads.Bead{
+		workBead("w1", "claude", "sess-1", "open", 5),
+	}
+	sessions := []beads.Bead{sessionBead("sess-1", "open")}
+	sessionInfos := sessionInfosFromBeads(sessions)
+	readyAssigned := map[storeScopedBeadKey]bool{{StoreRef: "", ID: "w1"}: true}
+
+	poolWorkBeads := filterAssignedWorkBeadsForPoolDemand(cfg, "", sessionInfos, work, []string{""}, readyAssigned)
+	result := ComputePoolDesiredStates(cfg, poolWorkBeads, sessionInfos, nil)
+
+	total := 0
+	for _, ds := range result {
+		total += len(ds.Requests)
+	}
+	if total != 1 {
+		t.Fatalf("total requests = %d, want 1 (ready-verdict open work must still resume)", total)
+	}
+	if total == 1 && result[0].Requests[0].Tier != "resume" {
+		t.Errorf("request tier = %q, want resume", result[0].Requests[0].Tier)
+	}
+}
