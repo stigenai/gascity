@@ -2174,6 +2174,7 @@ type conditionalReleaseProbeStore struct {
 
 	releaseUnsupported bool
 	releaseErr         error
+	listErr            error
 	claimID            string
 	claimAssignee      string
 	claimAfterLiveGate bool
@@ -2247,6 +2248,9 @@ func (s *conditionalReleaseProbeStore) List(query beads.ListQuery) ([]beads.Bead
 	out, err := s.Store.List(query)
 	if query.Live && query.Status == "in_progress" && query.Label == "" {
 		s.liveWorkLists++
+		if s.listErr != nil {
+			return nil, s.listErr
+		}
 		if s.claimAfterLiveGate && s.liveWorkLists == 1 {
 			s.reclaim()
 		}
@@ -2419,6 +2423,86 @@ func TestReleaseOrphanedPoolAssignment_SurfacesConditionalReleaseWriteError(t *t
 	}
 	if got.Status != "in_progress" || got.Assignee != "worker-dead" {
 		t.Fatalf("work = status %q assignee %q, want untouched after a failed release write", got.Status, got.Assignee)
+	}
+}
+
+// TestReleaseOrphanedPoolAssignment_SurfacesRecheckListReadError guards the
+// gcy-2ahd fix at its source, one level below the reconciler sweep and
+// distinct from the CAS-path test above: liveWorkAssignmentStillReleasable's
+// live-work List call failing (a transient backend error) is not the same as
+// a genuine "assignment changed" answer (see the sibling
+// UnsupportedStoreRechecksBeforeWrite test below, which exercises that
+// benign case through the same recheck fallback) and must surface as a
+// non-nil error from releasePoolAssignmentWithRecheck /
+// releaseOrphanedPoolAssignment, not collapse into the same (false, nil) a
+// lost race returns. Before this fix, the read failure inside
+// liveWorkAssignmentStillReleasable already logged distinctly ("live work
+// validation failed") but its bare bool return made that failure
+// indistinguishable from every other false case one level up.
+func TestReleaseOrphanedPoolAssignment_SurfacesRecheckListReadError(t *testing.T) {
+	store, work := newConditionalReleaseProbeStore(t)
+	store.releaseUnsupported = true
+	store.listErr = errors.New("dolt: connection reset")
+
+	released, err := releaseOrphanedPoolAssignment(store, work, false)
+	if err == nil {
+		t.Fatal("err = nil, want the recheck's live-read error surfaced")
+	}
+	if released {
+		t.Fatal("released = true, want false alongside the error")
+	}
+
+	got, getErr := store.Get(work.ID)
+	if getErr != nil {
+		t.Fatalf("Get work bead: %v", getErr)
+	}
+	if got.Status != "in_progress" || got.Assignee != "worker-dead" {
+		t.Fatalf("work = status %q assignee %q, want untouched after a failed recheck read", got.Status, got.Assignee)
+	}
+}
+
+// TestReleaseOrphanedPoolAssignments_LogsDistinctCountForWriteErrors guards
+// gcy-2ahd's sweep-level ask: the background sweep has no per-item error
+// channel of its own to feed a caller-visible signal into (unlike gc hook
+// --claim's claimsErrored), so a persistent backend failure during a tick
+// must still be distinguishable from steady-state "nothing to release" via
+// a summary log/count.
+func TestReleaseOrphanedPoolAssignments_LogsDistinctCountForWriteErrors(t *testing.T) {
+	store, work := newConditionalReleaseProbeStore(t)
+	store.listErr = errors.New("dolt: connection reset")
+
+	var buf bytes.Buffer
+	restore := captureLogOutput(&buf)
+	defer restore()
+
+	released := releaseProbeAssignments(store, work)
+	if len(released) != 0 {
+		t.Fatalf("released = %v, want none when the live-work recheck read fails", released)
+	}
+	if !strings.Contains(buf.String(), "1 orphaned assignment release attempt(s) failed") {
+		t.Fatalf("log output = %q, want a distinguishable error count for this tick", buf.String())
+	}
+}
+
+// TestReleaseOrphanedPoolAssignments_NoErrorCountLogForBenignLostRace pins
+// the other half of the gcy-2ahd sweep-level fix: a benign lost race (the
+// same setup as ConditionalReleaseLosesRaceNoClobber above) must NOT trip
+// the new error-count log, or a normal, healthy race-loss tick would start
+// reading as a backend failure.
+func TestReleaseOrphanedPoolAssignments_NoErrorCountLogForBenignLostRace(t *testing.T) {
+	store, work := newConditionalReleaseProbeStore(t)
+	store.claimAfterLiveGate = true
+
+	var buf bytes.Buffer
+	restore := captureLogOutput(&buf)
+	defer restore()
+
+	released := releaseProbeAssignments(store, work)
+	if len(released) != 0 {
+		t.Fatalf("released = %v, want none when a concurrent claim wins the release race", released)
+	}
+	if strings.Contains(buf.String(), "orphaned assignment release attempt(s) failed") {
+		t.Fatalf("log output = %q, want no error-count log for a benign lost race", buf.String())
 	}
 }
 

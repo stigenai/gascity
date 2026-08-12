@@ -149,6 +149,7 @@ func releaseOrphanedPoolAssignments(
 	}
 
 	var released []releasedPoolAssignment
+	var erroredCount int
 	for i, wb := range assignedWorkBeads {
 		if wb.Status != "open" && wb.Status != "in_progress" {
 			continue
@@ -198,7 +199,12 @@ func releaseOrphanedPoolAssignments(
 				continue
 			}
 		}
-		if !liveWorkAssignmentStillReleasable(ownerStore, wb.ID, wb.Status, assignee) {
+		releasable, err := liveWorkAssignmentStillReleasable(ownerStore, wb.ID, wb.Status, assignee)
+		if err != nil {
+			erroredCount++
+			continue
+		}
+		if !releasable {
 			continue
 		}
 		allowsRelease, clearDetached := detachedProbeAllowsOrphanRelease(wb)
@@ -206,14 +212,25 @@ func releaseOrphanedPoolAssignments(
 			continue
 		}
 		// err is already logged inside releaseOrphanedPoolAssignment; this sweep
-		// has no per-item error signal of its own to feed it into (unlike gc hook
-		// --claim's claimsErrored, gcy-v1ga), so a failed write and a benign lost
-		// race are both just skipped here, same as before.
+		// has no per-item error signal of its own to feed a caller-visible
+		// claimsErrored-style result into (gc hook --claim's Tier-3 claim path
+		// has one, this background tick does not), so a failed write and a
+		// benign lost race both just skip the item here — but a persistent
+		// failure is now counted and logged distinctly from steady-state
+		// below, instead of reading identically to "nothing to release"
+		// (gcy-2ahd).
 		ok, err := releaseOrphanedPoolAssignment(ownerStore, wb, clearDetached)
-		if err != nil || !ok {
+		if err != nil {
+			erroredCount++
+			continue
+		}
+		if !ok {
 			continue
 		}
 		released = append(released, releasedPoolAssignment{ID: wb.ID, Index: i})
+	}
+	if erroredCount > 0 {
+		log.Printf("releaseOrphanedPoolAssignments: %d orphaned assignment release attempt(s) failed with a read/write error this tick (see preceding error logs) — distinct from a benign lost race", erroredCount)
 	}
 	return released
 }
@@ -397,14 +414,17 @@ func isCanonicalWorkflowRoot(wb beads.Bead) bool {
 //     status/assignee, so it is the correct path for continuation-group beads:
 //     the group is never exposed on an open, unassigned bead.
 //
-// The returned error is non-nil only when a write itself failed (a transient
-// backend error on the CAS attempt or the fallback Update) — distinct from a
+// The returned error is non-nil only when a live-store read or write itself
+// failed (a transient backend error on the CAS attempt, the fallback
+// Update, or the fallback's pre-write recheck read) — distinct from a
 // benign lost race (assignment changed underneath the check), which returns
 // (false, nil) same as before. Callers that need to tell an operational
 // failure apart from steady-state "nothing to reclaim" (gc hook --claim's
-// claimsErrored signal) consult the error; callers that only care whether the
-// release applied (the background reconciler sweep) can ignore it, since
-// every error path already logs internally (gcy-v1ga).
+// claimsErrored signal) consult the error directly; the background
+// reconciler sweep has no per-item signal of its own to forward the error
+// into, but still counts and logs it distinctly from a benign skip so a
+// persistent failure does not read as steady-state (gcy-v1ga, gcy-2ahd) —
+// every error path also already logs the underlying cause internally.
 func releaseOrphanedPoolAssignment(store beads.Store, wb beads.Bead, clearDetached bool) (bool, error) {
 	if store == nil || strings.TrimSpace(wb.ID) == "" {
 		return false, nil
@@ -510,14 +530,18 @@ func clearReleasedPoolAssignmentMetadata(store beads.Store, id string, clearDeta
 // a live read immediately before the unconditional write — after the earlier
 // staleness gate and the potentially slow detached probe — then verify after
 // the write that no concurrent claim raced the release. A failed recheck
-// returns (false, nil): it cannot distinguish a benign lost race from its own
-// internal read failure (liveWorkAssignmentStillReleasable already logs
-// either case), so it stays folded into the no-op result as before. A failed
-// Update is unambiguous — the write itself failed — and is returned as a
-// non-nil err (gcy-v1ga).
+// read (the live-work List itself erroring) surfaces as a non-nil error,
+// distinct from a benign lost race (assignment changed underneath the
+// check), which still returns (false, nil) same as before (gcy-2ahd). A
+// failed Update is unambiguous — the write itself failed — and is returned
+// as a non-nil err (gcy-v1ga).
 func releasePoolAssignmentWithRecheck(store beads.Store, wb beads.Bead, clearDetached bool) (bool, error) {
 	expectedAssignee := strings.TrimSpace(wb.Assignee)
-	if !liveWorkAssignmentStillReleasable(store, wb.ID, wb.Status, expectedAssignee) {
+	releasable, err := liveWorkAssignmentStillReleasable(store, wb.ID, wb.Status, expectedAssignee)
+	if err != nil {
+		return false, err
+	}
+	if !releasable {
 		log.Printf("releaseOrphanedPoolAssignments: skipping release for %s: assignment changed between staleness check and release write", wb.ID)
 		return false, nil
 	}
@@ -636,11 +660,16 @@ func directSessionBeadIDCandidates(assignee string) []string {
 // Open status is required for the issue #2793 path — graph.v2 step
 // beads stuck on a dead session's long-form assignee are status=open,
 // not in_progress.
-func liveWorkAssignmentStillReleasable(store beads.Store, id, expectedStatus, assignee string) bool {
+//
+// The returned error is non-nil only when the live-read itself failed (a
+// transient backend error on store.List) — distinct from a benign "not
+// releasable" answer (bead not found, or assignee no longer matches), which
+// returns (false, nil) same as before (gcy-2ahd).
+func liveWorkAssignmentStillReleasable(store beads.Store, id, expectedStatus, assignee string) (bool, error) {
 	id = strings.TrimSpace(id)
 	expectedStatus = strings.TrimSpace(expectedStatus)
 	if store == nil || id == "" || expectedStatus == "" {
-		return false
+		return false, nil
 	}
 	work, err := store.List(beads.ListQuery{
 		Status:   expectedStatus,
@@ -649,15 +678,15 @@ func liveWorkAssignmentStillReleasable(store beads.Store, id, expectedStatus, as
 	})
 	if err != nil {
 		log.Printf("releaseOrphanedPoolAssignments: live work validation failed for %q: %v", id, err)
-		return false
+		return false, err
 	}
 	for _, wb := range work {
 		if wb.ID != id {
 			continue
 		}
-		return strings.TrimSpace(wb.Assignee) == strings.TrimSpace(assignee)
+		return strings.TrimSpace(wb.Assignee) == strings.TrimSpace(assignee), nil
 	}
-	return false
+	return false, nil
 }
 
 func assigneePreservesNamedSessionRoute(cfg *config.City, cityPath, template, assignee, workStoreRef string, storeRefAware bool) bool {
