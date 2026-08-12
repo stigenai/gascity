@@ -22,6 +22,30 @@ func fallbackPromptDir(tmpRoot string) string {
 	return filepath.Join(tmpRoot, fmt.Sprintf(".gc-%d", os.Getuid()), "tmux-prompts")
 }
 
+// captureStderr redirects os.Stderr for the duration of fn and returns
+// everything written to it. Not safe to use from a t.Parallel() test.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("closing pipe writer: %v", err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("reading pipe: %v", err)
+	}
+	return string(out)
+}
+
 // startCall records a single invocation on fakeStartOps with full arguments.
 type startCall struct {
 	method       string
@@ -2733,6 +2757,72 @@ func TestRecordStartCrashDisabledWhenNoRuntimeDir(t *testing.T) {
 	o := &tmuxStartOps{tm: tm, runtimeDir: ""}
 	if path := o.recordStartCrash("mayor", "x"); path != "" {
 		t.Fatalf("path = %q, want empty when runtimeDir unset", path)
+	}
+}
+
+// A silently-skipped start-crash diagnostic is exactly what left gcy-3bo's
+// mayor startup failure with neither a pane excerpt nor a diagnostic path to
+// investigate. These pin that every recordStartCrash failure mode now leaves
+// a reason on stderr instead of vanishing.
+func TestRecordStartCrashDisabledWhenNoRuntimeDirLogsReason(t *testing.T) {
+	tm := NewTmux()
+	tm.exec = &fakeExecutor{out: "139|SIGSEGV\n"}
+	o := &tmuxStartOps{tm: tm, runtimeDir: ""}
+
+	var path string
+	stderr := captureStderr(t, func() {
+		path = o.recordStartCrash("mayor", "x")
+	})
+	if path != "" {
+		t.Fatalf("path = %q, want empty when runtimeDir unset", path)
+	}
+	if !strings.Contains(stderr, "mayor") || !strings.Contains(stderr, "no runtime dir") {
+		t.Fatalf("stderr = %q, want a reason mentioning the session and the missing runtime dir", stderr)
+	}
+}
+
+func TestRecordStartCrashMkdirFailureLogsReason(t *testing.T) {
+	dir := t.TempDir()
+	// Seed a plain file where recordStartCrash needs to mkdir a directory, so
+	// MkdirAll fails (ENOTDIR).
+	blocker := filepath.Join(dir, "sessions")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatalf("seeding blocker file: %v", err)
+	}
+	tm := NewTmux()
+	tm.exec = &fakeExecutor{out: "139|SIGSEGV\n"}
+	o := &tmuxStartOps{tm: tm, runtimeDir: dir}
+
+	var path string
+	stderr := captureStderr(t, func() {
+		path = o.recordStartCrash("mayor", "x")
+	})
+	if path != "" {
+		t.Fatalf("path = %q, want empty when the sessions dir cannot be created", path)
+	}
+	if !strings.Contains(stderr, "mayor") || !strings.Contains(stderr, blocker) {
+		t.Fatalf("stderr = %q, want a reason mentioning the session and the blocked path %q", stderr, blocker)
+	}
+}
+
+func TestStartupDeadSessionErrorLogsPaneCaptureFailure(t *testing.T) {
+	ops := &fakeStartOps{capturePaneErr: errors.New("capture failed")}
+
+	var err error
+	stderr := captureStderr(t, func() {
+		err = startupDeadSessionError(ops, "mayor")
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(stderr, "mayor") || !strings.Contains(stderr, "capture failed") {
+		t.Fatalf("stderr = %q, want the pane capture failure logged", stderr)
+	}
+	// The existing fallback contract (TestDoStartSession_FinalDeadPaneCaptureErrorFallsBack)
+	// keeps the returned error clean of internal plumbing detail; the reason
+	// belongs on stderr, not in err.Error().
+	if strings.Contains(err.Error(), "capture failed") {
+		t.Fatalf("error = %v, capture detail should go to stderr, not the returned error", err)
 	}
 }
 
