@@ -10086,12 +10086,24 @@ func TestJsonlExportPushFailureEscalatesOncePerUnresolvedFailure(t *testing.T) {
 }
 
 // gateSweepEnv constructs the env for a gate-sweep.sh invocation with a
-// PATH-shimmed bd stub that logs every call to BD_LOG.
+// PATH-shimmed bd stub that logs every call to BD_LOG. The gc stub answers
+// `rig list --json` with a fixed hq + two-rig list (schema matches
+// RigListJSON in cmd/gc/cmd_rig.go, same as pruneBranchesRig below), so
+// every gate-sweep test exercises the per-rig fan-out (gt-15s), not just
+// the HQ scope.
 func gateSweepEnv(t *testing.T) (binDir, bdLog string, env map[string]string) {
 	t.Helper()
 	binDir = t.TempDir()
 	bdLog = filepath.Join(t.TempDir(), "bd.log")
-	writeMaintenanceGCStub(t, filepath.Join(binDir, "gc"), "#!/bin/sh\nexit 0\n")
+	writeMaintenanceGCStub(t, filepath.Join(binDir, "gc"), `#!/bin/sh
+case "$1 $2 $3" in
+  "rig list --json")
+    printf '%s\n' '{"city_path":"/tmp","city_name":"test","rigs":[{"name":"hq","path":"/tmp","prefix":"hq","hq":true,"suspended":false,"beads":""},{"name":"alpha","path":"/tmp/rigs/alpha","prefix":"al","hq":false,"suspended":false,"beads":""},{"name":"beta","path":"/tmp/rigs/beta","prefix":"be","hq":false,"suspended":false,"beads":""}]}'
+    exit 0
+    ;;
+esac
+exit 0
+`)
 	env = map[string]string{
 		"BD_LOG":       bdLog,
 		"GC_CITY":      t.TempDir(),
@@ -10116,12 +10128,25 @@ exit 0
 	}
 	s := string(log)
 	for _, want := range []string{
+		// HQ scope: bare, no --rig.
 		"gate check --type=timer --escalate",
 		"gate check --type=gh --escalate",
+		// Per-rig fan-out (gt-15s): each non-HQ rig from `gc rig list
+		// --json` gets its own --rig-scoped checks.
+		"gate check --rig alpha --type=timer --escalate",
+		"gate check --rig alpha --type=gh --escalate",
+		"gate check --rig beta --type=timer --escalate",
+		"gate check --rig beta --type=gh --escalate",
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("missing %q in bd log:\n%s", want, s)
 		}
+	}
+	// The rig list's hq:true entry must be excluded from the fan-out (it's
+	// already covered by the bare HQ scope above) — a regression here would
+	// double-check the same store under two different scope arguments.
+	if strings.Contains(s, "--rig hq") {
+		t.Fatalf("hq pseudo-rig must not get its own --rig scope; bd log:\n%s", s)
 	}
 }
 
@@ -10210,6 +10235,115 @@ esac
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		t.Fatalf("gate-sweep should exit non-zero when the timer-gate bd call fails (no || true suppression on that line); got success\n%s", out)
+	}
+}
+
+// TestGateSweepIsolatesSingleScopeTimerFailureFromSiblingScopes verifies the
+// gcy-vb9 fix survives the gt-15s fan-out: failing exactly one scope's
+// timer-gate check (alpha, ordered before beta by gateSweepEnv's rig list)
+// must not abort the loop under set -e and starve beta of its checks. This
+// is the case TestGateSweepInvokesTimerAndGhGateChecks (all scopes succeed)
+// and TestGateSweepPropagatesTimerGateBdFailures (all scopes fail
+// identically) cannot exercise: both look identical — non-zero exit, no
+// per-scope distinction — whether the sweep isolates each scope's failure
+// (the fix) or set -e aborts the whole tick on the first failure (the
+// gcy-vb9 bug), so a regression back to a bare
+// `gc bd gate check ... --type=timer --escalate` with no FAILED-counter
+// guard would leave every other gate-sweep test green.
+func TestGateSweepIsolatesSingleScopeTimerFailureFromSiblingScopes(t *testing.T) {
+	binDir, bdLog, env := gateSweepEnv(t)
+	writeExecutable(t, filepath.Join(binDir, "bd"), `#!/bin/sh
+printf '%s\n' "$*" >> "$BD_LOG"
+case "$*" in
+  *"--rig alpha --type=timer"*)
+    echo "bd: simulated timer-gate failure for alpha" >&2
+    exit 1
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`)
+
+	script := coreScriptPath("gate-sweep.sh")
+	cmd := exec.Command(script)
+	cmd.Env = mergeTestEnv(env)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("gate-sweep should exit non-zero when alpha's timer-gate check fails; got success\n%s", out)
+	}
+
+	log, readErr := os.ReadFile(bdLog)
+	if readErr != nil {
+		t.Fatalf("ReadFile(bd log): %v", readErr)
+	}
+	s := string(log)
+	for _, want := range []string{
+		"gate check --type=timer --escalate",             // hq: unaffected, ordered before alpha
+		"gate check --rig alpha --type=timer --escalate", // alpha: the failing call itself must still have been made
+		"gate check --rig beta --type=timer --escalate",  // beta: later-ordered scope must still run despite alpha's failure
+		"gate check --rig beta --type=gh --escalate",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %q in bd log (alpha's failure should not abort later scopes):\n%s", want, s)
+		}
+	}
+}
+
+// TestGateSweepWarnsAndFallsBackToHQOnlyWhenRigListFails pins the gcy-dgk
+// fix: `gc rig list --json` failing (non-zero exit) took the same silent
+// path as an empty or unparseable result — `2>/dev/null || true` on the gc
+// call and the jq pipe's own `2>/dev/null || true` swallowed every signal,
+// so the sweep quietly reverted to HQ-only with zero log line and zero
+// non-zero exit, unlike the jq-not-found branch which warns. Before this
+// fix, only jq's absence was diagnosable; a failing `gc rig list --json`
+// was not.
+func TestGateSweepWarnsAndFallsBackToHQOnlyWhenRigListFails(t *testing.T) {
+	binDir := t.TempDir()
+	bdLog := filepath.Join(t.TempDir(), "bd.log")
+	writeMaintenanceGCStub(t, filepath.Join(binDir, "gc"), `#!/bin/sh
+case "$1 $2 $3" in
+  "rig list --json")
+    echo "gc: simulated rig list failure" >&2
+    exit 1
+    ;;
+esac
+exit 0
+`)
+	writeExecutable(t, filepath.Join(binDir, "bd"), `#!/bin/sh
+printf '%s\n' "$*" >> "$BD_LOG"
+exit 0
+`)
+	env := map[string]string{
+		"BD_LOG":       bdLog,
+		"GC_CITY":      t.TempDir(),
+		"GC_CITY_PATH": t.TempDir(),
+		"PATH":         binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+
+	out, err := runScriptResult(t, coreScriptPath("gate-sweep.sh"), env)
+	if err != nil {
+		t.Fatalf("gate-sweep should still exit 0 on a rig-list failure (HQ-only fallback, same as jq-missing): %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "gate-sweep: gc rig list --json returned no usable rigs; sweeping HQ only") {
+		t.Fatalf("expected a stderr warning mirroring the jq-not-found case; got:\n%s", out)
+	}
+
+	log, readErr := os.ReadFile(bdLog)
+	if readErr != nil {
+		t.Fatalf("ReadFile(bd log): %v", readErr)
+	}
+	s := string(log)
+	for _, want := range []string{
+		"gate check --type=timer --escalate", // HQ scope must still run.
+		"gate check --type=gh --escalate",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %q in bd log (HQ scope must still run despite rig-list failure):\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "--rig") {
+		t.Fatalf("a rig-list failure must fall back to HQ-only, not partially sweep; bd log:\n%s", s)
 	}
 }
 
