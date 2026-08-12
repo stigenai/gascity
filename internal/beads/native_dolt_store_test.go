@@ -2001,6 +2001,43 @@ func TestNativeDoltStoreApplyGraphPlanWithStorageEphemeral(t *testing.T) {
 	assertNativeDependency(t, child.Dependencies, child.ID, blocker.ID, string(beadslib.DepBlocks))
 }
 
+func TestNativeDoltStoreApplyGraphPlanAllowsEpicBlockedByChildEdge(t *testing.T) {
+	// Regression test for gcy-j1d: the standard "epic can't close until its
+	// child does" convention records a parent-child edge (child -> epic)
+	// alongside an explicit reverse blocks edge (epic -> child). The
+	// external bd CLI already allows building this shape one dependency at a
+	// time, and internal/sling/cycle.go no longer treats parent-child as
+	// cycle-sensitive for the same reason (gcy-6m7), so ApplyGraphPlan must
+	// accept it in one batch too instead of hard-erroring on the reverse
+	// edge.
+	store := newNativeDoltStoreForTest(newNativeDoltMemStorage())
+
+	result, err := store.ApplyGraphPlan(t.Context(), &GraphApplyPlan{
+		Nodes: []GraphApplyNode{
+			{Key: "epic", Title: "Epic"},
+			{Key: "child", Title: "Child", ParentKey: "epic"},
+		},
+		Edges: []GraphApplyEdge{
+			{FromKey: "epic", ToKey: "child", Type: string(beadslib.DepBlocks)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ApplyGraphPlan: %v", err)
+	}
+
+	epic, err := store.Get(result.IDs["epic"])
+	if err != nil {
+		t.Fatalf("Get epic: %v", err)
+	}
+	child, err := store.Get(result.IDs["child"])
+	if err != nil {
+		t.Fatalf("Get child: %v", err)
+	}
+
+	assertNativeDependency(t, child.Dependencies, child.ID, epic.ID, string(beadslib.DepParentChild))
+	assertNativeDependency(t, epic.Dependencies, epic.ID, child.ID, string(beadslib.DepBlocks))
+}
+
 func TestNativeDoltStoreApplyGraphPlanWithStorageNoHistory(t *testing.T) {
 	store := newNativeDoltStoreForTest(newNativeDoltMemStorage())
 

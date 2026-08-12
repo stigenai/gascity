@@ -865,9 +865,16 @@ func (s *NativeDoltStore) ApplyGraphPlanWithStorage(parent context.Context, plan
 				}
 				return fmt.Errorf("edge %d %s->%s duplicates a parent-child relationship with dependency type %q", i, fromID, toID, depType)
 			}
-			if parentDepPairs[nativeGraphApplyDepPairKey(toID, fromID)] && nativeGraphApplyCycleRelevantDependencyType(depType) {
-				return fmt.Errorf("edge %d %s->%s creates a blocking reverse of a parent-child relationship", i, fromID, toID)
-			}
+			// A cycle-relevant edge reversing a known parent-child pair (e.g.
+			// epic -[blocks]-> child alongside child -[parent-child]-> epic)
+			// is not rejected here: it's the standard "epic can't close
+			// until its child does" convention, not a scheduling cycle.
+			// parent-child is structural bookkeeping (see
+			// beads.IsReadyBlockingDependencyType and
+			// internal/sling/cycle.go's isCycleSensitiveDep, gcy-6m7); the
+			// external bd CLI already allows building this shape one
+			// dependency at a time, so GraphApply must accept it in one
+			// batch too (gcy-j1d).
 			dep := &beadslib.Dependency{
 				IssueID:     fromID,
 				DependsOnID: toID,
@@ -1923,10 +1930,6 @@ func nativeGraphApplyDependencyType(depType string) beadslib.DependencyType {
 		return beadslib.DepBlocks
 	}
 	return beadslib.DependencyType(depType)
-}
-
-func nativeGraphApplyCycleRelevantDependencyType(depType beadslib.DependencyType) bool {
-	return depType == beadslib.DepBlocks || depType == beadslib.DepConditionalBlocks
 }
 
 func nativeGraphApplyParentDepPairs(nodes []GraphApplyNode, keyToID map[string]string) map[string]bool {
