@@ -467,7 +467,8 @@ func k8sRequiresPostStartLiveness(cfg runtime.Config) bool {
 // replacement wins a precondition conflict instead of being cross-deleted.
 // This mirrors the ssh provider's Stop discrimination.
 func (p *Provider) Stop(name string) error {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	label := SanitizeLabel(name)
 
 	pods, err := p.ops.listPods(ctx, "gc-session="+label, "")
@@ -567,7 +568,8 @@ func (p *Provider) Interrupt(name string) error {
 
 // IsRunning reports whether the session has a running pod with a live tmux session.
 func (p *Provider) IsRunning(name string) bool {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), runningPodSnapshotTimeout)
+	defer cancel()
 	podName, err := p.findRunningPod(ctx, name)
 	if err != nil {
 		return false
@@ -581,7 +583,8 @@ func (p *Provider) IsRunning(name string) bool {
 // IsAttached reports whether a user terminal is connected to the tmux
 // session inside the pod.
 func (p *Provider) IsAttached(name string) bool {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), runningPodSnapshotTimeout)
+	defer cancel()
 	podName, err := p.findRunningPod(ctx, name)
 	if err != nil {
 		return false
@@ -596,8 +599,9 @@ func (p *Provider) IsAttached(name string) bool {
 
 // Attach shells out to kubectl exec -it for full TTY passthrough.
 func (p *Provider) Attach(name string) error {
-	ctx := context.Background()
-	podName, err := p.findRunningPod(ctx, name)
+	findCtx, cancel := context.WithTimeout(context.Background(), runningPodSnapshotTimeout)
+	defer cancel()
+	podName, err := p.findRunningPod(findCtx, name)
 	if err != nil {
 		return fmt.Errorf("attach: no running pod for session %q", name)
 	}
@@ -609,7 +613,9 @@ func (p *Provider) Attach(name string) error {
 	args = append(args, "-n", p.namespace, "exec", "-it", podName, "--",
 		"tmux", "attach", "-t", tmuxSession)
 
-	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	// Interactive attach has no natural deadline: it must run for as long as
+	// the user stays attached, not the pod-discovery bound above.
+	cmd := exec.CommandContext(context.Background(), "kubectl", args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -796,7 +802,8 @@ func isTmuxUnknownVariable(err error, key string) bool {
 
 // RemoveMeta removes a metadata key from the tmux environment.
 func (p *Provider) RemoveMeta(name, key string) error {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), runningPodSnapshotTimeout)
+	defer cancel()
 	podName, err := p.findPod(ctx, name)
 	if err != nil {
 		return interactionError("remove metadata", name, err)
@@ -916,8 +923,9 @@ func (p *Provider) SleepCapability(string) runtime.SessionSleepCapability {
 
 // CopyTo copies a local file/directory into the pod via tar.
 func (p *Provider) CopyTo(name, src, relDst string) error {
-	ctx := context.Background()
-	podName, err := p.findRunningPod(ctx, name)
+	findCtx, cancel := context.WithTimeout(context.Background(), runningPodSnapshotTimeout)
+	defer cancel()
+	podName, err := p.findRunningPod(findCtx, name)
 	if err != nil {
 		return nil // best-effort
 	}
@@ -925,7 +933,9 @@ func (p *Provider) CopyTo(name, src, relDst string) error {
 	if relDst != "" {
 		dst = "/workspace/" + relDst
 	}
-	return copyToPod(ctx, p.ops, podName, "agent", src, dst)
+	// Work directories can be many gigabytes; the transfer itself must not
+	// inherit the pod-discovery bound above.
+	return copyToPod(context.Background(), p.ops, podName, "agent", src, dst)
 }
 
 // --- Internal helpers ---
