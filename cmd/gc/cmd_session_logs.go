@@ -156,7 +156,14 @@ func sessionLogFallbackCandidateLive(info sessionpkg.Info) bool {
 	}
 }
 
-func ambiguousSessionLogDiagnostic(logCtx sessionLogContext) string {
+// ambiguousSessionLogDiagnostic explains why no transcript could be resolved.
+// When the target session is itself live, it says so explicitly — the
+// underlying cause here is always "can't tell this session's transcript
+// apart from N live siblings sharing its workdir," never "session stopped,"
+// and callers (human or automated) reading a bare error have no other way to
+// tell those apart (gcy-byv: this ambiguity error was read as evidence of a
+// stopped agent).
+func ambiguousSessionLogDiagnostic(sessFront *sessionpkg.Store, logCtx sessionLogContext) string {
 	sessionID := strings.TrimSpace(logCtx.sessionID)
 	if sessionID == "" {
 		sessionID = "requested session"
@@ -165,10 +172,42 @@ func ambiguousSessionLogDiagnostic(logCtx sessionLogContext) string {
 	if provider == "" {
 		provider = "provider"
 	}
+	liveNote := ambiguousSessionLogLiveNote(sessFront, logCtx)
 	if strings.TrimSpace(logCtx.sessionKey) == "" {
-		return fmt.Sprintf("session %q has no session_key and workdir fallback is ambiguous for %s work_dir %q", sessionID, provider, logCtx.workDir)
+		return fmt.Sprintf("session %q has no session_key and workdir fallback is ambiguous for %s work_dir %q%s", sessionID, provider, logCtx.workDir, liveNote)
 	}
-	return fmt.Sprintf("no exact transcript found for session %q and workdir fallback is ambiguous for %s work_dir %q", sessionID, provider, logCtx.workDir)
+	return fmt.Sprintf("no exact transcript found for session %q and workdir fallback is ambiguous for %s work_dir %q%s", sessionID, provider, logCtx.workDir, liveNote)
+}
+
+// ambiguousSessionLogLiveNote returns a suffix noting that the target session
+// is confirmed live when the sibling set (computed the same way the
+// fallback-eligibility check itself does) says so, and how many live
+// siblings its workdir is shared with. Empty when the target isn't live or
+// the sibling set can't be gathered, so the base diagnostic is unchanged.
+func ambiguousSessionLogLiveNote(sessFront *sessionpkg.Store, logCtx sessionLogContext) string {
+	siblings, err := sessionLogFallbackSiblings(sessFront, logCtx)
+	if err != nil {
+		return ""
+	}
+	targetLive := false
+	liveSiblings := 0
+	for _, info := range siblings {
+		if !sessionLogFallbackCandidateLive(info) {
+			continue
+		}
+		liveSiblings++
+		if info.ID == logCtx.sessionID {
+			targetLive = true
+		}
+	}
+	if !targetLive {
+		return ""
+	}
+	otherLive := liveSiblings - 1
+	if otherLive <= 0 {
+		return " (session is live; transcript lookup failed for a different reason)"
+	}
+	return fmt.Sprintf(" (session is live, not stopped; %d other live session(s) share this workdir and can't be told apart by workdir alone)", otherLive)
 }
 
 func resolveConfiguredSessionLogContext(cityPath string, cfg *config.City, identifier string) (string, bool) {

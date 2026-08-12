@@ -507,6 +507,58 @@ func TestResolveStoredSessionLogSource_DoesNotCrossAmbiguousWorkDir(t *testing.T
 	}
 }
 
+// gcy-byv: a live target session sharing an ambiguous workdir with another
+// live session must not get a diagnostic that reads like the session is
+// stopped/not-found — it's alive, just not uniquely resolvable by workdir.
+func TestResolveStoredSessionLogSource_AmbiguousWorkDirDiagnosticStatesSessionIsLive(t *testing.T) {
+	store := beads.NewMemStore()
+	workDir := t.TempDir()
+	searchBase := t.TempDir()
+	writeNamedTestSession(t, searchBase, workDir, "actual-session.jsonl",
+		`{"uuid":"1","parentUuid":"","type":"user","message":{"role":"user","content":"hello"},"timestamp":"2025-01-01T00:00:00Z"}`,
+	)
+
+	_, _ = store.Create(beads.Bead{
+		Type:   session.BeadType,
+		Labels: []string{session.LabelSession},
+		Metadata: map[string]string{
+			"alias":        "coder",
+			"provider":     "claude",
+			"session_name": "coder",
+			"state":        "active",
+			"work_dir":     workDir,
+		},
+	})
+	_, _ = store.Create(beads.Bead{
+		Type:   session.BeadType,
+		Labels: []string{session.LabelSession},
+		Metadata: map[string]string{
+			"alias":        "reviewer",
+			"provider":     "claude",
+			"session_name": "reviewer",
+			"state":        "active",
+			"work_dir":     workDir,
+		},
+	})
+
+	got, _, ok, diagnostic := resolveStoredSessionLogSource("", nil, sessionFrontDoor(store), "coder", []string{searchBase})
+	if !ok {
+		t.Fatal("resolveStoredSessionLogSource() = not found, want found")
+	}
+	if got != "" {
+		t.Fatalf("resolveStoredSessionLogSource() path = %q, want empty for ambiguous same-workdir transcript", got)
+	}
+	if !strings.Contains(diagnostic, "ambiguous") {
+		t.Fatalf("resolveStoredSessionLogSource() diagnostic = %q, want ambiguous", diagnostic)
+	}
+	if !strings.Contains(diagnostic, "live") || !strings.Contains(diagnostic, "not stopped") {
+		t.Fatalf("resolveStoredSessionLogSource() diagnostic = %q, want it to state the session is live, not stopped", diagnostic)
+	}
+	if !strings.Contains(diagnostic, "1 other live session") {
+		t.Fatalf("resolveStoredSessionLogSource() diagnostic = %q, want it to count exactly 1 other live sibling", diagnostic)
+	}
+}
+
 func TestResolveStoredSessionLogSource_CodexDoesNotUseAmbiguousWorkDirFallback(t *testing.T) {
 	store := beads.NewMemStore()
 	workDir := t.TempDir()

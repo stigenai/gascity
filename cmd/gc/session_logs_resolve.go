@@ -65,7 +65,7 @@ func resolveStoredSessionLogSource(cityPath string, cfg *config.City, sessFront 
 		path = resolveCodexSiblingLogPath(sessFront, searchPaths, logCtx)
 	}
 	if path == "" && !fallbackAllowed {
-		return "", logCtx.provider, true, ambiguousSessionLogDiagnostic(logCtx)
+		return "", logCtx.provider, true, ambiguousSessionLogDiagnostic(sessFront, logCtx)
 	}
 	return path, logCtx.provider, true, ""
 }
