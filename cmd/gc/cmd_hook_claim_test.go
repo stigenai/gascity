@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"strings"
@@ -239,9 +240,9 @@ func TestDoHookClaimUnassignedRoutedCandidateNeverConsultsLiveness(t *testing.T)
 			t.Fatal("IsAssigneeLive called for an already-unassigned candidate")
 			return true
 		},
-		ReclaimStaleAssignee: func(context.Context, string, []string, string, beads.Bead) bool {
+		ReclaimStaleAssignee: func(context.Context, string, []string, string, beads.Bead) (bool, error) {
 			t.Fatal("ReclaimStaleAssignee called for an already-unassigned candidate")
-			return false
+			return false, nil
 		},
 		Claim: func(_ context.Context, _ string, _ []string, beadID, assignee string) (beads.Bead, bool, error) {
 			claimedBead = beadID
@@ -287,12 +288,12 @@ func TestDoHookClaimReclaimsRoutedCandidateWithStaleAssignee(t *testing.T) {
 			liveChecked = assignee
 			return false // confirmed non-live
 		},
-		ReclaimStaleAssignee: func(_ context.Context, _ string, _ []string, actor string, candidate beads.Bead) bool {
+		ReclaimStaleAssignee: func(_ context.Context, _ string, _ []string, actor string, candidate beads.Bead) (bool, error) {
 			reclaimedBead = candidate.ID
 			if actor != "worker-1" {
 				t.Fatalf("reclaim actor = %q, want worker-1", actor)
 			}
-			return true
+			return true, nil
 		},
 		Claim: func(_ context.Context, _ string, _ []string, beadID, assignee string) (beads.Bead, bool, error) {
 			claimedBead = beadID
@@ -340,9 +341,9 @@ func TestDoHookClaimSkipsRoutedCandidateWithLiveAssignee(t *testing.T) {
 	ops := hookClaimOps{
 		Runner:         func(string, string) (string, error) { return string(output), nil },
 		IsAssigneeLive: func(context.Context, string, []string, string) bool { return true },
-		ReclaimStaleAssignee: func(context.Context, string, []string, string, beads.Bead) bool {
+		ReclaimStaleAssignee: func(context.Context, string, []string, string, beads.Bead) (bool, error) {
 			reclaimCalled = true
-			return true
+			return true, nil
 		},
 		Claim: func(_ context.Context, _ string, _ []string, beadID, assignee string) (beads.Bead, bool, error) {
 			claimCalled = true
@@ -389,8 +390,8 @@ func TestDoHookClaimTreatsLostReclaimRaceAsNoWorkNotError(t *testing.T) {
 	ops := hookClaimOps{
 		Runner:         func(string, string) (string, error) { return string(output), nil },
 		IsAssigneeLive: func(context.Context, string, []string, string) bool { return false },
-		ReclaimStaleAssignee: func(context.Context, string, []string, string, beads.Bead) bool {
-			return false // lost the race: assignment changed underneath the check
+		ReclaimStaleAssignee: func(context.Context, string, []string, string, beads.Bead) (bool, error) {
+			return false, nil // lost the race: assignment changed underneath the check
 		},
 		Claim: func(_ context.Context, _ string, _ []string, beadID, assignee string) (beads.Bead, bool, error) {
 			t.Fatal("Claim called after a lost reclaim race")
@@ -411,6 +412,57 @@ func TestDoHookClaimTreatsLostReclaimRaceAsNoWorkNotError(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `"reason":"no_work"`) {
 		t.Fatalf("stdout = %q, want reason no_work (benign race loss, not claims_errored)", stdout.String())
+	}
+}
+
+// TestDoHookClaimTreatsFailedReclaimWriteAsClaimsErrored guards the gcy-v1ga
+// fix: unlike a benign lost race (ReclaimStaleAssignee returns false, nil —
+// see TestDoHookClaimTreatsLostReclaimRaceAsNoWorkNotError above), a reclaim
+// write that itself fails (store down, transient write failure) returns a
+// non-nil error and must surface as claims_errored, not a healthy no_work —
+// mirroring how the sibling ops.Claim write-failure path already behaves
+// (TestDoHookClaimDrainsClaimsErroredWhenEveryCandidateErrors).
+func TestDoHookClaimTreatsFailedReclaimWriteAsClaimsErrored(t *testing.T) {
+	candidates := []beads.Bead{
+		{ID: "work-1", Status: "in_progress", Assignee: "ghost-worker", Metadata: map[string]string{"gc.routed_to": "route-1"}},
+	}
+	output, err := json.Marshal(candidates)
+	if err != nil {
+		t.Fatalf("marshal candidates: %v", err)
+	}
+
+	ops := hookClaimOps{
+		Runner:         func(string, string) (string, error) { return string(output), nil },
+		IsAssigneeLive: func(context.Context, string, []string, string) bool { return false },
+		ReclaimStaleAssignee: func(context.Context, string, []string, string, beads.Bead) (bool, error) {
+			return false, fmt.Errorf("reclaiming work-1: store write timeout")
+		},
+		Claim: func(_ context.Context, _ string, _ []string, beadID, assignee string) (beads.Bead, bool, error) {
+			t.Fatal("Claim called after a failed reclaim write")
+			return beads.Bead{}, false, nil
+		},
+		DrainAck: func(io.Writer) error { return nil },
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := doHookClaim("query", ".", hookClaimOptions{
+		Assignee:           "worker-1",
+		IdentityCandidates: []string{"worker-1"},
+		RouteTargets:       []string{"route-1"},
+		JSON:               true,
+	}, ops, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doHookClaim() = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	var result hookClaimJSONResult
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("stdout is not JSON: %v\nraw: %s", err, stdout.String())
+	}
+	if result.Action != "drain" || result.Reason != "claims_errored" {
+		t.Fatalf("claim result = %+v, want drain/claims_errored (reclaim write failure kept visible)", result)
+	}
+	if !strings.Contains(stderr.String(), "work-1") {
+		t.Fatalf("stderr = %q, want it to mention the failed candidate work-1", stderr.String())
 	}
 }
 
@@ -441,10 +493,10 @@ func TestDoHookClaimCachesLivenessCheckAcrossCandidatesSharingAnAssignee(t *test
 			}
 			return false // confirmed non-live, whichever candidate asks
 		},
-		ReclaimStaleAssignee: func(_ context.Context, _ string, _ []string, _ string, candidate beads.Bead) bool {
+		ReclaimStaleAssignee: func(_ context.Context, _ string, _ []string, _ string, candidate beads.Bead) (bool, error) {
 			// work-1 loses a benign reclaim race so the loop reaches work-2, the
 			// case that actually exercises the cached (second) liveness lookup.
-			return candidate.ID == "work-2"
+			return candidate.ID == "work-2", nil
 		},
 		Claim: func(_ context.Context, _ string, _ []string, beadID, assignee string) (beads.Bead, bool, error) {
 			claimedBead = beadID
