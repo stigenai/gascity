@@ -84,10 +84,18 @@ const (
 	// threshold), never as a recovery action — pack-level subscribers or
 	// operators own recovery. See gastownhall/gascity#1497, #2085, #2389.
 	SessionUnknownState = "session.unknown_state"
-	// SessionResetStalled fires when a session reset was committed but
-	// the follow-up wake remains pending past the configured startup
-	// timeout. Operators use the typed payload to correlate the stuck
-	// session, template, reset timestamp, and elapsed wait.
+	// SessionResetStalled fires when continuation_reset_pending has stayed
+	// true past the configured startup timeout without the session waking.
+	// Operators use the typed payload to correlate the stuck session,
+	// template, and elapsed wait. Covers two distinct shapes, disambiguated
+	// by whether ResetCommittedAt is set:
+	//   - reset was committed (ResetCommittedAt set) but the follow-up wake
+	//     remains pending -- elapsed is measured from that reset timestamp.
+	//   - continuation_reset_pending was armed without reset_committed_at
+	//     ever being stamped (ResetCommittedAt empty; the
+	//     healStatePatchWithRollbackInfo shape, gcy-y9h/gcy-77f) -- there is
+	//     no durable timestamp for this shape, so elapsed is measured from
+	//     the reconciler's first observation of it instead.
 	SessionResetStalled = "session.reset_stalled"
 	// SessionWorkQueryFailed fires when the current managed session's
 	// work-discovery query subprocess is killed by an external signal or

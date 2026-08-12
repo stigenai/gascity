@@ -196,6 +196,24 @@ func resetPendingCommittedAtInfo(info sessionpkg.Info) (string, time.Time, bool)
 	return raw, committedAt, true
 }
 
+// resetPendingNoCommitInfo reports whether continuation_reset_pending=true is
+// armed without a parseable reset_committed_at -- healStatePatchWithRollbackInfo's
+// shape (cmd/gc/session_reconcile.go:945; gcy-y9h, gcy-77f). resetPendingCommittedAtInfo
+// already collapses this to pending=false since it only cares about the
+// committed shape; this isolates the uncommitted case so it can be tracked
+// and diagnosed separately instead of silently producing nothing.
+func resetPendingNoCommitInfo(info sessionpkg.Info) bool {
+	if strings.TrimSpace(info.ContinuationResetPending) != "true" {
+		return false
+	}
+	raw := strings.TrimSpace(info.ResetCommittedAt)
+	if raw == "" {
+		return true
+	}
+	_, err := time.Parse(time.RFC3339, raw)
+	return err != nil
+}
+
 func recordResetStallIfDue(
 	info sessionpkg.Info,
 	template string,
@@ -213,7 +231,11 @@ func recordResetStallIfDue(
 		if dt != nil {
 			dt.clearResetStall(info.ID)
 		}
+		recordResetPendingNoCommitStallIfDue(info, template, name, alive, startupTimeout, now, dt, rec, stderr, trace)
 		return
+	}
+	if dt != nil {
+		dt.clearResetPendingNoCommit(info.ID)
 	}
 	if alive || startupTimeout <= 0 {
 		return
@@ -257,6 +279,82 @@ func recordResetStallIfDue(
 				"elapsed_s":          elapsedSeconds,
 				"reset_committed_at": resetCommittedAt,
 				"startup_timeout_s":  int(startupTimeout / time.Second),
+			},
+		)
+	}
+}
+
+// recordResetPendingNoCommitStallIfDue detects healStatePatchWithRollbackInfo's
+// shape (cmd/gc/session_reconcile.go:945): continuation_reset_pending=true
+// armed without reset_committed_at ever being stamped (gcy-y9h, gcy-77f).
+// There is no persisted timestamp to diff against for this shape without
+// changing what stamps the flag in the first place -- deliberately out of
+// scope, see gcy-77f -- so elapsed time is measured from the drainTracker's
+// in-memory first-observed record instead of a durable bead field.
+// Diagnostics only: this does not change wake behavior.
+func recordResetPendingNoCommitStallIfDue(
+	info sessionpkg.Info,
+	template string,
+	name string,
+	alive bool,
+	startupTimeout time.Duration,
+	now time.Time,
+	dt *drainTracker,
+	rec events.Recorder,
+	stderr io.Writer,
+	trace *sessionReconcilerTraceCycle,
+) {
+	if !resetPendingNoCommitInfo(info) {
+		if dt != nil {
+			dt.clearResetPendingNoCommit(info.ID)
+		}
+		return
+	}
+	if dt == nil {
+		return
+	}
+	firstSeen := dt.observeResetPendingNoCommit(info.ID, now)
+	if alive || startupTimeout <= 0 {
+		return
+	}
+	elapsed := now.Sub(firstSeen)
+	if elapsed <= startupTimeout {
+		return
+	}
+	if !dt.markResetPendingNoCommitStall(info.ID) {
+		return
+	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	elapsedSeconds := int(elapsed / time.Second)
+	msg := fmt.Sprintf(
+		"session reconciler: reset pending without commit stalled for %s: elapsed_s=%d bead_id=%s",
+		name, elapsedSeconds, info.ID,
+	)
+	fmt.Fprintln(stderr, msg) //nolint:errcheck
+
+	if rec != nil {
+		rec.Record(events.Event{
+			Type:      events.SessionResetStalled,
+			Actor:     "gc",
+			Subject:   name,
+			Message:   msg,
+			SessionID: info.ID,
+			Payload:   events.SessionResetStalledPayloadJSON(name, template, "", elapsedSeconds),
+		})
+	}
+	if trace != nil {
+		trace.RecordDecision(
+			TraceSiteReconcilerResetPendingUncommitted,
+			TraceReasonResetPendingUncommitted,
+			TraceOutcomeFailed,
+			template,
+			name,
+			map[string]any{
+				"bead_id":           info.ID,
+				"elapsed_s":         elapsedSeconds,
+				"startup_timeout_s": int(startupTimeout / time.Second),
 			},
 		)
 	}
@@ -1587,6 +1685,9 @@ func reconcileSessionBeadsTracedWithNamedDemand(
 		}
 		if _, _, pending := resetPendingCommittedAtInfo(info); !pending && dt != nil {
 			dt.clearResetStall(id)
+		}
+		if !resetPendingNoCommitInfo(info) && dt != nil {
+			dt.clearResetPendingNoCommit(id)
 		}
 		// #3630: the session is in the desired set this tick, so its spec is
 		// present — reset any suspend-drain confirmation window accrued during a

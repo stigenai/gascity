@@ -110,8 +110,12 @@ func (StoreDiskCriticalPayload) IsEventPayload() {}
 
 // SessionResetStalledPayload is the typed payload for
 // session.reset_stalled events. It identifies the session whose reset
-// completion has stalled and the reset timestamp used to compute the
-// elapsed diagnostic threshold.
+// completion has stalled. ResetCommittedAt is the reset timestamp used to
+// compute the elapsed diagnostic threshold when the reset was committed; it
+// is empty when continuation_reset_pending was armed without a commit ever
+// being stamped (see events.SessionResetStalled's doc comment) -- elapsed_s
+// is still populated in that case, just measured from first observation
+// instead of this (absent) field.
 type SessionResetStalledPayload struct {
 	SessionName      string `json:"session_name"`
 	Template         string `json:"template"`
