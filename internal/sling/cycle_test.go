@@ -136,6 +136,38 @@ func TestDetectCycleSkipsNonSchedulingDeps(t *testing.T) {
 	}
 }
 
+func TestDetectCycleSkipsParentChildEdges(t *testing.T) {
+	// parent-child is structural (child "depends on" parent in the Dep
+	// model), not a scheduling dependency: a child never waits on its parent
+	// to close. Even a parent-child edge in both directions — a hierarchy
+	// data error, not a scheduling deadlock — must not be reported as a
+	// cycle here; that's bd's own hierarchy validation to catch.
+	g := fakeTypedDepGraph{
+		"a": {{to: "b", typ: "parent-child"}},
+		"b": {{to: "a", typ: "parent-child"}},
+	}
+	if err := DetectCycle("a", g); err != nil {
+		t.Fatalf("parent-child dep should not trigger cycle detection; got %v", err)
+	}
+}
+
+func TestDetectCycleNoCycle_EpicBlockedByChild(t *testing.T) {
+	// Regression test for gcy-6m7: the standard "epic blocked by its own
+	// child" convention records two edges between the same pair — a
+	// structural parent-child edge from child to parent, and an explicit
+	// blocks edge from parent to child (the epic can't close until the child
+	// does). Neither edge gates the child: it has no dependency of its own,
+	// so it can proceed and close, which then satisfies the epic's blocks
+	// edge. This must not be reported as a cycle.
+	g := fakeTypedDepGraph{
+		"child": {{to: "epic", typ: "parent-child"}},
+		"epic":  {{to: "child", typ: "blocks"}, {to: "other-child", typ: "blocks"}},
+	}
+	if err := DetectCycle("child", g); err != nil {
+		t.Fatalf("epic-blocked-by-child pattern should not be a cycle; got %v", err)
+	}
+}
+
 func TestDetectCycleWaitsForType(t *testing.T) {
 	// waits-for is a scheduling dep and must be cycle-sensitive
 	g := fakeTypedDepGraph{
