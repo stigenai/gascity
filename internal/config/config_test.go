@@ -2297,6 +2297,72 @@ esac
 	}
 }
 
+// TestEffectiveWorkQueryTier3ExecutesPoolAdoptedManualOriginCarveOut executes
+// (not just string-matches) the gcy-chr Tier-3 carve-out: a manual-origin
+// session whose own bead carries pool_managed=true must reach Tier 3 and
+// claim routed work, via the same fake-bd harness used for the ephemeral
+// path above.
+func TestEffectiveWorkQueryTier3ExecutesPoolAdoptedManualOriginCarveOut(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not available; Tier-3 pool_managed carve-out shells out to jq")
+	}
+	a := Agent{Name: "worker", Dir: "hello-world"}
+	out := runEffectiveWorkQuery(t, a, map[string]string{
+		"GC_SESSION_ORIGIN": "manual",
+		"GC_SESSION_ID":     "sess-1",
+		"GC_CITY_PATH":      "/city",
+	}, `#!/bin/sh
+set -eu
+case "$*" in
+  "-C /city show sess-1 --json")
+    printf '{"metadata":{"pool_managed":"true"}}'
+    ;;
+  *"ready --metadata-field gc.routed_to=hello-world/worker"*"--unassigned"*"--exclude-type=epic"*"--json"*"--sort oldest"*"--limit=20"*)
+    printf '[{"id":"routed-work"}]'
+    ;;
+  *)
+    printf '[]'
+    ;;
+esac
+`)
+	if !strings.Contains(out, "routed-work") {
+		t.Fatalf("EffectiveWorkQuery() = %q, want Tier 3 routed work claimed for pool_managed=true manual-origin session", out)
+	}
+}
+
+// TestEffectiveWorkQueryTier3StaysGatedForManualOriginWithoutPoolManaged is
+// the negative twin: a manual-origin session the reconciler has NOT adopted
+// into pool duty (no pool_managed=true on its own bead) must stay gated out
+// of Tier 3, exactly like before gcy-chr's fix — matching documented intent
+// that manual sessions stop at explicit ownership by default.
+func TestEffectiveWorkQueryTier3StaysGatedForManualOriginWithoutPoolManaged(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not available; Tier-3 pool_managed carve-out shells out to jq")
+	}
+	a := Agent{Name: "worker", Dir: "hello-world"}
+	out := runEffectiveWorkQuery(t, a, map[string]string{
+		"GC_SESSION_ORIGIN": "manual",
+		"GC_SESSION_ID":     "sess-1",
+		"GC_CITY_PATH":      "/city",
+	}, `#!/bin/sh
+set -eu
+case "$*" in
+  "-C /city show sess-1 --json")
+    printf '{"metadata":{}}'
+    ;;
+  *"ready --metadata-field gc.routed_to=hello-world/worker"*"--unassigned"*"--exclude-type=epic"*"--json"*"--sort oldest"*"--limit=20"*)
+    printf '[{"id":"routed-work"}]'
+    ;;
+  *)
+    printf '[]'
+    ;;
+esac
+`)
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("EffectiveWorkQuery() = %q, want empty output (Tier 3 gated) for manual origin without pool_managed", out)
+	}
+}
+
 func TestGeneratedBdReadCommandsStayBd104StorageCompatible(t *testing.T) {
 	a := Agent{
 		Name:              "dog-1",

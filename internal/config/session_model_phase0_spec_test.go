@@ -86,6 +86,34 @@ func TestPhase0ConfigDefaults_WorkQueryIsOriginAware(t *testing.T) {
 	}
 }
 
+// TestPhase0ConfigDefaults_WorkQueryTier3AllowsPoolAdoptedManualOrigin covers
+// gcy-chr: a manual-origin session that the reconciler has adopted into pool
+// demand (pool_managed=true on its own bead) must not be silently gated out
+// of Tier 3, but any other non-ephemeral origin (including "named") is
+// unaffected and still stops at explicit ownership.
+func TestPhase0ConfigDefaults_WorkQueryTier3AllowsPoolAdoptedManualOrigin(t *testing.T) {
+	a := Agent{Name: "worker", Dir: "myrig"}
+
+	got := a.EffectiveWorkQuery()
+
+	for _, want := range []string{
+		`manual)`,
+		`$GC_SESSION_ID`,
+		`$GC_CITY_PATH`,
+		`bd -C "$GC_CITY_PATH" show "$GC_SESSION_ID"`,
+		`.metadata.pool_managed`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("EffectiveWorkQuery() = %q, want pool-adopted-manual carve-out containing %q", got, want)
+		}
+	}
+	// Named sessions must remain unconditionally gated: no "named)" branch
+	// should exist in the generated case statement alongside "manual)".
+	if strings.Contains(got, `named)`) {
+		t.Fatalf("EffectiveWorkQuery() = %q, want named origin to stay hard-gated (no carve-out)", got)
+	}
+}
+
 func TestPhase0ConfigDefaults_OnBootUnclaimsRoutedWorkByDefault(t *testing.T) {
 	a := Agent{Name: "worker", Dir: "myrig"}
 

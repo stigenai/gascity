@@ -3709,6 +3709,79 @@ func TestBuildDesiredState_MaxOneManualAssignedWorkPreservesManualIdentity(t *te
 	}
 }
 
+// TestBuildDesiredState_ManualAssignedWorkStampsPoolManagedOnAdoption covers
+// gcy-chr: unlike its sibling above, this manual session bead starts with NO
+// pool_managed metadata at all. Its own assigned in-progress work routes it
+// through the resume tier (pool_desired_state.go's SessionRequest.SessionBeadID),
+// which is what actually gets a manual-origin bead selected into
+// realizePoolDesiredSessions's per-item loop as item.sessionInfo — an ordinary
+// MinActiveSessions floor-fill request never carries a SessionBeadID and so
+// never selects a pre-existing manual bead this way (reusablePoolSessionInfo
+// explicitly excludes manual origin from the general reuse-candidate pool).
+// Once selected, the reconciler must stamp pool_managed=true on this bead
+// (idempotently, without ever touching session_origin) so the Tier-3
+// claim-eligibility gate (poolDemandOriginGateScript) recognizes it.
+func TestBuildDesiredState_ManualAssignedWorkStampsPoolManagedOnAdoption(t *testing.T) {
+	cityPath := t.TempDir()
+	store := beads.NewMemStore()
+	manual, err := store.Create(beads.Bead{
+		Title:  "cashmaster/refinery-1",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel, "agent:cashmaster/refinery-1", "template:cashmaster/refinery"},
+		Metadata: map[string]string{
+			"template":       "cashmaster/refinery",
+			"agent_name":     "cashmaster/refinery-1",
+			"alias":          "cashmaster/refinery-1",
+			"session_name":   "s-refinery-manual",
+			"state":          "awake",
+			"session_origin": "manual",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	priority := 10
+	if _, err := store.Create(beads.Bead{
+		Title:    "manual assigned work",
+		Type:     "task",
+		Status:   "in_progress",
+		Priority: &priority,
+		Assignee: "cashmaster/refinery-1",
+		Metadata: map[string]string{
+			"gc.routed_to": "cashmaster/refinery",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:              "refinery",
+			Dir:               "cashmaster",
+			StartCommand:      "true",
+			MaxActiveSessions: intPtr(1),
+			ScaleCheck:        "printf 0",
+		}},
+	}
+
+	var stderr bytes.Buffer
+	dsResult := buildDesiredState("test-city", cityPath, time.Now().UTC(), cfg, runtime.NewFake(), store, &stderr)
+	if _, ok := dsResult.State["s-refinery-manual"]; !ok {
+		t.Fatalf("desired state missing manual resume session; keys=%v stderr=%q", mapKeys(dsResult.State), stderr.String())
+	}
+
+	stored, err := store.Get(manual.ID)
+	if err != nil {
+		t.Fatalf("store.Get(manual.ID): %v", err)
+	}
+	if got := stored.Metadata[poolManagedMetadataKey]; got != boolMetadata(true) {
+		t.Fatalf("pool_managed metadata = %q, want %q after pool adoption; stderr=%s", got, boolMetadata(true), stderr.String())
+	}
+	if got := stored.Metadata["session_origin"]; got != "manual" {
+		t.Fatalf("session_origin = %q, want unchanged %q (pool_managed stamp must not reclassify origin)", got, "manual")
+	}
+}
+
 func TestBuildDesiredState_MaxOneAgentSkipsCanonicalDuplicateWhenStaleAssignedWorkWinsCap(t *testing.T) {
 	cityPath := t.TempDir()
 	store := beads.NewMemStore()
