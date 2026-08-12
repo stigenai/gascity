@@ -3426,14 +3426,16 @@ type Agent struct {
 
 // Clone returns a deep copy of the agent. Every slice, map, and pointer field
 // is independently allocated so that mutating the clone never affects the
-// original (and vice versa) — the guarantee the pack-load cache and pool
-// expansion both rely on. Scalar and unexported value fields (including the
-// source/layout provenance enums) are carried over by the initial struct copy.
+// original (and vice versa) — the guarantee the pack-load cache relies on.
+// Scalar and unexported value fields (including the source/layout provenance
+// enums) are carried over by the initial struct copy.
 //
-// This is the single deep-copy source for Agent: deepCopyAgents (pack cache)
-// and cmd/gc's pool deepCopyAgent both call through here. TestAgentCloneIsDeep
-// enforces completeness — any new reference-type field must be cloned here or
-// the build fails.
+// deepCopyAgents (pack cache, internal/config/pack.go) is the only caller of
+// Clone. cmd/gc's pool deepCopyAgent (cmd/gc/pool.go) is a separate,
+// hand-rolled, explicit-field-list copy — it does NOT call through here and
+// must be updated by hand for every new field. TestAgentCloneIsDeep enforces
+// completeness for Clone; TestDeepCopyAgentCoversAllFields
+// (cmd/gc/pool_test.go) enforces it separately for deepCopyAgent.
 func (a Agent) Clone() Agent {
 	out := a
 	out.PreStart = append([]string(nil), a.PreStart...)
