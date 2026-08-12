@@ -5300,3 +5300,90 @@ func TestPersistInvocationUsageCursor(t *testing.T) {
 		t.Fatalf("cursor metadata after no-ops = %q, want u2", got)
 	}
 }
+
+// TestRequestFreshRestart_NotRunningCommitsResetImmediately covers gcy-9v6:
+// ComputeAwakeSet's bridge only treats continuation_reset_pending as pending
+// once reset_committed_at is also set (compute_awake_bridge.go), and
+// previously only the reconciler's own restart-requested consumption
+// (RestartRequestPatch) ever stamped it. If that consumption never runs for a
+// session — e.g. it is already asleep with no runtime to kill, and something
+// external is keeping the reconciler from visiting it — `gc session reset`
+// armed continuation_reset_pending forever with no wake and no diagnostic
+// ever firing, indistinguishable from a no-op. When there is no live runtime
+// to stop, nothing has to happen before the reset can take effect, so
+// RequestFreshRestart must commit it immediately rather than defer to a
+// reconciler pass that may never come.
+func TestRequestFreshRestart_NotRunningCommitsResetImmediately(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := runtime.NewFake()
+	mgr := NewManagerWithOptions(store, sp)
+
+	info, err := mgr.CreateSession(context.Background(), CreateOptions{Template: "helper", Title: "my chat", Command: "claude", WorkDir: "/tmp", Provider: "claude", ExtraMeta: map[string]string{"session_origin": "manual"}, BeadOnly: true})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if sp.IsRunning(info.SessionName) {
+		t.Fatal("test fixture wrong: session should not be running")
+	}
+
+	before := time.Now().UTC()
+	if err := mgr.RequestFreshRestart(info.ID); err != nil {
+		t.Fatalf("RequestFreshRestart: %v", err)
+	}
+
+	b, err := store.Get(info.ID)
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	if b.Metadata["restart_requested"] != "true" {
+		t.Fatalf("restart_requested = %q, want true", b.Metadata["restart_requested"])
+	}
+	if b.Metadata["continuation_reset_pending"] != "true" {
+		t.Fatalf("continuation_reset_pending = %q, want true", b.Metadata["continuation_reset_pending"])
+	}
+	committedAt, err := time.Parse(time.RFC3339, b.Metadata[ResetCommittedAtKey])
+	if err != nil {
+		t.Fatalf("reset_committed_at = %q, want a parseable RFC3339 timestamp: %v", b.Metadata[ResetCommittedAtKey], err)
+	}
+	if committedAt.Before(before.Add(-time.Second)) {
+		t.Fatalf("reset_committed_at = %s, want at or after %s", committedAt, before)
+	}
+}
+
+// TestRequestFreshRestart_RunningDefersCommitToReconcilerKill preserves the
+// existing behavior for a session whose runtime is still live: the reset must
+// stay uncommitted until the reconciler has actually stopped the old runtime
+// (RestartRequestPatch stamps reset_committed_at only after that kill is
+// confirmed), so ComputeAwakeSet never tries to wake a fresh incarnation
+// while the previous one might still be running.
+func TestRequestFreshRestart_RunningDefersCommitToReconcilerKill(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := runtime.NewFake()
+	mgr := NewManagerWithOptions(store, sp)
+
+	info, err := mgr.CreateSession(context.Background(), CreateOptions{Template: "helper", Title: "my chat", Command: "claude", WorkDir: "/tmp", Provider: "claude", ExtraMeta: map[string]string{"session_origin": "manual"}})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if !sp.IsRunning(info.SessionName) {
+		t.Fatal("test fixture wrong: session should be running")
+	}
+
+	if err := mgr.RequestFreshRestart(info.ID); err != nil {
+		t.Fatalf("RequestFreshRestart: %v", err)
+	}
+
+	b, err := store.Get(info.ID)
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	if b.Metadata["restart_requested"] != "true" {
+		t.Fatalf("restart_requested = %q, want true", b.Metadata["restart_requested"])
+	}
+	if b.Metadata["continuation_reset_pending"] != "true" {
+		t.Fatalf("continuation_reset_pending = %q, want true", b.Metadata["continuation_reset_pending"])
+	}
+	if got := b.Metadata[ResetCommittedAtKey]; got != "" {
+		t.Fatalf("reset_committed_at = %q, want empty until the reconciler confirms the kill", got)
+	}
+}
