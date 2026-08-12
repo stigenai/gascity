@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	goruntime "runtime"
 	"strings"
 	"sync"
@@ -3103,5 +3104,108 @@ func TestInitCityInPodImportFailureCleansTemporaryCity(t *testing.T) {
 	cleanupCmd := findExecCmd(fake, "rm -rf /tmp/city-src")
 	if cleanupCmd == nil {
 		t.Fatal("temporary city source was not cleaned after import failure")
+	}
+}
+
+// deadlineCheckingListExecOps wraps fakeK8sOps and fails listPods/execInPod
+// unless called with a tightly bounded context deadline. It extends the
+// pattern PR #54 (gcy-bru) used for the GC_INSTANCE_TOKEN probe to the
+// sibling call sites gcy-qla found still issuing unbounded LIST/EXEC calls on
+// a liveness/reconcile cadence: ProcessAlive, SetMeta, GetMeta's non-token
+// fallback, and GetLastActivity. A wedged or partitioned k8s API server must
+// surface as a bounded error, not hang whatever loop calls these.
+type deadlineCheckingListExecOps struct {
+	*fakeK8sOps
+}
+
+func (o *deadlineCheckingListExecOps) listPods(ctx context.Context, selector, fieldSelector string) ([]corev1.Pod, error) {
+	if err := requireTightDeadline(ctx); err != nil {
+		return nil, err
+	}
+	return o.fakeK8sOps.listPods(ctx, selector, fieldSelector)
+}
+
+func (o *deadlineCheckingListExecOps) execInPod(ctx context.Context, pod, container string, cmd []string, stdin io.Reader) (string, error) {
+	if err := requireTightDeadline(ctx); err != nil {
+		return "", err
+	}
+	return o.fakeK8sOps.execInPod(ctx, pod, container, cmd, stdin)
+}
+
+func requireTightDeadline(ctx context.Context) error {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return errors.New("k8s call has no context deadline")
+	}
+	if remaining := time.Until(deadline); remaining <= 0 || remaining > 10*time.Second {
+		return fmt.Errorf("k8s call deadline is not tightly bounded: %s", remaining)
+	}
+	return nil
+}
+
+// TestProcessAliveBoundsCallsWithDeadline is the regression guard for
+// gcy-qla: ProcessAlive is reachable from liveness probes and doctor checks
+// on a recurring cadence, so it fails against the pre-fix context.Background()
+// call and passes once it reuses runningPodSnapshotTimeout.
+func TestProcessAliveBoundsCallsWithDeadline(t *testing.T) {
+	fake := newFakeK8sOps()
+	addRunningPod(fake, "gc-test-agent", "gc-test-agent")
+	fake.setExecResult("gc-test-agent", []string{"pgrep", "-f", "claude"}, "1234\n", nil)
+	p := newProviderWithOps(&deadlineCheckingListExecOps{fakeK8sOps: fake})
+
+	if !p.ProcessAlive("gc-test-agent", []string{"claude"}) {
+		t.Fatal("ProcessAlive with a tightly bounded context available = false, want true")
+	}
+}
+
+// TestSetMetaBoundsCallsWithDeadline is the regression guard for gcy-qla:
+// SetMeta's findPod/execInPod calls must never be unbounded.
+func TestSetMetaBoundsCallsWithDeadline(t *testing.T) {
+	fake := newFakeK8sOps()
+	addRunningPod(fake, "gc-test-agent", "gc-test-agent")
+	p := newProviderWithOps(&deadlineCheckingListExecOps{fakeK8sOps: fake})
+
+	if err := p.SetMeta("gc-test-agent", "GC_DRAIN", "true"); err != nil {
+		t.Fatalf("SetMeta with a tightly bounded context available: %v", err)
+	}
+}
+
+// TestGetMetaNonTokenFallbackBoundsCallsWithDeadline is the regression guard
+// for gcy-qla: GetMeta's non-token fallback (the findPod/execInPod path used
+// for every key other than GC_INSTANCE_TOKEN) must be bounded the same way
+// the GC_INSTANCE_TOKEN branch already is (gcy-bru/PR #54).
+func TestGetMetaNonTokenFallbackBoundsCallsWithDeadline(t *testing.T) {
+	fake := newFakeK8sOps()
+	addRunningPod(fake, "gc-test-agent", "gc-test-agent")
+	fake.setExecResult("gc-test-agent",
+		[]string{"tmux", "show-environment", "-t", tmuxSession, "GC_DRAIN"}, "GC_DRAIN=true\n", nil)
+	p := newProviderWithOps(&deadlineCheckingListExecOps{fakeK8sOps: fake})
+
+	got, err := p.GetMeta("gc-test-agent", "GC_DRAIN")
+	if err != nil {
+		t.Fatalf("GetMeta with a tightly bounded context available: %v", err)
+	}
+	if got != "true" {
+		t.Fatalf("GetMeta(GC_DRAIN) = %q, want %q", got, "true")
+	}
+}
+
+// TestGetLastActivityBoundsCallsWithDeadline is the regression guard for
+// gcy-qla: GetLastActivity is reachable from the session reconciler and
+// manager on a reconcile cadence, so its calls must never be unbounded.
+func TestGetLastActivityBoundsCallsWithDeadline(t *testing.T) {
+	fake := newFakeK8sOps()
+	addRunningPod(fake, "gc-test-agent", "gc-test-agent")
+	fake.setExecResult("gc-test-agent",
+		[]string{"tmux", "display-message", "-t", tmuxSession, "-p", "#{session_activity}"},
+		"1709300000\n", nil)
+	p := newProviderWithOps(&deadlineCheckingListExecOps{fakeK8sOps: fake})
+
+	activity, err := p.GetLastActivity("gc-test-agent")
+	if err != nil {
+		t.Fatalf("GetLastActivity with a tightly bounded context available: %v", err)
+	}
+	if want := time.Unix(1709300000, 0); !activity.Equal(want) {
+		t.Fatalf("GetLastActivity = %v, want %v", activity, want)
 	}
 }

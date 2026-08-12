@@ -621,7 +621,11 @@ func (p *Provider) ProcessAlive(name string, processNames []string) bool {
 	if len(processNames) == 0 {
 		return true
 	}
-	ctx := context.Background()
+	// Reachable from liveness probes and doctor checks on a recurring cadence
+	// (internal/runtime/liveness.go, internal/doctor/checks.go); bound it like
+	// ListRunning so a wedged API server can't hang that loop (gcy-bru class).
+	ctx, cancel := context.WithTimeout(context.Background(), runningPodSnapshotTimeout)
+	defer cancel()
 	label := SanitizeLabel(name)
 
 	pods, err := p.ops.listPods(ctx, "gc-session="+label, "")
@@ -669,7 +673,8 @@ func (p *Provider) RunLive(_ string, _ runtime.Config) error {
 
 // SetMeta stores a key-value pair in the tmux environment.
 func (p *Provider) SetMeta(name, key, value string) error {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), runningPodSnapshotTimeout)
+	defer cancel()
 	podName, err := p.findPod(ctx, name)
 	if err != nil {
 		return interactionError("set metadata", name, err)
@@ -711,6 +716,10 @@ func (p *Provider) GetMeta(name, key string) (string, error) {
 		}
 		return observed, nil
 	}
+	// Non-token fallback: same unbounded-LIST/EXEC risk as the token branch
+	// above, bounded the same way.
+	ctx, cancel := context.WithTimeout(context.Background(), runningPodSnapshotTimeout)
+	defer cancel()
 	podName, err := p.findPod(ctx, name)
 	if err != nil {
 		return "", interactionError("get metadata", name, err)
@@ -859,7 +868,11 @@ func runningSessionNames(pods []corev1.Pod, prefix string) []string {
 
 // GetLastActivity returns the time of the last I/O in the tmux session.
 func (p *Provider) GetLastActivity(name string) (time.Time, error) {
-	ctx := context.Background()
+	// Reachable from the session reconciler and manager on a reconcile
+	// cadence (cmd/gc/session_reconciler.go, internal/session/manager.go);
+	// bound it like ListRunning so a wedged API server can't hang that loop.
+	ctx, cancel := context.WithTimeout(context.Background(), runningPodSnapshotTimeout)
+	defer cancel()
 	podName, err := p.findRunningPod(ctx, name)
 	if err != nil {
 		return time.Time{}, nil
