@@ -295,6 +295,16 @@ func doBd(args []string, stdout, stderr io.Writer) int {
 	reapStaleBdExportJSONL(target.ScopeRoot)
 	warnExternalBdOverrideDrift(stderr, cityPath, target)
 
+	// gcy-deki: a bare `gc bd list --json` has no positional bead ID to
+	// route by, so an inferred (GC_RIG/cwd) or fallback (city) scope guess
+	// can land on the wrong store and miss real data `gc bd show`/`gc hook`
+	// can both still find directly. Fan out and merge across every
+	// configured store rather than trust the single guess — see
+	// bd_list_fanout.go for the full rationale and scope.
+	if bdListShouldFanOut(rigName, cityName != "", bdArgs) {
+		return doBdListFanOut(cfg, cityPath, bdArgs, target, stdout, stderr, runBdListFanOut)
+	}
+
 	bdPath, err := exec.LookPath("bd")
 	if err != nil {
 		fmt.Fprintln(stderr, "gc bd: bd not found in PATH") //nolint:errcheck // best-effort stderr
