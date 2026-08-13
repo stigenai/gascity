@@ -52,14 +52,26 @@ SCOPES_FILE="$(mktemp "$PACK_STATE_DIR/.gate-sweep-scopes.XXXXXX")"
 trap 'rm -f "$SCOPES_FILE"' EXIT
 printf '\n' > "$SCOPES_FILE" # HQ scope: an empty line
 if command -v jq >/dev/null 2>&1; then
-    RIGS_JSON="$(gc rig list --json 2>/dev/null || true)"
+    RIGS_JSON="$(gc rig list --json 2>/dev/null)" && RIG_LIST_OK=1 || RIG_LIST_OK=0
     RIG_NAMES=""
-    if [ -n "$RIGS_JSON" ]; then
+    # PARSE_OK stays 0 (pessimistic) unless gc rig list --json actually
+    # succeeded with usable output AND jq parsed it cleanly -- a healthy
+    # zero-non-HQ-rig city (gcy-gec) is the ONLY way to reach PARSE_OK=1
+    # with an empty RIG_NAMES.
+    PARSE_OK=0
+    if [ "$RIG_LIST_OK" -eq 1 ] && [ -n "$RIGS_JSON" ]; then
         RIG_NAMES="$(printf '%s' "$RIGS_JSON" \
-            | jq -r '(.rigs // [])[] | select(.hq != true) | .name' 2>/dev/null || true)"
+            | jq -r '(.rigs // [])[] | select(.hq != true) | .name' 2>/dev/null)" && PARSE_OK=1 || PARSE_OK=0
     fi
     if [ -n "$RIG_NAMES" ]; then
         printf '%s\n' "$RIG_NAMES" >> "$SCOPES_FILE"
+    elif [ "$PARSE_OK" -eq 1 ]; then
+        # gc rig list --json succeeded and jq parsed it cleanly -- zero
+        # non-HQ rigs is a legitimate, healthy state (fresh gc city init, or
+        # a deliberately HQ-only deployment), not a degraded fallback
+        # (gcy-gec). Distinct low-noise line, not the failure-shaped one
+        # below, so a real gc rig list failure stays diagnosable.
+        echo "gate-sweep: city has no non-HQ rigs registered; sweeping HQ only" >&2
     else
         echo "gate-sweep: gc rig list --json returned no usable rigs; sweeping HQ only" >&2
     fi
