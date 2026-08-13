@@ -2172,7 +2172,14 @@ func sweepAsyncStartCleanupObligationsSkipping(sp runtime.Provider, store beads.
 		return 0, 0, nil
 	}
 	sessFront := sessionFrontDoor(store)
-	infos, err := sessFront.ListAll(sessionpkg.ListAllOptions{IncludeClosed: true})
+	// Sort oldest-first (gcy-749): the per-tick cap below makes iteration
+	// order matter for the first time -- a journal left over the cap is
+	// deferred to the next sweep rather than always being probed every tick.
+	// Without an explicit sort, order is store-defined (SortDefault "leaves
+	// the slice order unchanged"), not guaranteed stable across calls for
+	// every backend. Oldest-first guarantees every journal eventually ages
+	// to the front, closing the theoretical starvation path.
+	infos, err := sessFront.ListAll(sessionpkg.ListAllOptions{IncludeClosed: true, Sort: beads.SortCreatedAsc})
 	if err != nil {
 		return 0, 0, err
 	}
