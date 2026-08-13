@@ -709,8 +709,12 @@ func TestLifecycleDisplayReasonWithLivenessShowsCircuitOpenBeforeLifecycleReason
 }
 
 func TestLifecycleDisplayReasonWithLivenessShowsContinuationResetPending(t *testing.T) {
+	// continuation_reset_pending is only a live reset once reset_committed_at is
+	// non-empty, mirroring the awake-engine bridge (gt-88n). With a committed
+	// timestamp the display reason is reset-pending.
 	got := LifecycleDisplayReasonWithLiveness("open", map[string]string{
 		"continuation_reset_pending": "true",
+		"reset_committed_at":         "2026-04-15T11:00:00Z",
 		"session_name":               "worker-live",
 		"sleep_reason":               "user-hold",
 	}, time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC), "", func(name string) bool {
@@ -718,6 +722,49 @@ func TestLifecycleDisplayReasonWithLivenessShowsContinuationResetPending(t *test
 	})
 	if got != "reset-pending" {
 		t.Fatalf("LifecycleDisplayReasonWithLiveness = %q, want reset-pending", got)
+	}
+}
+
+// TestLifecycleDisplayReasonWithLivenessSuppressesUncommittedContinuationResetPending
+// is the gt-88n regression: continuation_reset_pending=true with an EMPTY
+// reset_committed_at is NOT a live reset — the awake engine will not wake on
+// it (compute_awake_bridge.go gates the same field on ResetCommittedAt) — so
+// the display must not report reset-pending and falls through to other reasons.
+// This is the st-37loc shape: continuation_reset_pending set,
+// reset_committed_at empty, actually woken by a mode=always named_session.
+func TestLifecycleDisplayReasonWithLivenessSuppressesUncommittedContinuationResetPending(t *testing.T) {
+	got := LifecycleDisplayReasonWithLiveness("open", map[string]string{
+		"continuation_reset_pending": "true",
+		"session_name":               "worker-live",
+		"sleep_reason":               "user-hold",
+	}, time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC), "", func(name string) bool {
+		return name == "worker-live"
+	})
+	if got == "reset-pending" {
+		t.Fatalf("LifecycleDisplayReasonWithLiveness = %q, want NOT reset-pending for uncommitted continuation_reset_pending (gt-88n)", got)
+	}
+}
+
+// TestLifecycleDisplayReasonWithLivenessInfoSuppressesUncommittedContinuationResetPending
+// is the Info-twin half of the gt-88n regression: the twin must agree with the
+// raw form (and the engine) that an uncommitted continuation_reset_pending is
+// not a reset-pending reason.
+func TestLifecycleDisplayReasonWithLivenessInfoSuppressesUncommittedContinuationResetPending(t *testing.T) {
+	now := time.Date(2026, 4, 15, 12, 0, 0, 0, time.UTC)
+	isRunning := func(name string) bool { return name == "worker-live" }
+	bead := livenessInfoBead("open", map[string]string{
+		"continuation_reset_pending": "true",
+		"session_name":               "worker-live",
+		"sleep_reason":               "user-hold",
+	})
+	info := infoFromPersistedBead(bead)
+	got := LifecycleDisplayReasonWithLivenessInfo(info, now, isRunning)
+	if got == "reset-pending" {
+		t.Fatalf("LifecycleDisplayReasonWithLivenessInfo = %q, want NOT reset-pending for uncommitted continuation_reset_pending (gt-88n)", got)
+	}
+	raw := LifecycleDisplayReasonWithLiveness(bead.Status, bead.Metadata, now, info.SessionName, isRunning)
+	if got != raw {
+		t.Fatalf("twin %q diverged from raw %q for uncommitted continuation_reset_pending (gt-88n)", got, raw)
 	}
 }
 
@@ -777,9 +824,9 @@ func TestLifecycleDisplayReasonWithLivenessInfoEquivalence(t *testing.T) {
 			want: LifecycleReasonResetPending,
 		},
 		{
-			name:   "reset-pending via continuation_reset_pending",
+			name:   "reset-pending via committed continuation_reset_pending",
 			status: "open",
-			meta:   map[string]string{"continuation_reset_pending": "true", "session_name": "worker-live", "sleep_reason": "user-hold"},
+			meta:   map[string]string{"continuation_reset_pending": "true", "reset_committed_at": "2026-04-15T11:00:00Z", "session_name": "worker-live", "sleep_reason": "user-hold"},
 			want:   LifecycleReasonResetPending,
 		},
 		{
