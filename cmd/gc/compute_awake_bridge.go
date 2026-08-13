@@ -31,17 +31,18 @@ func buildAwakeInputFromReconciler(
 	clk time.Time,
 ) AwakeInput {
 	input := AwakeInput{
-		ScaleCheckCounts:         poolDesired,
-		NamedSessionDemand:       cloneBoolMap(namedSessionDemand),
-		NamedSessionRoutedDemand: cloneBoolMap(namedRoutedDemand),
-		WorkSet:                  workSet,
-		ReadyWaitSet:             readyWaitSet,
-		RunningSessions:          make(map[string]bool),
-		AttachedSessions:         make(map[string]bool),
-		PendingSessions:          make(map[string]bool),
-		ChatIdleTimeout:          cfg.ChatSessions.IdleTimeoutDuration(),
-		ManualGracePeriod:        cfg.ChatSessions.GracePeriodDuration(),
-		Now:                      clk,
+		ScaleCheckCounts:           poolDesired,
+		NamedSessionDemand:         cloneBoolMap(namedSessionDemand),
+		NamedSessionRoutedDemand:   cloneBoolMap(namedRoutedDemand),
+		WorkSet:                    workSet,
+		ReadyWaitSet:               readyWaitSet,
+		RunningSessions:            make(map[string]bool),
+		AttachedSessions:           make(map[string]bool),
+		PendingSessions:            make(map[string]bool),
+		ChatIdleTimeout:            cfg.ChatSessions.IdleTimeoutDuration(),
+		ManualGracePeriod:          cfg.ChatSessions.GracePeriodDuration(),
+		WorkspaceMaxActiveSessions: positiveIntOrZero(cfg.Workspace.MaxActiveSessions),
+		Now:                        clk,
 	}
 
 	// Agents. Load runtime suspension state once against the in-scope
@@ -55,6 +56,7 @@ func buildAwakeInputFromReconciler(
 			Suspended:         isAgentEffectivelySuspendedWith(cfg, a, suspState),
 			SleepAfterIdle:    parseSleepDuration(a.SleepAfterIdle),
 			MinActiveSessions: a.EffectiveMinActiveSessions(),
+			MaxActiveSessions: positiveIntOrZero(a.ResolvedMaxActiveSessions(cfg)),
 		}
 		if len(a.DependsOn) > 0 {
 			agent.DependsOn = a.DependsOn
@@ -292,4 +294,15 @@ func parseSleepDuration(s string) time.Duration {
 		return 0
 	}
 	return d
+}
+
+// positiveIntOrZero adapts a config max_active_sessions pointer (nil or
+// negative = unlimited) to AwakeAgent/AwakeInput's plain-int convention
+// (0 = unlimited), so a struct literal that omits the field — as every
+// pre-existing caller does — keeps today's uncapped behavior.
+func positiveIntOrZero(v *int) int {
+	if v == nil || *v <= 0 {
+		return 0
+	}
+	return *v
 }

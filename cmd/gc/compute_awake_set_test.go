@@ -910,6 +910,120 @@ func TestScaleDemandCountsAssignedSessionBeforeKeepingStartPendingPoolSibling(t 
 	assertReason(t, result, "gc__run-operator-mc-new", "assigned-work")
 }
 
+// ---------------------------------------------------------------------------
+// MaxActiveSessions (population cap, gcy-y6s5)
+// ---------------------------------------------------------------------------
+
+func TestMaxActiveSessions_CapsNewlyWakingAssignedWork(t *testing.T) {
+	result := ComputeAwakeSet(AwakeInput{
+		Agents: []AwakeAgent{{QualifiedName: "hello-world/polecat", MaxActiveSessions: 2}},
+		SessionBeads: []AwakeSessionBead{
+			{ID: "mc-1", SessionName: "polecat-mc-1", Template: "hello-world/polecat", State: "asleep"},
+			{ID: "mc-2", SessionName: "polecat-mc-2", Template: "hello-world/polecat", State: "asleep"},
+			{ID: "mc-3", SessionName: "polecat-mc-3", Template: "hello-world/polecat", State: "asleep"},
+		},
+		WorkBeads: []AwakeWorkBead{
+			{ID: "hw-1", Assignee: "mc-1", Status: "in_progress"},
+			{ID: "hw-2", Assignee: "mc-2", Status: "in_progress"},
+			{ID: "hw-3", Assignee: "mc-3", Status: "in_progress"},
+		},
+		Now: now,
+	})
+	assertAwake(t, result, "polecat-mc-1")
+	assertAwake(t, result, "polecat-mc-2")
+	assertAsleep(t, result, "polecat-mc-3")
+
+	// The capped-out session's assignment is still recorded — its work stays
+	// queued for a later tick, not silently dropped.
+	d := result["polecat-mc-3"]
+	if !d.HasAssignedWork || d.AssignedWorkBeadID != "hw-3" {
+		t.Fatalf("polecat-mc-3 decision = %+v, want HasAssignedWork=true AssignedWorkBeadID=hw-3 even though capped asleep", d)
+	}
+}
+
+func TestMaxActiveSessions_AlreadyActiveSessionsAreGrandfathered(t *testing.T) {
+	result := ComputeAwakeSet(AwakeInput{
+		Agents: []AwakeAgent{{QualifiedName: "hello-world/polecat", MaxActiveSessions: 1}},
+		SessionBeads: []AwakeSessionBead{
+			{ID: "mc-1", SessionName: "polecat-mc-1", Template: "hello-world/polecat", State: "active"},
+			{ID: "mc-2", SessionName: "polecat-mc-2", Template: "hello-world/polecat", State: "asleep"},
+		},
+		WorkBeads: []AwakeWorkBead{
+			{ID: "hw-1", Assignee: "mc-1", Status: "in_progress"},
+			{ID: "hw-2", Assignee: "mc-2", Status: "in_progress"},
+		},
+		RunningSessions: map[string]bool{"polecat-mc-1": true},
+		Now:             now,
+	})
+	// mc-1 is already running real work — the cap must never force a
+	// mid-task session asleep.
+	assertAwake(t, result, "polecat-mc-1")
+	// mc-2 would be a fresh wake beyond the cap of 1 (mc-1 already fills it).
+	assertAsleep(t, result, "polecat-mc-2")
+}
+
+func TestMaxActiveSessions_WorkspaceCapSpansTemplates(t *testing.T) {
+	result := ComputeAwakeSet(AwakeInput{
+		Agents: []AwakeAgent{
+			{QualifiedName: "hello-world/polecat"},
+			{QualifiedName: "hello-world/deacon"},
+		},
+		SessionBeads: []AwakeSessionBead{
+			{ID: "mc-1", SessionName: "polecat-mc-1", Template: "hello-world/polecat", State: "asleep"},
+			{ID: "mc-2", SessionName: "deacon-mc-1", Template: "hello-world/deacon", State: "asleep"},
+		},
+		WorkBeads: []AwakeWorkBead{
+			{ID: "hw-1", Assignee: "mc-1", Status: "in_progress"},
+			{ID: "hw-2", Assignee: "mc-2", Status: "in_progress"},
+		},
+		WorkspaceMaxActiveSessions: 1,
+		Now:                        now,
+	})
+	// Neither template sets its own MaxActiveSessions — the shared workspace
+	// ceiling of 1 must still bound the total across both.
+	assertAwake(t, result, "polecat-mc-1")
+	assertAsleep(t, result, "deacon-mc-1")
+}
+
+func TestMaxActiveSessions_ManualSessionDoesNotConsumeCapSlot(t *testing.T) {
+	result := ComputeAwakeSet(AwakeInput{
+		Agents: []AwakeAgent{{QualifiedName: "hello-world/polecat", MaxActiveSessions: 1}},
+		SessionBeads: []AwakeSessionBead{
+			{ID: "mc-1", SessionName: "polecat-mc-1", Template: "hello-world/polecat", State: "asleep", ManualSession: true},
+			{ID: "mc-2", SessionName: "polecat-mc-2", Template: "hello-world/polecat", State: "asleep"},
+		},
+		WorkBeads: []AwakeWorkBead{
+			{ID: "hw-1", Assignee: "mc-1", Status: "in_progress"},
+			{ID: "hw-2", Assignee: "mc-2", Status: "in_progress"},
+		},
+		Now: now,
+	})
+	// mc-1 is manual — always awake regardless of the cap — and must not
+	// count against it, so mc-2 (the one generic pool slot) still wakes too.
+	assertAwake(t, result, "polecat-mc-1")
+	assertAwake(t, result, "polecat-mc-2")
+}
+
+func TestMaxActiveSessions_ZeroIsUnlimited(t *testing.T) {
+	// Regression guard: AwakeAgent{} / AwakeInput{} literals throughout the
+	// rest of this file omit MaxActiveSessions/WorkspaceMaxActiveSessions, so
+	// Go zero-values them to 0 — that must mean "no cap", not "cap of zero".
+	result := ComputeAwakeSet(AwakeInput{
+		Agents: []AwakeAgent{{QualifiedName: "hello-world/polecat"}},
+		SessionBeads: []AwakeSessionBead{
+			{ID: "mc-1", SessionName: "polecat-mc-1", Template: "hello-world/polecat", State: "asleep"},
+			{ID: "mc-2", SessionName: "polecat-mc-2", Template: "hello-world/polecat", State: "asleep"},
+		},
+		WorkBeads: []AwakeWorkBead{
+			{ID: "hw-1", Assignee: "mc-1", Status: "in_progress"},
+			{ID: "hw-2", Assignee: "mc-2", Status: "in_progress"},
+		},
+		Now: now,
+	})
+	assertAwake(t, result, "polecat-mc-1")
+	assertAwake(t, result, "polecat-mc-2")
+}
+
 func TestDrained_PinnedStaysAsleepUntilUndrained(t *testing.T) {
 	result := ComputeAwakeSet(AwakeInput{
 		Agents: []AwakeAgent{{QualifiedName: "hello-world/polecat"}},

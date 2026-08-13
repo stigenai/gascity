@@ -34,7 +34,13 @@ type AwakeInput struct {
 	ReadyWaitSet             map[string]bool // session bead ID → durable wait is ready
 	ChatIdleTimeout          time.Duration   // global idle timeout for manual/chat sessions (0 = disabled)
 	ManualGracePeriod        time.Duration   // grace period before manual sessions can be idle-slept (0 = disabled)
-	Now                      time.Time
+	// WorkspaceMaxActiveSessions is cfg.Workspace.MaxActiveSessions: a shared
+	// ceiling on the total number of generic pool sessions (across every
+	// template) ComputeAwakeSet will wake via assigned-work demand; 0 =
+	// unlimited. Named and manual sessions are out of scope, matching the
+	// admission-time cap in pool_desired_state.go.
+	WorkspaceMaxActiveSessions int
+	Now                        time.Time
 }
 
 // AwakeAgent represents an [[agent]] config entry.
@@ -44,6 +50,11 @@ type AwakeAgent struct {
 	Suspended         bool
 	SleepAfterIdle    time.Duration // 0 = disabled
 	MinActiveSessions int           // effective min_active_sessions; 0 = no always-warm guarantee
+	// MaxActiveSessions is this agent's resolved max_active_sessions (agent
+	// override, else rig, else workspace default); 0 = unlimited. Bounds how
+	// many of this template's generic pool sessions ComputeAwakeSet will wake
+	// via assigned-work demand — see WorkspaceMaxActiveSessions.
+	MaxActiveSessions int
 }
 
 // AwakeNamedSession represents a [[named_session]] config entry.
@@ -297,6 +308,39 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 	// to the first matching work bead and flag the divergence — the
 	// reconciler reads this to decide whether to cycle the conversation for
 	// wake_mode=fresh.
+	// max_active_sessions bounds the standing pool population, not just new
+	// admissions (gcy-y6s5). A session already active/creating is always
+	// grandfathered into the awake set below — this never forces a
+	// mid-task session asleep. A sleeping session with assigned work only
+	// rejoins the awake set while its template, and the workspace as a
+	// whole, still has headroom; once full, its work bead simply stays
+	// assigned and queued for a later tick. Named and manual sessions are
+	// out of scope, matching the admission-time cap in pool_desired_state.go.
+	poolAwakeByAgent := make(map[string]int)
+	poolAwakeTotal := 0
+	isGenericPoolBead := func(b AwakeSessionBead) bool {
+		return b.NamedIdentity == "" && !b.ConfiguredNamedSession && !b.ManualSession
+	}
+	isRunningBead := func(b AwakeSessionBead) bool {
+		return b.State == "active" || b.State == "creating"
+	}
+	for _, b := range input.SessionBeads {
+		if !isGenericPoolBead(b) || !isRunningBead(b) {
+			continue
+		}
+		if _, ok := lookupAgent(b.Template); !ok {
+			continue
+		}
+		poolAwakeByAgent[b.Template]++
+		poolAwakeTotal++
+	}
+	withinActiveSessionsCap := func(template string) bool {
+		if agent, ok := lookupAgent(template); ok && agent.MaxActiveSessions > 0 && poolAwakeByAgent[template] >= agent.MaxActiveSessions {
+			return false
+		}
+		return input.WorkspaceMaxActiveSessions <= 0 || poolAwakeTotal < input.WorkspaceMaxActiveSessions
+	}
+
 	assignedAnchor := make(map[string]string) // sessionName → matched work bead ID
 	for _, bead := range input.SessionBeads {
 		if bead.State == "closed" {
@@ -336,8 +380,19 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 		if !haveExact {
 			anchorBead = fallback
 		}
-		desired[bead.SessionName] = "assigned-work"
+		// assignedAnchor (and thus HasAssignedWork/AssignedWorkBeadID) always
+		// reflects the real assignment, capped or not — only whether this
+		// bead joins the awake set this tick is gated by the cap.
 		assignedAnchor[bead.SessionName] = anchorBead
+		sleepingPoolBead := isGenericPoolBead(bead) && !isRunningBead(bead)
+		if sleepingPoolBead && !withinActiveSessionsCap(bead.Template) {
+			continue
+		}
+		desired[bead.SessionName] = "assigned-work"
+		if sleepingPoolBead {
+			poolAwakeByAgent[bead.Template]++
+			poolAwakeTotal++
+		}
 	}
 
 	// Min-active-sessions wake: keep min_active_sessions pool sessions warm
