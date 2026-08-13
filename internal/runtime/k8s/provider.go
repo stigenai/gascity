@@ -34,6 +34,9 @@ var (
 	_ runtime.ExecProvider                    = (*Provider)(nil)
 	_ runtime.FreshRunningSessionLister       = (*Provider)(nil)
 	_ runtime.InstanceTokenFencedStopProvider = (*Provider)(nil)
+	_ runtime.ProcessAliveChecker             = (*Provider)(nil)
+	_ runtime.RunningChecker                  = (*Provider)(nil)
+	_ runtime.AttachedChecker                 = (*Provider)(nil)
 )
 
 // Provider is a native Kubernetes session provider using client-go.
@@ -566,35 +569,76 @@ func (p *Provider) Interrupt(name string) error {
 	return nil
 }
 
-// IsRunning reports whether the session has a running pod with a live tmux session.
+// IsRunning reports whether the session has a running pod with a live tmux
+// session. A probe failure (timeout, transport error) collapses to false
+// here, the same as "confirmed not running" — callers doing destructive
+// remediation on the result must use IsRunningChecked instead, so an
+// inconclusive probe cannot be mistaken for proof of absence.
 func (p *Provider) IsRunning(name string) bool {
+	running, _ := p.IsRunningChecked(name)
+	return running
+}
+
+// IsRunningChecked reports whether the session has a running pod with a live
+// tmux session, distinguishing a confirmed negative (no running pod, or a
+// tmux session confirmed absent) from a probe that could not complete within
+// runningPodSnapshotTimeout — a lookup/exec failure or a deadline — which
+// callers must treat as unknown, not as proof of absence.
+func (p *Provider) IsRunningChecked(name string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), runningPodSnapshotTimeout)
 	defer cancel()
 	podName, err := p.findRunningPod(ctx, name)
 	if err != nil {
-		return false
+		if errors.Is(err, runtime.ErrSessionNotFound) {
+			return false, nil
+		}
+		return false, interactionError("check running", name, err)
 	}
 	// Pod Running + tmux session alive.
 	_, err = p.ops.execInPod(ctx, podName, "agent",
 		[]string{"tmux", "has-session", "-t", tmuxSession}, nil)
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	var exitErr execerr.ExitError
+	if errors.As(err, &exitErr) && exitErr.Exited() {
+		// Ran and exited non-zero: tmux's own "no such session" result, not
+		// a transport failure.
+		return false, nil
+	}
+	return false, interactionError("check running", name, err)
 }
 
 // IsAttached reports whether a user terminal is connected to the tmux
-// session inside the pod.
+// session inside the pod. A probe failure collapses to false here, the same
+// as "confirmed not attached" — callers doing destructive remediation on the
+// result must use IsAttachedChecked instead.
 func (p *Provider) IsAttached(name string) bool {
+	attached, _ := p.IsAttachedChecked(name)
+	return attached
+}
+
+// IsAttachedChecked is the IsAttached analogue of IsRunningChecked.
+func (p *Provider) IsAttachedChecked(name string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), runningPodSnapshotTimeout)
 	defer cancel()
 	podName, err := p.findRunningPod(ctx, name)
 	if err != nil {
-		return false
+		if errors.Is(err, runtime.ErrSessionNotFound) {
+			return false, nil
+		}
+		return false, interactionError("check attached", name, err)
 	}
 	output, err := p.ops.execInPod(ctx, podName, "agent",
 		[]string{"tmux", "display-message", "-t", tmuxSession, "-p", "#{session_attached}"}, nil)
 	if err != nil {
-		return false
+		var exitErr execerr.ExitError
+		if errors.As(err, &exitErr) && exitErr.Exited() {
+			return false, nil
+		}
+		return false, interactionError("check attached", name, err)
 	}
-	return strings.TrimSpace(output) == "1"
+	return strings.TrimSpace(output) == "1", nil
 }
 
 // Attach shells out to kubectl exec -it for full TTY passthrough.
@@ -622,10 +666,25 @@ func (p *Provider) Attach(name string) error {
 	return cmd.Run()
 }
 
-// ProcessAlive checks if the named processes are running inside the pod.
+// ProcessAlive checks if the named processes are running inside the pod. A
+// probe failure (timeout, transport error) collapses to false here, the same
+// as "confirmed not running" — callers doing destructive remediation on the
+// result must use ProcessAliveChecked instead, so an inconclusive probe
+// cannot be mistaken for proof of death.
 func (p *Provider) ProcessAlive(name string, processNames []string) bool {
+	alive, _ := p.ProcessAliveChecked(name, processNames)
+	return alive
+}
+
+// ProcessAliveChecked reports whether any of processNames is running inside
+// the pod for name, distinguishing a confirmed negative (no pod, a pod in
+// graceful shutdown or not yet Running, or every pgrep probe exiting
+// non-zero) from a probe that could not complete within
+// runningPodSnapshotTimeout — a listPods/exec failure or a deadline — which
+// callers must treat as unknown, not as proof of death.
+func (p *Provider) ProcessAliveChecked(name string, processNames []string) (bool, error) {
 	if len(processNames) == 0 {
-		return true
+		return true, nil
 	}
 	// Reachable from liveness probes and doctor checks on a recurring cadence
 	// (internal/runtime/liveness.go, internal/doctor/checks.go); bound it like
@@ -635,27 +694,37 @@ func (p *Provider) ProcessAlive(name string, processNames []string) bool {
 	label := SanitizeLabel(name)
 
 	pods, err := p.ops.listPods(ctx, "gc-session="+label, "")
-	if err != nil || len(pods) == 0 {
-		return false
+	if err != nil {
+		return false, interactionError("check process liveness", name, err)
+	}
+	if len(pods) == 0 {
+		return false, nil
 	}
 	pod := &pods[0]
 
 	// Check deletionTimestamp — pod in graceful shutdown is not alive.
 	if pod.DeletionTimestamp != nil {
-		return false
+		return false, nil
 	}
 	if pod.Status.Phase != corev1.PodRunning {
-		return false
+		return false, nil
 	}
 
 	for _, pname := range processNames {
 		_, err := p.ops.execInPod(ctx, pod.Name, "agent",
 			[]string{"pgrep", "-f", pname}, nil)
 		if err == nil {
-			return true
+			return true, nil
 		}
+		var exitErr execerr.ExitError
+		if errors.As(err, &exitErr) && exitErr.Exited() {
+			// Ran and exited non-zero: pgrep's own "not found" result for
+			// this name, not a transport failure. Keep checking the rest.
+			continue
+		}
+		return false, interactionError("check process liveness", name, err)
 	}
-	return false
+	return false, nil
 }
 
 // Nudge types a message into the tmux session followed by Enter.
@@ -1052,7 +1121,11 @@ func (p *Provider) findRunningPodFromSnapshot(ctx context.Context, name string) 
 		podName = snapshot.bySession[SanitizeLabel(name)]
 	}
 	if podName == "" {
-		return "", fmt.Errorf("no running pod for session %q", name)
+		// Confirmed absent from a freshly-listed snapshot, not a lookup
+		// failure — wrap the same sentinel the non-snapshot path uses so
+		// callers (e.g. IsRunningChecked) can tell this apart from a
+		// snapshot refresh that itself failed to complete.
+		return "", fmt.Errorf("%w: no running pod for session %q", runtime.ErrSessionNotFound, name)
 	}
 	return podName, nil
 }

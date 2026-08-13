@@ -879,6 +879,39 @@ func TestZombieSessionsCheck_Fix(t *testing.T) {
 	}
 }
 
+// TestZombieSessionsCheck_SkipsOnInconclusiveProbe guards the destructive
+// path gcy-2sh flagged: a liveness probe that fails to complete (API
+// timeout, transport error) must not be treated as "confirmed dead." Without
+// this, ZombieSessionsCheck.Fix would stop a merely-slow, still-healthy
+// session.
+func TestZombieSessionsCheck_SkipsOnInconclusiveProbe(t *testing.T) {
+	sp := runtime.NewFake()
+	if err := sp.Start(context.Background(), "mayor", runtime.Config{}); err != nil {
+		t.Fatal(err)
+	}
+	// Configured as a zombie — Run/Fix must NOT act on it, because the
+	// probe below reports inconclusive rather than confirmed-dead.
+	sp.Zombies["mayor"] = true
+	sp.ProcessAliveErrors["mayor"] = errors.New("probe timed out")
+
+	cfg := &config.City{
+		Agents: []config.Agent{{Name: "mayor", ProcessNames: []string{"claude"}}},
+	}
+	c := NewZombieSessionsCheck(cfg, "test", "", sp)
+
+	r := c.Run(&CheckContext{})
+	if r.Status != StatusOK {
+		t.Errorf("status = %d, want OK (inconclusive probe must not be flagged as a confirmed zombie); msg = %s", r.Status, r.Message)
+	}
+
+	if err := c.Fix(&CheckContext{}); err != nil {
+		t.Fatalf("Fix() error: %v", err)
+	}
+	if !sp.IsRunning("mayor") {
+		t.Error("Fix() stopped a session whose liveness could not be confirmed")
+	}
+}
+
 func TestZombieSessionsCheck_SkipsNoProcessNames(t *testing.T) {
 	sp := runtime.NewFake()
 	if err := sp.Start(context.Background(), "mayor", runtime.Config{}); err != nil {
