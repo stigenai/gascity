@@ -767,8 +767,18 @@ func (p *Provider) GetMeta(name, key string) (string, error) {
 	// fence a Pending/initializing pod without treating an exec failure or an
 	// empty tmux environment as permission to delete.
 	if key == "GC_INSTANCE_TOKEN" {
+		// This probe runs inside the controller tick: the async-start cleanup
+		// reconcile reaches it for every admitted journal at startup and on
+		// every tick (sweepAsyncStartCleanupObligationsSkipping). Bound the LIST
+		// with the same deadline every other k8s call in the fenced-stop design
+		// uses (runningPodSnapshotTimeout) so a wedged or partitioned API server
+		// surfaces as ErrRuntimeUnavailable-cased uncertainty instead of hanging
+		// the whole controller loop. The reconcile already treats a probe error
+		// as fail-closed preserve, so a timeout never grants delete permission.
 		label := SanitizeLabel(name)
-		pods, err := p.ops.listPods(ctx, "gc-session="+label, "")
+		listCtx, cancel := context.WithTimeout(context.Background(), runningPodSnapshotTimeout)
+		defer cancel()
+		pods, err := p.ops.listPods(listCtx, "gc-session="+label, "")
 		if err != nil {
 			return "", interactionError("get metadata", name, fmt.Errorf("%w: list pod for session %q: %w", runtime.ErrRuntimeUnavailable, name, err))
 		}

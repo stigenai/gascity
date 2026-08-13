@@ -1396,6 +1396,69 @@ func TestGetMetaInstanceTokenRejectsDifferentTokensUnderOneSessionLabel(t *testi
 	}
 }
 
+// deadlineCheckingOps wraps fakeK8sOps and fails listPods unless it is called
+// with a tightly bounded context deadline. It mirrors the requireDeadline
+// pattern used for the running-pod snapshot, applied here to prove the
+// GC_INSTANCE_TOKEN probe — which runs inside the controller tick for every
+// admitted journal — can never issue an unbounded LIST that would hang the
+// whole controller loop on a wedged API server.
+type deadlineCheckingOps struct {
+	*fakeK8sOps
+}
+
+func (o *deadlineCheckingOps) listPods(ctx context.Context, selector, fieldSelector string) ([]corev1.Pod, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return nil, errors.New("GC_INSTANCE_TOKEN probe LIST has no deadline")
+	}
+	if remaining := time.Until(deadline); remaining <= 0 || remaining > 10*time.Second {
+		return nil, fmt.Errorf("GC_INSTANCE_TOKEN probe LIST deadline is not tightly bounded: %s", remaining)
+	}
+	return o.fakeK8sOps.listPods(ctx, selector, fieldSelector)
+}
+
+// TestGetMetaInstanceTokenBoundsListPodsWithDeadline is the regression guard
+// for the unbounded-LIST bug found reviewing PR #49 (gcy-bru): the immutable
+// token probe calls listPods on the controller tick for every admitted
+// journal. With no deadline, a wedged k8s API server hangs the entire
+// controller. deadlineCheckingOps returns an error unless listPods is invoked
+// with a tightly bounded context, so this test fails against the pre-fix
+// context.Background() call and passes once the probe reuses
+// runningPodSnapshotTimeout.
+func TestGetMetaInstanceTokenBoundsListPodsWithDeadline(t *testing.T) {
+	fake := newFakeK8sOps()
+	addRunningPod(fake, "gc-test-agent", "gc-test-agent")
+	fake.pods["gc-test-agent"].Status.Phase = corev1.PodPending
+	fake.pods["gc-test-agent"].Spec.Containers = []corev1.Container{{
+		Name: "agent",
+		Env:  []corev1.EnvVar{{Name: "GC_INSTANCE_TOKEN", Value: "tok-immutable"}},
+	}}
+	p := newProviderWithOps(&deadlineCheckingOps{fakeK8sOps: fake})
+
+	got, err := p.GetMeta("gc-test-agent", "GC_INSTANCE_TOKEN")
+	if err != nil {
+		t.Fatalf("GetMeta(GC_INSTANCE_TOKEN): %v", err)
+	}
+	if got != "tok-immutable" {
+		t.Fatalf("GetMeta(GC_INSTANCE_TOKEN) = %q, want tok-immutable", got)
+	}
+}
+
+// TestGetMetaInstanceTokenTimeoutIsFailClosed asserts that when the bounded
+// token-probe LIST times out, GetMeta surfaces it as ErrRuntimeUnavailable
+// (fail-closed) rather than a bare error: the async-start cleanup reconcile
+// keys off ErrRuntimeUnavailable to preserve the journal instead of deleting.
+func TestGetMetaInstanceTokenTimeoutIsFailClosed(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+	addRunningPod(fake, "gc-test-agent", "gc-test-agent")
+	fake.listErr = context.DeadlineExceeded
+
+	if _, err := p.GetMeta("gc-test-agent", "GC_INSTANCE_TOKEN"); !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+		t.Fatalf("GetMeta timeout error = %v, want ErrRuntimeUnavailable (fail-closed)", err)
+	}
+}
+
 func TestGetMetaFallsBackToInheritedGlobalEnvironment(t *testing.T) {
 	fake := newFakeK8sOps()
 	p := newProviderWithOps(fake)
