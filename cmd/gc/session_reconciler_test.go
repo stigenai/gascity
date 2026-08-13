@@ -10384,6 +10384,49 @@ func TestRecordResetStallIfDue_UncommittedResetPendingStalledSeparately(t *testi
 	if len(rec.Events) != 1 {
 		t.Fatalf("recorded events after commit = %d, want still 1", len(rec.Events))
 	}
+
+	// The commit transition above must have purged both the first-observed
+	// time and the debounce flag for the uncommitted-shape tracker
+	// (clearResetPendingNoCommit, called from recordResetStallIfDue's
+	// committed-shape branch). Prove it, mirroring
+	// TestReconcileSessionBeads_RecordsResetStallDiagnostic's clear/re-arm/
+	// re-fire shape for the sibling committed-shape tracker: re-enter the
+	// uncommitted shape and confirm the very next call is silent -- treated
+	// as freshly first-observed, not as already ~76s past the threshold
+	// from the original first-seen time a broken purge would have left
+	// behind. (This step alone can't distinguish "purged" from "still
+	// debounced from the original stall" -- both stay silent -- so it is
+	// the re-fire step below that actually proves the purge.)
+	env.setSessionMetadata(&session, map[string]string{
+		sessionpkg.ResetCommittedAtKey: "",
+	})
+	info = sessiontest.SeedBead(t, session)
+	env.stderr.Reset()
+	recordResetStallIfDue(info, "worker", "worker", false, startupTimeout, env.clk.Now().UTC(), dt, rec, &env.stderr, nil)
+	if got := strings.TrimSpace(env.stderr.String()); got != "" {
+		t.Fatalf("re-entered uncommitted shape stderr = %q, want silence (freshly first-observed)", got)
+	}
+	if len(rec.Events) != 1 {
+		t.Fatalf("recorded events after re-entering uncommitted shape = %d, want still 1", len(rec.Events))
+	}
+
+	// 75s later: past the threshold again, measured from the fresh
+	// first-observed time set by the call above. A second event firing here
+	// -- rather than staying silently debounced from the first
+	// uncommitted-shape stall earlier in this test -- proves
+	// clearResetPendingNoCommit genuinely purged the debounce flag, not
+	// just the timestamp. The message is identical to the first stall's
+	// (same bead, same elapsed_s=75): both measure 75s from their own fresh
+	// first-observed time.
+	env.clk.Time = env.clk.Time.Add(75 * time.Second)
+	env.stderr.Reset()
+	recordResetStallIfDue(info, "worker", "worker", false, startupTimeout, env.clk.Now().UTC(), dt, rec, &env.stderr, nil)
+	if got := strings.TrimSpace(env.stderr.String()); got != wantMessage {
+		t.Fatalf("re-stalled pass stderr = %q, want %q", got, wantMessage)
+	}
+	if len(rec.Events) != 2 {
+		t.Fatalf("recorded events after re-stall = %d, want 2", len(rec.Events))
+	}
 }
 
 // TestReconcileSessionBeads_ClosedOnDemandBeadReopensWhenInDesiredState
