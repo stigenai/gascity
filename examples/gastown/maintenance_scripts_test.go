@@ -10347,6 +10347,67 @@ exit 0
 	}
 }
 
+// TestGateSweepDistinguishesHealthyZeroRigCityFromRigListFailure pins
+// gcy-gec: a well-formed, exit-0 gc rig list --json response reporting zero
+// non-HQ rigs (a fresh gc city init, or a deliberately HQ-only deployment)
+// is a legitimate, healthy state, not a degraded fallback. Before this fix,
+// both cases produced RIG_NAMES="" and were indistinguishable on stderr --
+// the same failure-shaped warning
+// TestGateSweepWarnsAndFallsBackToHQOnlyWhenRigListFails pins for a genuine
+// gc rig list failure. This asserts the healthy case gets a distinct,
+// low-noise line instead, while still correctly falling back to HQ-only.
+func TestGateSweepDistinguishesHealthyZeroRigCityFromRigListFailure(t *testing.T) {
+	binDir := t.TempDir()
+	bdLog := filepath.Join(t.TempDir(), "bd.log")
+	writeMaintenanceGCStub(t, filepath.Join(binDir, "gc"), `#!/bin/sh
+case "$1 $2 $3" in
+  "rig list --json")
+    printf '%s\n' '{"city_path":"/tmp","city_name":"test","rigs":[{"name":"hq","path":"/tmp","prefix":"hq","hq":true,"suspended":false,"beads":""}]}'
+    exit 0
+    ;;
+esac
+exit 0
+`)
+	writeExecutable(t, filepath.Join(binDir, "bd"), `#!/bin/sh
+printf '%s\n' "$*" >> "$BD_LOG"
+exit 0
+`)
+	env := map[string]string{
+		"BD_LOG":       bdLog,
+		"GC_CITY":      t.TempDir(),
+		"GC_CITY_PATH": t.TempDir(),
+		"PATH":         binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+	}
+
+	out, err := runScriptResult(t, coreScriptPath("gate-sweep.sh"), env)
+	if err != nil {
+		t.Fatalf("gate-sweep should still exit 0 for a healthy zero-non-HQ-rig city: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "gc rig list --json returned no usable rigs") {
+		t.Fatalf("a valid, legitimately-empty rig list must not use the failure-shaped warning; got:\n%s", out)
+	}
+	if !strings.Contains(string(out), "gate-sweep: city has no non-HQ rigs registered; sweeping HQ only") {
+		t.Fatalf("expected the distinct healthy-zero-rig stderr line; got:\n%s", out)
+	}
+
+	log, readErr := os.ReadFile(bdLog)
+	if readErr != nil {
+		t.Fatalf("ReadFile(bd log): %v", readErr)
+	}
+	s := string(log)
+	for _, want := range []string{
+		"gate check --type=timer --escalate", // HQ scope must still run.
+		"gate check --type=gh --escalate",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("missing %q in bd log (HQ scope must still run for a healthy zero-rig city):\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "--rig") {
+		t.Fatalf("a zero-non-HQ-rig city must sweep HQ-only, not attempt a --rig scope; bd log:\n%s", s)
+	}
+}
+
 // hermeticGitEnv builds a git invocation env that strips any pre-existing
 // GIT_* control variables from the parent environment before applying the
 // overrides — same approach as mergeTestEnv. This avoids duplicate keys
