@@ -368,6 +368,65 @@ func TestSweepAsyncStartCleanupObligationsBoundsProbesPerSweep(t *testing.T) {
 	}
 }
 
+// sortObservingStore wraps a *beads.MemStore and records the Sort value of
+// every List query it receives. A MemStore's default (unsorted) List already
+// happens to return insertion order, which for this fixture always equals
+// creation order -- so a behavioral round-trip test against MemStore cannot
+// distinguish "no sort requested" from "SortCreatedAsc requested", they
+// produce identical output. Observing the query itself is the only way to
+// pin that the caller actually asked for oldest-first order, which is the
+// gcy-749 fix (a Dolt-backed store's default order is not guaranteed stable
+// across commits/compaction the way MemStore's incidentally is).
+//
+// Embeds the concrete *beads.MemStore (matching asyncCleanupCASStore above),
+// not the bare beads.Store interface: seedNamedAsyncStartCleanupObligation's
+// claim step needs beads.ConditionalWriterFor's optional-capability type
+// assertion to still see MemStore's CompareAndSetMetadataKey, which the
+// interface-embedding trick below (see synchronousOnlyBlockingCASStore)
+// deliberately hides -- the opposite of what this fixture needs.
+type sortObservingStore struct {
+	*beads.MemStore
+	mu    sync.Mutex
+	sorts []beads.SortOrder
+}
+
+func (s *sortObservingStore) List(query beads.ListQuery) ([]beads.Bead, error) {
+	s.mu.Lock()
+	s.sorts = append(s.sorts, query.Sort)
+	s.mu.Unlock()
+	return s.MemStore.List(query)
+}
+
+// TestSweepAsyncStartCleanupObligationsRequestsCreatedAscOrder pins gcy-749's
+// fix: the per-tick cap (defaultMaxAsyncStartCleanupObligationsPerTick,
+// TestSweepAsyncStartCleanupObligationsBoundsProbesPerSweep above) made
+// per-sweep iteration order matter for the first time -- a journal left past
+// the cap is deferred to the next sweep instead of always being probed every
+// tick, so a store whose default order isn't stable across calls could
+// starve a specific journal indefinitely. The sweep must request
+// beads.SortCreatedAsc explicitly rather than relying on a store's default.
+func TestSweepAsyncStartCleanupObligationsRequestsCreatedAscOrder(t *testing.T) {
+	spy := &sortObservingStore{MemStore: beads.NewMemStore()}
+	seedNamedAsyncStartCleanupObligation(t, spy, "gc-worker", "worker")
+	provider := &asyncCleanupProbeProvider{Provider: runtime.NewFake(), token: "tok-worker"}
+
+	if _, _, err := sweepAsyncStartCleanupObligations(provider, spy, time.Now(), io.Discard); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	spy.mu.Lock()
+	sorts := append([]beads.SortOrder(nil), spy.sorts...)
+	spy.mu.Unlock()
+	if len(sorts) == 0 {
+		t.Fatal("sweep never queried the store")
+	}
+	for _, got := range sorts {
+		if got != beads.SortCreatedAsc {
+			t.Fatalf("ListAll query Sort = %q, want %q so oldest-outstanding journals resolve first under the per-tick cap", got, beads.SortCreatedAsc)
+		}
+	}
+}
+
 func TestAsyncStartTrackerWaitsForBlockedProviderStopAndMarkerSettlement(t *testing.T) {
 	store := beads.NewMemStore()
 	item, raw := seedAsyncStartCleanupObligation(t, store)
