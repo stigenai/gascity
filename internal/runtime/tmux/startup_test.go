@@ -2805,6 +2805,36 @@ func TestRecordStartCrashMkdirFailureLogsReason(t *testing.T) {
 	}
 }
 
+// TestRecordStartCrashWriteFileFailureLogsReason covers the fourth new
+// stderr site (gcy-pw9): the os.WriteFile failure branch had no test, old or
+// new, despite being exactly the failure mode gcy-3bo is about -- a
+// diagnostic-capture step silently coming up empty with no trail. One step
+// past TestRecordStartCrashMkdirFailureLogsReason's blocker: pre-create
+// start-stderr.log itself as a directory, so MkdirAll(dir, ...) succeeds
+// (dir already exists) but the subsequent os.WriteFile(path, ...) fails with
+// EISDIR ("is a directory") because path is that same pre-created directory.
+func TestRecordStartCrashWriteFileFailureLogsReason(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "sessions", "mayor", "start-stderr.log")
+	if err := os.MkdirAll(blocker, 0o755); err != nil {
+		t.Fatalf("seeding blocker directory: %v", err)
+	}
+	tm := NewTmux()
+	tm.exec = &fakeExecutor{out: "139|SIGSEGV\n"}
+	o := &tmuxStartOps{tm: tm, runtimeDir: dir}
+
+	var path string
+	stderr := captureStderr(t, func() {
+		path = o.recordStartCrash("mayor", "x")
+	})
+	if path != "" {
+		t.Fatalf("path = %q, want empty when start-stderr.log cannot be written", path)
+	}
+	if !strings.Contains(stderr, "mayor") || !strings.Contains(stderr, blocker) {
+		t.Fatalf("stderr = %q, want a reason mentioning the session and the blocked path %q", stderr, blocker)
+	}
+}
+
 func TestStartupDeadSessionErrorLogsPaneCaptureFailure(t *testing.T) {
 	ops := &fakeStartOps{capturePaneErr: errors.New("capture failed")}
 
