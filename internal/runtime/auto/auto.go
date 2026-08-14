@@ -7,6 +7,7 @@ package auto
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -188,19 +189,31 @@ func (p *Provider) IsRunning(name string) bool {
 // instead of silently losing it behind this router (gcy-dyl). A confirmed
 // "running" from the routed backend short-circuits, matching IsRunning's own
 // early return; anything else (confirmed not-running or inconclusive) falls
-// through to the other backend, whose own (bool, error) is returned as-is —
-// same fall-through target IsRunning already checks, now error-aware.
+// through to the other backend — same fall-through target IsRunning already
+// checks, now error-aware. The fall-through backend's confirmed-false must
+// not launder an inconclusive routed probe into a confirmed negative, so an
+// error from either probe is preserved (joined, if both erred) rather than
+// discarded (gcy-vxts).
 func (p *Provider) IsRunningChecked(name string) (bool, error) {
-	if running, err := runtime.IsRunningChecked(p.route(name), name); err == nil && running {
+	running, err := runtime.IsRunningChecked(p.route(name), name)
+	if err == nil && running {
 		return true, nil
 	}
 	p.mu.RLock()
 	isACP := p.routes[name]
 	p.mu.RUnlock()
+	other := p.acpSP
 	if isACP {
-		return runtime.IsRunningChecked(p.defaultSP, name)
+		other = p.defaultSP
 	}
-	return runtime.IsRunningChecked(p.acpSP, name)
+	otherRunning, otherErr := runtime.IsRunningChecked(other, name)
+	if otherErr == nil && otherRunning {
+		return true, nil
+	}
+	if err != nil || otherErr != nil {
+		return false, errors.Join(err, otherErr)
+	}
+	return false, nil
 }
 
 // IsDeadRuntimeSession checks both backends for a positive dead-artifact

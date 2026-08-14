@@ -507,6 +507,29 @@ func TestIsRunningChecked_BothInconclusivePropagatesError(t *testing.T) {
 	}
 }
 
+// TestIsRunningChecked_InconclusivePrimaryIsNotLaunderedByConfirmedFalseSecondary
+// covers gcy-vxts: the fall-through backend confidently reporting "not
+// running" (because it never had the session) must not launder an
+// inconclusive routed probe into a confirmed negative. This is the dominant
+// real-world shape of a probe timeout, not a corner case — the routed
+// backend is the one that actually has the session.
+func TestIsRunningChecked_InconclusivePrimaryIsNotLaunderedByConfirmedFalseSecondary(t *testing.T) {
+	defaultSP := runtime.NewFake()
+	acpSP := runtime.NewFake()
+	p := New(defaultSP, acpSP)
+
+	defaultSP.IsRunningErrors["agent"] = errors.New("simulated timeout")
+	// acpSP has never heard of "agent" -> confirmed (false, nil).
+
+	running, err := p.IsRunningChecked("agent")
+	if err == nil {
+		t.Fatal("inconclusive routed probe reported as a confirmed negative")
+	}
+	if running {
+		t.Fatal("running reported alongside an inconclusive error")
+	}
+}
+
 // TestIsAttachedChecked_DelegatesToRoutedBackend covers gcy-dyl for
 // IsAttachedChecked (simple single-route delegate, no fall-through).
 func TestIsAttachedChecked_DelegatesToRoutedBackend(t *testing.T) {
