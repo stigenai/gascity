@@ -1283,6 +1283,76 @@ func TestDefaultScaleCheckCountsAndDemandRouteDefaultCatchesOwnCityScopeAlongsid
 	}
 }
 
+// TestDefaultScaleCheckCountsAndDemandRouteDefaultChoiceIsOrderIndependent
+// reproduces gcy-zaft: config.ValidateAgents keys its "at most one
+// route_default per scope" uniqueness rule on Agent.Dir, but the pre-fix
+// runtime scope was the store *group*, which is not the same partition (the
+// "city" group holds templates from every rig, per the cross-store probe —
+// see the DoesNotAbsorbCityStoreWorkOutsideItsScope test above). A
+// rig-scoped route_default agent and a city-scoped one both pass Dir-keyed
+// validation (different Dir), so both used to become candidates inside the
+// shared "city" group, and — before the scope check this file's earlier
+// tests added — the absorber was simply whichever agent came first in
+// cfg.Agents: reordering the exact same two [[agent]] blocks, with no other
+// config change, flipped which one caught a real city-store bead. Running
+// the identical target set with the two agents in both declared orders
+// proves the fix makes the outcome depend on scope, not declaration order.
+func TestDefaultScaleCheckCountsAndDemandRouteDefaultChoiceIsOrderIndependent(t *testing.T) {
+	const (
+		rigRouter  = "rig-a/rig-router"
+		cityRouter = "city-router"
+	)
+	rigRouterAgent := config.Agent{Name: "rig-router", Dir: "rig-a", RouteDefault: true, MinActiveSessions: intPtr(1)}
+	cityRouterAgent := config.Agent{Name: "city-router", RouteDefault: true, MinActiveSessions: intPtr(1)}
+
+	orders := []struct {
+		name   string
+		agents []config.Agent
+	}{
+		{"rig-router-declared-first", []config.Agent{rigRouterAgent, cityRouterAgent}},
+		{"city-router-declared-first", []config.Agent{cityRouterAgent, rigRouterAgent}},
+	}
+	for _, order := range orders {
+		t.Run(order.name, func(t *testing.T) {
+			cfg := &config.City{
+				Workspace: config.Workspace{Name: "test-city"},
+				Agents:    order.agents,
+			}
+			if err := config.ValidateAgents(cfg.Agents); err != nil {
+				t.Fatalf("ValidateAgents rejected a valid rig-scoped + city-scoped route_default pair: %v", err)
+			}
+			rigAStore := beads.NewMemStore()
+			cityStore := beads.NewMemStore()
+			work, err := cityStore.Create(beads.Bead{
+				Title:  "unrouted work sitting in the city store",
+				Type:   "task",
+				Status: "open",
+			})
+			if err != nil {
+				t.Fatalf("create unrouted city-store bead: %v", err)
+			}
+
+			counts, demand, _, errs := defaultScaleCheckCountsAndDemand(cfg, []defaultScaleCheckTarget{
+				{template: rigRouter, storeKey: "rig:rig-a", store: rigAStore},
+				{template: rigRouter, storeKey: "city", store: cityStore},
+				{template: cityRouter, storeKey: "city", store: cityStore},
+			})
+			if len(errs) != 0 {
+				t.Fatalf("defaultScaleCheckCountsAndDemand errs = %v", errs)
+			}
+			if got := counts[cityRouter]; got != 1 {
+				t.Fatalf("defaultScaleCheckCountsAndDemand[%q] = %d, want 1 regardless of [[agent]] order — only the city-scoped router may claim city-store work", cityRouter, got)
+			}
+			if got := counts[rigRouter]; got != 0 {
+				t.Fatalf("defaultScaleCheckCountsAndDemand[%q] = %d, want 0 regardless of [[agent]] order — the rig-scoped router must never claim work outside rig-a's own store", rigRouter, got)
+			}
+			if got := demand[cityRouter].WorkBeadIDs; !reflect.DeepEqual(got, []string{work.ID}) {
+				t.Fatalf("demand[%q].WorkBeadIDs = %v, want [%s]", cityRouter, got, work.ID)
+			}
+		})
+	}
+}
+
 func TestDefaultScaleCheckCountsUsesLiveReadyWhenCachedRowWasAssigned(t *testing.T) {
 	const template = "gascity/workflows.codex-min"
 	backing := beads.NewMemStore()

@@ -1787,10 +1787,22 @@ func controllerDemandRouteTarget(cfg *config.City, b beads.Bead, templates map[s
 // each candidate's qualified template to its real home scope (see the
 // builder in defaultScaleCheckCountsAndDemand); the fallback only applies
 // when that home matches the group actually being evaluated.
-// config.ValidateAgents enforces at most one route_default agent per scope
-// (keyed by Agent.Dir) at config-load time; if that is ever bypassed, the
-// first match in cfg.Agents order wins rather than double-counting a bead
-// across two templates.
+// config.ValidateAgents' "at most one route_default per scope" rule is keyed
+// on the literal Agent.Dir string, not on the resolved runtime scope this
+// function checks against — those agree for the normal case (a rig-scoped
+// and a city-scoped route_default always have different Dir AND different
+// templateHomeStoreKey, so at most one candidate can ever match a given
+// groupStoreKey here) but not for a pathological one gcy-zaft flagged: two
+// agent blocks with DIFFERENT Dir strings that both resolve, via
+// configuredRigName's cfg.Rigs path-matching fallback, to the SAME rig. That
+// combination is not rejected by ValidateAgents (different Dir) and both
+// candidates would share one templateHomeStoreKey, so the first match in
+// cfg.Agents order still wins between them rather than double-counting a
+// bead across two templates. Deliberately not hardened here — it requires
+// two differently-spelled Dir values naming the same registered rig, which
+// no known config does — but a real occurrence would look like this
+// function silently picking one of two same-scope routers by declaration
+// order.
 func controllerDemandRouteDefaultTemplate(cfg *config.City, groupStoreKey string, templates map[string]struct{}, templateHomeStoreKey map[string]string) string {
 	if cfg == nil {
 		return ""
