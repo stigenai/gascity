@@ -219,7 +219,13 @@ func resolveIdempotentShortCircuit(opts SlingOpts, a config.Agent, deps SlingDep
 	// anything, and for a bead that is already in_progress and blocked on an
 	// open dependency: there the target has nothing to act on, so a nudge
 	// would only wake/create a session that re-examines unchanged state for
-	// nothing (gcy-ej8).
+	// nothing (gcy-ej8). BeadBlocked is a nil-safe read of b.IsBlocked, which
+	// only CachingStore's ready-projection enrichment populates — a raw
+	// BdStore.Get (e.g. bd 1.1.0's "show --json") leaves it nil, and nil
+	// reads as not-blocked. That's fail-open (worst case a redundant nudge,
+	// per above), but it means this guard must stay narrowed to
+	// in_progress&&blocked: widening it to in_progress alone would suppress
+	// the nudge for every idempotent in_progress bead, blocked or not.
 	blockedInProgress := check.BeadStatus == "in_progress" && check.BeadBlocked
 	if opts.Nudge && !opts.DryRun && !blockedInProgress {
 		result.NudgeAgent = &a

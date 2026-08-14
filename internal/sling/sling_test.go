@@ -3668,6 +3668,48 @@ func TestDoSlingIdempotentBlockedInProgressSuppressesNudge(t *testing.T) {
 	}
 }
 
+func TestDoSlingIdempotentInProgressNotBlockedStillNudges(t *testing.T) {
+	// Complements TestDoSlingIdempotentBlockedInProgressSuppressesNudge: the
+	// suppression must stay narrow to in_progress+blocked, not in_progress
+	// alone. IsBlocked nil also matches the common real shape (bd 1.1.0's
+	// "show --json" omits is_blocked; only CachingStore's ready-projection
+	// enrichment ever populates it), so this pins the fail-open default the
+	// guard must not swallow.
+	runner := newFakeRunner()
+	cfg := &config.City{Workspace: config.Workspace{Name: "test"}}
+	a := config.Agent{Name: "mayor", MaxActiveSessions: intPtr(1)}
+
+	routed := beads.Bead{
+		ID:        "BL-1",
+		Title:     "BL-1",
+		Type:      "task",
+		Status:    "in_progress",
+		IsBlocked: nil,
+		Metadata: map[string]string{
+			beadmeta.RoutedToMetadataKey: a.QualifiedName(),
+		},
+	}
+	store := beads.NewMemStoreFrom(0, []beads.Bead{routed}, nil)
+	deps := testDeps(cfg, runtime.NewFake(), runner.run)
+	deps.Store = store
+
+	result, err := DoSling(SlingOpts{
+		Target: a, BeadOrFormula: "BL-1", Nudge: true, NoConvoy: true,
+	}, deps, store)
+	if err != nil {
+		t.Fatalf("DoSling: %v", err)
+	}
+	if !result.Idempotent {
+		t.Fatalf("expected idempotent route, got %+v", result)
+	}
+	if result.NudgeAgent == nil {
+		t.Error("expected NudgeAgent to be set for an in_progress bead that is not blocked")
+	}
+	if len(runner.calls) != 0 {
+		t.Errorf("idempotent sling must not re-route, got %d runner calls", len(runner.calls))
+	}
+}
+
 func TestDoSlingSuspendedAgentWarnsEvenOnFailure(t *testing.T) {
 	// Matches gastown-sling tutorial: sling to suspended agent, runner fails,
 	// but AgentSuspended should still be set so CLI prints the warning.
