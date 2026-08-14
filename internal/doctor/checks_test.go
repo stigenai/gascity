@@ -883,7 +883,10 @@ func TestZombieSessionsCheck_Fix(t *testing.T) {
 // path gcy-2sh flagged: a liveness probe that fails to complete (API
 // timeout, transport error) must not be treated as "confirmed dead." Without
 // this, ZombieSessionsCheck.Fix would stop a merely-slow, still-healthy
-// session.
+// session. Run must also not report a clean bill of health when it could not
+// actually confirm liveness — StatusOK there would mean "no zombie sessions"
+// and "could not check a single session" are indistinguishable to an
+// operator reading gc doctor (gcy-pf0u).
 func TestZombieSessionsCheck_SkipsOnInconclusiveProbe(t *testing.T) {
 	sp := runtime.NewFake()
 	if err := sp.Start(context.Background(), "mayor", runtime.Config{}); err != nil {
@@ -900,8 +903,8 @@ func TestZombieSessionsCheck_SkipsOnInconclusiveProbe(t *testing.T) {
 	c := NewZombieSessionsCheck(cfg, "test", "", sp)
 
 	r := c.Run(&CheckContext{})
-	if r.Status != StatusOK {
-		t.Errorf("status = %d, want OK (inconclusive probe must not be flagged as a confirmed zombie); msg = %s", r.Status, r.Message)
+	if r.Status != StatusWarning {
+		t.Errorf("status = %d, want Warning (inconclusive probe must not report a clean bill of health); msg = %s", r.Status, r.Message)
 	}
 
 	if err := c.Fix(&CheckContext{}); err != nil {
@@ -909,6 +912,33 @@ func TestZombieSessionsCheck_SkipsOnInconclusiveProbe(t *testing.T) {
 	}
 	if !sp.IsRunning("mayor") {
 		t.Error("Fix() stopped a session whose liveness could not be confirmed")
+	}
+}
+
+// TestZombieSessionsCheck_AllInconclusiveIsNotOK covers gcy-pf0u directly: a
+// backend timing out on every probe — the exact scenario PR #69/#86 exist
+// for — must not produce a green zombie-sessions check. This exercises the
+// gate above ProcessAliveChecked (IsRunningChecked itself failing), not the
+// ProcessAliveChecked failure TestZombieSessionsCheck_SkipsOnInconclusiveProbe
+// already covers.
+func TestZombieSessionsCheck_AllInconclusiveIsNotOK(t *testing.T) {
+	sp := runtime.NewFake()
+	if err := sp.Start(context.Background(), "mayor", runtime.Config{}); err != nil {
+		t.Fatal(err)
+	}
+	sp.IsRunningErrors["mayor"] = errors.New("probe timed out")
+
+	cfg := &config.City{
+		Agents: []config.Agent{{Name: "mayor", ProcessNames: []string{"claude"}}},
+	}
+	c := NewZombieSessionsCheck(cfg, "test", "", sp)
+
+	r := c.Run(&CheckContext{})
+	if r.Status != StatusWarning {
+		t.Errorf("status = %d, want Warning (a backend timing out on every running-probe must not report a clean bill of health); msg = %s", r.Status, r.Message)
+	}
+	if r.Status == StatusOK {
+		t.Fatal("false clean bill of health: no session was actually probed")
 	}
 }
 

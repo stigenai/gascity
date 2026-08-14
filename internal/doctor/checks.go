@@ -523,12 +523,23 @@ func (c *ZombieSessionsCheck) Name() string { return "zombie-sessions" }
 func (c *ZombieSessionsCheck) Run(_ *CheckContext) *CheckResult {
 	r := &CheckResult{Name: c.Name()}
 	var zombies []string
+	var eligible, inconclusive int
 	for _, a := range c.cfg.Agents {
 		if a.Suspended || len(a.ProcessNames) == 0 {
 			continue
 		}
+		eligible++
 		sn := agent.SessionNameFor(c.cityName, a.QualifiedName(), c.sessionTemplate)
-		if !c.sp.IsRunning(sn) {
+		// Checked, not the bare bool: a running-probe that could not
+		// complete must count toward inconclusive below, the same as a
+		// ProcessAliveChecked failure — otherwise a backend timing out on
+		// every probe skips silently right here and still reports clean.
+		running, err := runtime.IsRunningChecked(c.sp, sn)
+		if err != nil {
+			inconclusive++
+			continue
+		}
+		if !running {
 			continue
 		}
 		// A probe that could not confirm liveness either way (e.g. an API
@@ -537,6 +548,7 @@ func (c *ZombieSessionsCheck) Run(_ *CheckContext) *CheckResult {
 		// Fix(). Skip this tick and let the next one re-probe.
 		alive, err := runtime.ProcessAliveChecked(c.sp, sn, a.ProcessNames)
 		if err != nil {
+			inconclusive++
 			continue
 		}
 		if !alive {
@@ -544,6 +556,15 @@ func (c *ZombieSessionsCheck) Run(_ *CheckContext) *CheckResult {
 		}
 	}
 	if len(zombies) == 0 {
+		if inconclusive > 0 {
+			// Not StatusOK: "no zombies found" is not the same claim as
+			// "checked every session and found no zombies," and an operator
+			// reading a green check needs to be able to tell those apart
+			// (gcy-pf0u).
+			r.Status = StatusWarning
+			r.Message = fmt.Sprintf("no confirmed zombie sessions (%d of %d session(s) could not be probed)", inconclusive, eligible)
+			return r
+		}
 		r.Status = StatusOK
 		r.Message = "no zombie sessions"
 		return r
