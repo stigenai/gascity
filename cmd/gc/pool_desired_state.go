@@ -265,7 +265,21 @@ func computePoolDesiredStates(
 			resumedSessionIDs[req.SessionBeadID] = struct{}{}
 		}
 	}
-	for template, holder := range canonicalSingletonManualAliasHolders(cfg, sessionInfos) {
+	manualAliasHolders := canonicalSingletonManualAliasHolders(cfg, sessionInfos)
+	manualAliasHolderTemplates := make([]string, 0, len(manualAliasHolders))
+	for template := range manualAliasHolders {
+		manualAliasHolderTemplates = append(manualAliasHolderTemplates, template)
+	}
+	// Deterministic order: map iteration is randomized, and every floor-hold
+	// request ties under the sort comparators below (same tier, BeadPriority
+	// 0), so insertion order decides which template wins a shared cap
+	// (workspace/rig max) when more than one singleton holds its alias this
+	// tick. Without this, cap admission flaps randomly tick to tick (review
+	// finding on PR #92, gcy-chr — reproduced 261/39 over 300 runs).
+	// poolInFlightNewRequests sorts its own session scan for the same reason.
+	sort.Strings(manualAliasHolderTemplates)
+	for _, template := range manualAliasHolderTemplates {
+		holder := manualAliasHolders[template]
 		if _, already := resumedSessionIDs[holder.ID]; already {
 			continue
 		}

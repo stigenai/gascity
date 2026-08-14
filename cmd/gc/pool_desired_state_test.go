@@ -1852,6 +1852,68 @@ func TestComputePoolDesiredStates_ManualSingletonHolderWithAssignedWorkNotDouble
 	}
 }
 
+// TestComputePoolDesiredStates_ManualFloorHoldOrderingIsDeterministic is the
+// regression guard for a MEDIUM finding in PR #92 review:
+// canonicalSingletonManualAliasHolders returns a map, and floor-hold requests
+// used to be appended in that map's randomized iteration order. Every
+// floor-hold request ties under the cap-admission sort (same tier,
+// BeadPriority 0), so insertion order alone decided which template won a
+// shared cap when more than one singleton held its alias -- flapping
+// randomly tick to tick (reproduced 261/39 over 300 runs in review). With two
+// templates competing for a workspace cap of 1, the sorted-first template
+// must win every time, not whichever the map handed out first.
+func TestComputePoolDesiredStates_ManualFloorHoldOrderingIsDeterministic(t *testing.T) {
+	workspaceMax := 1
+	cfg := &config.City{
+		Workspace: config.Workspace{MaxActiveSessions: &workspaceMax},
+		Agents: []config.Agent{
+			poolAgent("triage", "z-rig", intPtr(1), 1),
+			poolAgent("triage", "a-rig", intPtr(1), 1),
+		},
+	}
+	sessions := sessionInfosFromBeads([]beads.Bead{
+		{
+			ID:     "sess-z",
+			Status: "open",
+			Type:   sessionBeadType,
+			Metadata: map[string]string{
+				"session_name":   "z-manual",
+				"template":       "z-rig/triage",
+				"alias":          "z-rig/triage",
+				"session_origin": "manual",
+				"state":          "active",
+			},
+		},
+		{
+			ID:     "sess-a",
+			Status: "open",
+			Type:   sessionBeadType,
+			Metadata: map[string]string{
+				"session_name":   "a-manual",
+				"template":       "a-rig/triage",
+				"alias":          "a-rig/triage",
+				"session_origin": "manual",
+				"state":          "active",
+			},
+		},
+	})
+
+	result := ComputePoolDesiredStates(cfg, nil, sessions, nil)
+
+	var templatesWithRequests []string
+	for _, ds := range result {
+		if len(ds.Requests) > 0 {
+			templatesWithRequests = append(templatesWithRequests, ds.Template)
+		}
+	}
+	if len(templatesWithRequests) != 1 {
+		t.Fatalf("templates with an accepted request = %v, want exactly 1 under workspace_max=1", templatesWithRequests)
+	}
+	if templatesWithRequests[0] != "a-rig/triage" {
+		t.Fatalf("winning template = %q, want %q (sorted-first must win deterministically, not map-iteration order)", templatesWithRequests[0], "a-rig/triage")
+	}
+}
+
 // Regression (gcy-jkf0): an open bead admitted only by the open-routed
 // orphan-release pass carries no readiness verdict. When its orphaned
 // assignee still resolves to a not-yet-closed session bead — a real,

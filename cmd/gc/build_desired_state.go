@@ -2868,10 +2868,23 @@ func realizePoolDesiredSessions(
 		// cfgAgent (not resolveAgent) matches the Phase A create-time call
 		// (poolTriggerMetadata via selectOrPlanPoolSessionBead), which also
 		// resolves the work dir off the base agent plus the per-slot name.
-		if bound, err := bindPoolSessionTriggerBead(bp, cfgAgent, qualifiedInstance, sbInfo, item.request); err != nil {
-			fmt.Fprintf(stderr, "buildDesiredState: pool %q session %s trigger bead %s: %v (continuing without trigger env)\n", qualifiedName, sbInfo.ID, item.request.WorkBeadID, err) //nolint:errcheck
-		} else {
-			sbInfo = bound
+		//
+		// floorHoldTier is deliberately excluded: it always carries an empty
+		// WorkBeadID, which computePoolTriggerBindingPatch's "clear" branch
+		// reads as "no work bead, wipe gc.trigger_bead_id / _store_ref /
+		// brain_parent_sid" — correct for a resume-tier session whose work
+		// bead was genuinely unassigned, but wrong here: a floor-hold session
+		// may have just finished real work (those keys still legitimately
+		// set) or, on a partial-store-read tick, may actually still have
+		// live assigned work the resume tier above simply didn't see this
+		// pass. Floor-hold's only job is to keep the session counted; it must
+		// never touch trigger state. (Review finding on PR #92, gcy-chr.)
+		if item.request.Tier != floorHoldTier {
+			if bound, err := bindPoolSessionTriggerBead(bp, cfgAgent, qualifiedInstance, sbInfo, item.request); err != nil {
+				fmt.Fprintf(stderr, "buildDesiredState: pool %q session %s trigger bead %s: %v (continuing without trigger env)\n", qualifiedName, sbInfo.ID, item.request.WorkBeadID, err) //nolint:errcheck
+			} else {
+				sbInfo = bound
+			}
 		}
 		fpExtra := buildFingerprintExtra(resolveAgent)
 		tp, err := resolveTemplateForSessionBeadInfo(bp, resolveAgent, qualifiedInstance, fpExtra, sbInfo)

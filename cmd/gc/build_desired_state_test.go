@@ -3843,6 +3843,76 @@ func TestBuildDesiredState_IdleManualSingletonHolderStampsPoolManaged(t *testing
 	}
 }
 
+// TestBuildDesiredState_FloorHoldDoesNotWipeTriggerMetadata is the regression
+// guard for a BLOCKER found in PR #92 review: the floor-hold tier's
+// SessionRequest always carries an empty WorkBeadID, and
+// realizePoolDesiredSessions used to route every item (floor-hold included)
+// through bindPoolSessionTriggerBead unconditionally. That function's
+// "empty WorkBeadID" branch clears gc.trigger_bead_id / _store_ref /
+// brain_parent_sid whenever they were already set -- correct for a resume
+// session whose work bead was genuinely unassigned, but wrong for floor-hold:
+// this manual holder may have just finished real work (those keys still
+// legitimately describe it) or, on a partial-store-read tick, may actually
+// still have live assigned work the resume tier simply didn't see this pass.
+// Floor-hold's only contract is "keep this session counted"; it must never
+// touch trigger state.
+func TestBuildDesiredState_FloorHoldDoesNotWipeTriggerMetadata(t *testing.T) {
+	cityPath := t.TempDir()
+	store := beads.NewMemStore()
+	manual, err := store.Create(beads.Bead{
+		Title:  "gascity/triage",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel, "agent:gascity/triage", "template:gascity/triage"},
+		Metadata: map[string]string{
+			"template":                              "gascity/triage",
+			"agent_name":                            "gascity/triage",
+			"alias":                                 "gascity/triage",
+			"session_name":                          "s-triage-manual",
+			"state":                                 "awake",
+			"session_origin":                        "manual",
+			beadmeta.TriggerBeadIDMetadataKey:       "w-prior-work",
+			beadmeta.TriggerBeadStoreRefMetadataKey: "rig:cashmaster",
+			beadmeta.BrainParentSIDMetadataKey:      "st-parent-123",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:              "triage",
+			Dir:               "gascity",
+			StartCommand:      "true",
+			MaxActiveSessions: intPtr(1),
+			MinActiveSessions: intPtr(1),
+		}},
+	}
+
+	var stderr bytes.Buffer
+	dsResult := buildDesiredState("test-city", cityPath, time.Now().UTC(), cfg, runtime.NewFake(), store, &stderr)
+	if _, ok := dsResult.State["s-triage-manual"]; !ok {
+		t.Fatalf("desired state missing manual floor-hold session; keys=%v stderr=%q", mapKeys(dsResult.State), stderr.String())
+	}
+
+	stored, err := store.Get(manual.ID)
+	if err != nil {
+		t.Fatalf("store.Get(manual.ID): %v", err)
+	}
+	if got := stored.Metadata[beadmeta.TriggerBeadIDMetadataKey]; got != "w-prior-work" {
+		t.Fatalf("gc.trigger_bead_id = %q, want unchanged %q (floor-hold must not touch trigger state); stderr=%s", got, "w-prior-work", stderr.String())
+	}
+	if got := stored.Metadata[beadmeta.TriggerBeadStoreRefMetadataKey]; got != "rig:cashmaster" {
+		t.Fatalf("gc.trigger_bead_store_ref = %q, want unchanged %q", got, "rig:cashmaster")
+	}
+	if got := stored.Metadata[beadmeta.BrainParentSIDMetadataKey]; got != "st-parent-123" {
+		t.Fatalf("gc.brain_parent_sid = %q, want unchanged %q", got, "st-parent-123")
+	}
+	if got := stored.Metadata[poolManagedMetadataKey]; got != boolMetadata(true) {
+		t.Fatalf("pool_managed metadata = %q, want %q (floor-hold adoption must still stamp it)", got, boolMetadata(true))
+	}
+}
+
 func TestBuildDesiredState_MaxOneAgentSkipsCanonicalDuplicateWhenStaleAssignedWorkWinsCap(t *testing.T) {
 	cityPath := t.TempDir()
 	store := beads.NewMemStore()
