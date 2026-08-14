@@ -519,7 +519,12 @@ func NewZombieSessionsCheck(cfg *config.City, cityName, sessionTemplate string, 
 // Name returns the check identifier.
 func (c *ZombieSessionsCheck) Name() string { return "zombie-sessions" }
 
-// Run checks for sessions where the session exists but the agent process is dead.
+// Run checks for sessions where the session exists but the agent process is
+// dead. Note for the herdr runtime specifically: IsRunning is not a pure
+// read there — it can reap (close) a confirmably-exited agent's pane as a
+// side effect, so this nominally read-only check (no --fix) can still close
+// a pane. That is intentional on herdr's side, not a bug in this check; see
+// herdr.Provider.IsRunning's doc comment and gcy-6a5q/gcy-lbqb.
 func (c *ZombieSessionsCheck) Run(_ *CheckContext) *CheckResult {
 	r := &CheckResult{Name: c.Name()}
 	var zombies []string
