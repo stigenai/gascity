@@ -1299,7 +1299,22 @@ func (m *Manager) RequestFreshRestart(id string) error {
 		// immediately instead of depending on a later reconciler pass. A live
 		// runtime keeps the old behavior — commit waits for the reconciler to
 		// confirm the kill, so a fresh incarnation never races the old one.
-		if m.sp == nil || !m.sp.IsRunning(sessName) {
+		//
+		// IsRunning alone can't tell "confirmed not running" apart from "the
+		// provider couldn't tell" (e.g. a k8s API timeout) — collapsing both
+		// to false would let this commit immediately while the old runtime
+		// might still be alive, racing a fresh incarnation against it (gcy-dvg).
+		// Providers that implement RunningChecker get that distinction via
+		// IsRunningChecked; a non-nil error means unconfirmed, so this falls
+		// back to deferring the commit, same as the live-runtime case. A
+		// provider with no RunningChecker gets IsRunningChecked's own
+		// no-error fallback to the plain bool, preserving today's behavior.
+		notRunning := m.sp == nil
+		if m.sp != nil {
+			running, err := runtime.IsRunningChecked(m.sp, sessName)
+			notRunning = err == nil && !running
+		}
+		if notRunning {
 			patch[ResetCommittedAtKey] = m.now().UTC().Format(time.RFC3339)
 		}
 		return m.store.SetMetadataBatch(id, patch)
