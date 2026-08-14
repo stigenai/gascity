@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
@@ -434,6 +435,53 @@ func TestWispStepAlreadyInjected_FalseAfterContentChanges(t *testing.T) {
 	}
 }
 
+// TestWispStepAlreadyInjected_FalseWhenMarkerIsStale covers gcy-fn0b: a
+// session's GC_SESSION_ID persists across an in-harness context
+// compaction/summarization (no new SessionStart), so the dedup marker alone
+// can't tell "still genuinely unread" apart from "read a long time ago, may
+// have been summarized away since." wispStepReinjectionMaxAge bounds that —
+// a marker older than it must not suppress re-injection even with an
+// otherwise-matching session+fingerprint.
+func TestWispStepAlreadyInjected_FalseWhenMarkerIsStale(t *testing.T) {
+	store := beads.NewMemStore()
+	created, err := store.Create(beads.Bead{Title: "T", Description: "D", Assignee: "alice"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	stampWispStepInjected(store, &created, "sess-1")
+	stale := time.Now().Add(-(wispStepReinjectionMaxAge + time.Hour)).UTC().Format(time.RFC3339)
+	if err := store.SetMetadataBatch(created.ID, map[string]string{wispStepInjectedAtMetadataKey: stale}); err != nil {
+		t.Fatalf("SetMetadataBatch: %v", err)
+	}
+
+	fresh, err := store.Get(created.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if wispStepAlreadyInjected(&fresh, "sess-1") {
+		t.Fatal("expected false: marker is older than wispStepReinjectionMaxAge, must force re-injection")
+	}
+}
+
+// TestWispStepAlreadyInjected_TrueWhenTimestampMissing covers gcy-fn0b: a
+// marker stamped before wispStepInjectedAtMetadataKey existed has no
+// timestamp to compare — must be treated as fresh (skip re-injection),
+// matching the exact pre-this-fix behavior, rather than forcing a one-time
+// mass re-injection fleet-wide the moment this ships.
+func TestWispStepAlreadyInjected_TrueWhenTimestampMissing(t *testing.T) {
+	b := &beads.Bead{
+		Title:       "T",
+		Description: "D",
+		Metadata: map[string]string{
+			wispStepInjectedToMetadataKey: "sess-1",
+		},
+	}
+	b.Metadata[wispStepInjectedFingerprintMetadataKey] = wispStepContentFingerprint(b)
+	if !wispStepAlreadyInjected(b, "sess-1") {
+		t.Fatal("expected true: a legacy marker with no timestamp must not force re-injection")
+	}
+}
+
 func TestWispStepInjectionContentForStore_SkipsUnchangedRepeatSameSession(t *testing.T) {
 	store := beads.NewMemStore()
 	mustCreateInProgress(t, store, beads.Bead{
@@ -489,6 +537,34 @@ func TestWispStepInjectionContentForStore_NoSessionIDAlwaysInjects(t *testing.T)
 	second := wispStepInjectionContentForStore(store, []string{"alice"}, "")
 	if first == "" || second == "" {
 		t.Fatalf("expected both calls to inject when no session ID is available, got %q then %q", first, second)
+	}
+}
+
+// TestWispStepInjectionContentForStore_ReinjectsAfterMaxAge covers gcy-fn0b
+// end to end: the same session, same unchanged content, but a marker older
+// than wispStepReinjectionMaxAge must still get the reminder re-injected —
+// the bounded backstop for a long-lived single-step session that may have
+// been through a context compaction since its last read.
+func TestWispStepInjectionContentForStore_ReinjectsAfterMaxAge(t *testing.T) {
+	store := beads.NewMemStore()
+	b := mustCreateInProgress(t, store, beads.Bead{
+		Title:       "Fix the bug",
+		Description: "The bug is in line 42",
+		Type:        "task",
+		Assignee:    "alice",
+	})
+
+	if out := wispStepInjectionContentForStore(store, []string{"alice"}, "sess-1"); out == "" {
+		t.Fatal("expected first call to render the reminder")
+	}
+	stale := time.Now().Add(-(wispStepReinjectionMaxAge + time.Hour)).UTC().Format(time.RFC3339)
+	if err := store.SetMetadataBatch(b.ID, map[string]string{wispStepInjectedAtMetadataKey: stale}); err != nil {
+		t.Fatalf("SetMetadataBatch: %v", err)
+	}
+
+	out := wispStepInjectionContentForStore(store, []string{"alice"}, "sess-1")
+	if out == "" || !contains(out, "Fix the bug") {
+		t.Fatalf("expected re-injection once the marker is older than wispStepReinjectionMaxAge, got %q", out)
 	}
 }
 

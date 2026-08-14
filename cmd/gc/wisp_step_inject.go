@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/beadmeta"
 	"github.com/gastownhall/gascity/internal/beads"
@@ -20,10 +21,20 @@ import (
 // assigned bead into context on every wake (gcy-5rkt) — keyed by session ID
 // rather than bead assignee so a recycled/restarted successor, which carries
 // a new session ID even under the same role or alias, still gets its own
-// first read.
+// first read. wispStepInjectedAtMetadataKey records when that marker was
+// stamped; wispStepReinjectionMaxAge bounds how long the dedup can suppress
+// re-injection regardless of the marker still matching, since GC_SESSION_ID
+// persists across an in-harness context compaction/summarization (no new
+// SessionStart), so a long-lived single-step session could otherwise go
+// indefinitely without ever seeing its assignment reminder again if a
+// compaction doesn't preserve it with full fidelity (gcy-fn0b). Chosen to
+// stay well above ordinary nudge cadence (~12min, the exact waste gcy-5rkt
+// fixed) so this backstop doesn't reintroduce it.
 const (
 	wispStepInjectedToMetadataKey          = "wisp_step_injected_to_session"
 	wispStepInjectedFingerprintMetadataKey = "wisp_step_injected_fingerprint"
+	wispStepInjectedAtMetadataKey          = "wisp_step_injected_at"
+	wispStepReinjectionMaxAge              = 2 * time.Hour
 )
 
 // wispStepInjectionContent resolves the agent's current in-progress formula
@@ -71,19 +82,30 @@ func wispStepInjectionContentForStore(store beads.Store, assignees []string, ses
 
 // wispStepAlreadyInjected reports whether b's current title+description have
 // already been injected to sessionID, per the markers stamped by
-// stampWispStepInjected.
+// stampWispStepInjected, and that marker is still within
+// wispStepReinjectionMaxAge. A missing or unparseable timestamp (a marker
+// stamped before this field existed) is treated as fresh rather than forcing
+// a one-time mass re-injection fleet-wide the first time this ships.
 func wispStepAlreadyInjected(b *beads.Bead, sessionID string) bool {
-	return b.Metadata[wispStepInjectedToMetadataKey] == sessionID &&
-		b.Metadata[wispStepInjectedFingerprintMetadataKey] == wispStepContentFingerprint(b)
+	if b.Metadata[wispStepInjectedToMetadataKey] != sessionID ||
+		b.Metadata[wispStepInjectedFingerprintMetadataKey] != wispStepContentFingerprint(b) {
+		return false
+	}
+	injectedAt, err := time.Parse(time.RFC3339, b.Metadata[wispStepInjectedAtMetadataKey])
+	if err != nil {
+		return true
+	}
+	return time.Since(injectedAt) < wispStepReinjectionMaxAge
 }
 
 // stampWispStepInjected records that b's current content has been shown to
-// sessionID. Best-effort: a write failure just costs one extra repeat
-// injection next turn, not a broken hook, so it only logs.
+// sessionID, and when. Best-effort: a write failure just costs one extra
+// repeat injection next turn, not a broken hook, so it only logs.
 func stampWispStepInjected(store beads.Store, b *beads.Bead, sessionID string) {
 	err := store.SetMetadataBatch(b.ID, map[string]string{
 		wispStepInjectedToMetadataKey:          sessionID,
 		wispStepInjectedFingerprintMetadataKey: wispStepContentFingerprint(b),
+		wispStepInjectedAtMetadataKey:          time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
 		log.Printf("wisp step inject: stamping injected marker on %s: %v", b.ID, err)
