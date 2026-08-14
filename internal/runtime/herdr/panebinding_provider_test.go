@@ -833,6 +833,31 @@ func TestIsRunningAndStartFailSafeOnObservationFailure(t *testing.T) {
 	}
 }
 
+// TestIsRunningCheckedReportsInconclusiveOnObservationFailure covers gcy-h6pa:
+// unlike IsRunning's fail-safe-to-true bias (proven above by
+// TestIsRunningAndStartFailSafeOnObservationFailure), IsRunningChecked must
+// return the honest inconclusive signal — a non-nil error, not a guessed
+// bool — so callers doing destructive remediation (e.g. doctor's
+// zombie-session check) don't mistake a resolve failure for a confirmed
+// negative.
+func TestIsRunningCheckedReportsInconclusiveOnObservationFailure(t *testing.T) {
+	for _, flag := range []string{"agent_transport_not_found", "agent_get_missing_agent"} {
+		t.Run(flag, func(t *testing.T) {
+			p, session, state := newFakeHerdrProvider(t)
+			listenHerdrSocket(t, session)
+			setState(t, state, flag)
+
+			running, err := p.IsRunningChecked("gastown__witness")
+			if err == nil {
+				t.Fatal("IsRunningChecked = nil error on observation failure; inconclusive probe laundered into a confirmed result")
+			}
+			if running {
+				t.Fatal("IsRunningChecked = running true alongside a non-nil (inconclusive) error")
+			}
+		})
+	}
+}
+
 // An exited agent — pane back at its bare shell prompt — is NOT running, so
 // the reconciler can restart it; a bare-shell session in the same pane state
 // IS running (the shell is the session).

@@ -45,6 +45,7 @@ const defaultSetupTimeout = 10 * time.Second
 var (
 	_ runtime.Provider                = (*Provider)(nil)
 	_ runtime.ServerLifecycleProvider = (*Provider)(nil)
+	_ runtime.RunningChecker          = (*Provider)(nil)
 )
 
 // New builds a herdr Provider. herdrSession is the shared per-city herdr session
@@ -443,12 +444,33 @@ func (p *Provider) Interrupt(name string) error {
 // name-only check re-Starts live sessions every tick: the spawn storm). An
 // exited agent whose pane idles at a shell prompt is NOT running, so
 // restarts still happen.
+//
+// A resolve failure biases to true here (fail safe against duplicate spawn)
+// — the opposite of what IsRunningChecked's callers want on the same
+// failure, which is why the checked variant exists: use it instead of this
+// bool API when a false "not running" would actually drive destructive
+// action (e.g. reaping a session as a zombie).
 func (p *Provider) IsRunning(name string) bool {
-	_, running, err := resolveBinding(p.lookupOps(context.Background(), name))
+	running, err := p.IsRunningChecked(name)
 	if err != nil {
 		return true // bool API has no uncertainty channel; fail safe against duplicate spawn
 	}
 	return running
+}
+
+// IsRunningChecked is IsRunning's checked analogue: same registry-or-bound-
+// pane liveness check, but distinguishing a confirmed negative (no agent, no
+// bound pane, or a bound pane confirmed gone) from a resolve failure — a
+// herdr transport or lookup error — which callers must treat as unknown, not
+// as proof of absence. Unlike IsRunning, this does not bias the result on
+// failure: callers that would reap on a confirmed negative (e.g. doctor's
+// zombie-session check) want the honest inconclusive signal, not a guess.
+func (p *Provider) IsRunningChecked(name string) (bool, error) {
+	_, running, err := resolveBinding(p.lookupOps(context.Background(), name))
+	if err != nil {
+		return false, err
+	}
+	return running, nil
 }
 
 // IsAttached reports false: herdr 0.7.1 exposes no clean attach-state query.
