@@ -1646,6 +1646,13 @@ func PromoteWorkflowLaunchBead(store beads.Store, beadID string) error {
 type BeadCheckResult struct {
 	Idempotent bool
 	Warnings   []string
+	// BeadStatus and BeadBlocked carry the already-fetched bead's Status and
+	// denormalized IsBlocked projection through an Idempotent result, so
+	// callers can tell an idempotent route that is actively being worked
+	// (in_progress + blocked on an open dependency) from one that is merely
+	// unclaimed and waiting for a pool slot to wake.
+	BeadStatus  string
+	BeadBlocked bool
 }
 
 // BeadCheckOptions configures pre-flight bead state checks for a route.

@@ -215,8 +215,19 @@ func resolveIdempotentShortCircuit(opts SlingOpts, a config.Agent, deps SlingDep
 	// with --nudge must still deliver a wake; otherwise the idempotent
 	// short-circuit silently drops it and the slot sits idle on work it never
 	// began. The claim path is idempotent/CAS-safe, so a redundant nudge is
-	// harmless. Suppressed for dry-run, which must not mutate or signal anything.
-	if opts.Nudge && !opts.DryRun {
+	// harmless. Suppressed for dry-run, which must not mutate or signal
+	// anything, and for a bead that is already in_progress and blocked on an
+	// open dependency: there the target has nothing to act on, so a nudge
+	// would only wake/create a session that re-examines unchanged state for
+	// nothing (gcy-ej8). BeadBlocked is a nil-safe read of b.IsBlocked, which
+	// only CachingStore's ready-projection enrichment populates — a raw
+	// BdStore.Get (e.g. bd 1.1.0's "show --json") leaves it nil, and nil
+	// reads as not-blocked. That's fail-open (worst case a redundant nudge,
+	// per above), but it means this guard must stay narrowed to
+	// in_progress&&blocked: widening it to in_progress alone would suppress
+	// the nudge for every idempotent in_progress bead, blocked or not.
+	blockedInProgress := check.BeadStatus == "in_progress" && check.BeadBlocked
+	if opts.Nudge && !opts.DryRun && !blockedInProgress {
 		result.NudgeAgent = &a
 	}
 	return true

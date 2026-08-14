@@ -418,8 +418,10 @@ func resolveConvoyRecovery(q BeadQuerier, b beads.Bead, deps SlingDeps, opts Bea
 	needRecovery, err := needsConvoyRecovery(q, b, deps, opts)
 	if err != nil {
 		return BeadCheckResult{
-			Idempotent: true,
-			Warnings:   []string{fmt.Sprintf("warning: bead %s convoy-recovery check failed, assuming convoy exists: %v", beadID, err)},
+			Idempotent:  true,
+			Warnings:    []string{fmt.Sprintf("warning: bead %s convoy-recovery check failed, assuming convoy exists: %v", beadID, err)},
+			BeadStatus:  b.Status,
+			BeadBlocked: b.IsBlocked != nil && *b.IsBlocked,
 		}
 	}
 	if needRecovery {
@@ -427,7 +429,7 @@ func resolveConvoyRecovery(q BeadQuerier, b beads.Bead, deps SlingDeps, opts Bea
 		// re-run to create it and poke the controller.
 		return BeadCheckResult{}
 	}
-	return BeadCheckResult{Idempotent: true}
+	return BeadCheckResult{Idempotent: true, BeadStatus: b.Status, BeadBlocked: b.IsBlocked != nil && *b.IsBlocked}
 }
 
 // CheckBeadState checks whether a bead is already routed and returns a
