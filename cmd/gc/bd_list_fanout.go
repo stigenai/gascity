@@ -105,6 +105,14 @@ func bdListRequestedLimit(args []string) (limit int, unlimited bool) {
 			raw = args[i+1]
 		case strings.HasPrefix(a, "--limit="):
 			raw = strings.TrimPrefix(a, "--limit=")
+		case strings.HasPrefix(a, "-n") && a != "-n":
+			// pflag's attached-short-flag form, e.g. "-n5" (no space) —
+			// bd itself honors this; without this case the merge-truncation
+			// heuristic falls through to bdListDefaultLimit instead of the
+			// requested value (gcy-ovdk). An over-fetch, not data loss: each
+			// store's own bd subprocess still receives bdArgs unmodified and
+			// honors the real limit.
+			raw = strings.TrimPrefix(a, "-n")
 		default:
 			continue
 		}

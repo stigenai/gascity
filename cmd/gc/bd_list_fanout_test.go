@@ -57,6 +57,8 @@ func TestBdListRequestedLimit(t *testing.T) {
 		{"--limit=10", []string{"list", "--limit=10", "--json"}, 10, false},
 		{"--limit 10 space form", []string{"list", "--limit", "10", "--json"}, 10, false},
 		{"-n 5 short form", []string{"list", "-n", "5", "--json"}, 5, false},
+		{"-n5 attached short form (pflag)", []string{"list", "-n5", "--json"}, 5, false},
+		{"-n0 attached short form is unlimited", []string{"list", "-n0", "--json"}, 0, true},
 		{"trailing --limit with no value", []string{"list", "--limit"}, 50, false},
 		{"malformed value falls back to default", []string{"list", "--limit=abc"}, 50, false},
 	}
