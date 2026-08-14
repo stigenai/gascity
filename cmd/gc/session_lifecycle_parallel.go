@@ -1862,7 +1862,7 @@ func claimAsyncStartCleanupObligation(sessFront *sessionpkg.Store, item prepared
 	return raw, nil
 }
 
-func armAsyncStartCleanupObligation(sessFront *sessionpkg.Store, sessionID, raw string) (string, bool, error) {
+func armAsyncStartCleanupObligation(sessFront *sessionpkg.Store, sessionID, raw string) (string, bool, error) { //nolint:unparam // armedRaw mirrors armAsyncStartCleanupObligationContext's signature; current callers only need armed/err, but arming already computes the canonical armed-encoding a future caller could use without re-decoding.
 	obligation, err := decodeAsyncStartCleanupObligation(raw)
 	if err != nil {
 		return "", false, err
