@@ -3782,6 +3782,67 @@ func TestBuildDesiredState_ManualAssignedWorkStampsPoolManagedOnAdoption(t *test
 	}
 }
 
+// TestBuildDesiredState_IdleManualSingletonHolderStampsPoolManaged covers the
+// gcy-chr round-2 gap (mayor decision 2026-08-14 05:58Z): unlike its sibling
+// above, this manual session bead has NO assigned work at all -- it is an
+// always-warm min=1 singleton (e.g. rig-basic.triage) sitting idle before its
+// very first routed claim. With no driving work bead it never reaches the
+// resume tier, so before this fix it was never selected into
+// realizePoolDesiredSessions's item loop and never stamped pool_managed --
+// leaving the Tier-3 claim-eligibility gate (poolDemandOriginGateScript)
+// permanently closed for it. It also must not be duplicated: the min=1 floor
+// is already satisfied by the live manual holder.
+func TestBuildDesiredState_IdleManualSingletonHolderStampsPoolManaged(t *testing.T) {
+	cityPath := t.TempDir()
+	store := beads.NewMemStore()
+	manual, err := store.Create(beads.Bead{
+		Title:  "gascity/triage",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel, "agent:gascity/triage", "template:gascity/triage"},
+		Metadata: map[string]string{
+			"template":       "gascity/triage",
+			"agent_name":     "gascity/triage",
+			"alias":          "gascity/triage",
+			"session_name":   "s-triage-manual",
+			"state":          "awake",
+			"session_origin": "manual",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:              "triage",
+			Dir:               "gascity",
+			StartCommand:      "true",
+			MaxActiveSessions: intPtr(1),
+			MinActiveSessions: intPtr(1),
+		}},
+	}
+
+	var stderr bytes.Buffer
+	dsResult := buildDesiredState("test-city", cityPath, time.Now().UTC(), cfg, runtime.NewFake(), store, &stderr)
+	if _, ok := dsResult.State["s-triage-manual"]; !ok {
+		t.Fatalf("desired state missing manual floor-hold session; keys=%v stderr=%q", mapKeys(dsResult.State), stderr.String())
+	}
+	if len(dsResult.State) != 1 {
+		t.Fatalf("desired state size = %d, want 1 (manual holder must not be duplicated by min-fill); keys=%v", len(dsResult.State), mapKeys(dsResult.State))
+	}
+
+	stored, err := store.Get(manual.ID)
+	if err != nil {
+		t.Fatalf("store.Get(manual.ID): %v", err)
+	}
+	if got := stored.Metadata[poolManagedMetadataKey]; got != boolMetadata(true) {
+		t.Fatalf("pool_managed metadata = %q, want %q after floor adoption; stderr=%s", got, boolMetadata(true), stderr.String())
+	}
+	if got := stored.Metadata["session_origin"]; got != "manual" {
+		t.Fatalf("session_origin = %q, want unchanged %q (pool_managed stamp must not reclassify origin)", got, "manual")
+	}
+}
+
 func TestBuildDesiredState_MaxOneAgentSkipsCanonicalDuplicateWhenStaleAssignedWorkWinsCap(t *testing.T) {
 	cityPath := t.TempDir()
 	store := beads.NewMemStore()
