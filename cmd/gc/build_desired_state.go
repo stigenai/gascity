@@ -730,10 +730,34 @@ func buildDesiredStateWithSessionBeads(
 		})
 		if len(defaultScaleTargets) > 0 {
 			subPhaseStart = time.Now()
-			defaultCounts, defaultDemand, partialTemplates, errs := defaultScaleCheckCountsAndDemand(cfg, defaultScaleTargets, demandReadyCache)
-			recordDemandSubPhase(trace, "demand_snapshot.default_scale_demand", subPhaseStart, map[string]any{
+			defaultCounts, defaultDemand, partialTemplates, defaultSuppression, errs := defaultScaleCheckCountsAndDemand(cfg, defaultScaleTargets, demandReadyCache)
+			defaultDemandFields := map[string]any{
 				"targets": len(defaultScaleTargets),
-			})
+			}
+			if defaultSuppression.Count > 0 {
+				defaultDemandFields["claim_queued_suppressed"] = defaultSuppression.Count
+			}
+			recordDemandSubPhase(trace, "demand_snapshot.default_scale_demand", subPhaseStart, defaultDemandFields)
+			// Surface claim-queue demand suppression as a per-tick stderr diagnostic.
+			// route-claim-watch parking beads behind a target's head is healthy and
+			// self-clearing, but a stalled watcher leaves those beads generating zero
+			// pool demand with nothing to distinguish it from "no work" — which hid
+			// ~40 unrouted ready beads for ~10h on 2026-08-05. This line is the signal.
+			// Only re-print when the suppressed set actually changes (see
+			// claimQueuedSuppressionLastEmitted) — a persistently stalled watcher
+			// keeps this diagnostic reported in the trace field above every tick
+			// regardless, but the stderr copy would otherwise repeat the same line
+			// up to once/second (scaleCheckDemandMinInterval) for as long as the
+			// watcher stays wedged.
+			if defaultSuppression.Count > 0 {
+				fingerprint := strings.Join(defaultSuppression.BeadIDs, ",")
+				if prev, ok := claimQueuedSuppressionLastEmitted.Load(cityPath); !ok || prev != fingerprint {
+					claimQueuedSuppressionLastEmitted.Store(cityPath, fingerprint)
+					fmt.Fprintf(stderr, "scaleCheck: %d ready bead(s) suppressed from pool demand — claim_state=queued behind head %s (self-clears when the head is worked; persistent suppression means route-claim-watch may be stalled)\n", defaultSuppression.Count, formatClaimQueuedSuppressedIDs(defaultSuppression.BeadIDs)) //nolint:errcheck
+				}
+			} else {
+				claimQueuedSuppressionLastEmitted.Delete(cityPath)
+			}
 			for _, err := range errs {
 				// defaultScaleCheckCounts wraps Ready() failures with
 				// enough context to keep this generic outer log honest
@@ -1465,16 +1489,68 @@ func defaultScaleCheckTargetForAgent(
 // that need normalization should call defaultScaleCheckCountsAndDemand
 // directly with a real *config.City.
 func defaultScaleCheckCounts(targets []defaultScaleCheckTarget) (map[string]int, map[string]bool, []error) {
-	counts, _, partialTemplates, errs := defaultScaleCheckCountsAndDemand(nil, targets)
+	counts, _, partialTemplates, _, errs := defaultScaleCheckCountsAndDemand(nil, targets)
 	return counts, partialTemplates, errs
 }
 
-func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCheckTarget, caches ...*readyDemandCache) (map[string]int, map[string]scaleCheckDemand, map[string]bool, []error) {
+// claimQueuedSuppression tallies the ready beads whose pool demand was
+// suppressed this tick because route-claim-watch has parked them behind their
+// target's claim-queue head (claim_state=queued). defaultScaleCheckCountsAndDemand
+// returns it so the controller tick can surface the suppression as a stderr
+// diagnostic instead of the bare, silent continue it was before. The state is
+// still self-clearing by design (claimQueuedBehindHead); this only makes it
+// observable, so a wedged route-claim-watch no longer looks identical to "no
+// work" — which stranded ~40 ready beads invisibly for ~10h on 2026-08-05.
+type claimQueuedSuppression struct {
+	// Count is the number of distinct ready beads suppressed this tick.
+	Count int
+	// BeadIDs are the IDs of the suppressed beads, for log/trace attribution.
+	// Sorted by defaultScaleCheckCountsAndDemand so repeated calls over an
+	// unchanged suppressed set produce an identical order — both for stable
+	// display and so claimQueuedSuppressionLastEmitted's fingerprint doesn't
+	// flap on Go's randomized map iteration order alone.
+	BeadIDs []string
+}
+
+// claimQueuedSuppressedIDListLimit caps how many suppressed bead IDs land in
+// the per-tick stderr diagnostic below. Anything beyond that is summarized as
+// "+N more" so a large stuck queue doesn't produce an unbounded line. Mirrors
+// strandedWorkIDListLimit / formatStrandedMessage (session_reconciler.go),
+// which caps the analogous session.stranded message body the same way.
+const claimQueuedSuppressedIDListLimit = 10
+
+// formatClaimQueuedSuppressedIDs renders suppressed bead IDs for the stderr
+// diagnostic, truncated past claimQueuedSuppressedIDListLimit. The count
+// printed alongside it (claimQueuedSuppression.Count) is the actionable
+// number; the IDs here are a sample for attribution, not a complete manifest.
+func formatClaimQueuedSuppressedIDs(ids []string) string {
+	if len(ids) <= claimQueuedSuppressedIDListLimit {
+		return strings.Join(ids, ",")
+	}
+	shown := ids[:claimQueuedSuppressedIDListLimit]
+	return fmt.Sprintf("%s (+%d more)", strings.Join(shown, ","), len(ids)-claimQueuedSuppressedIDListLimit)
+}
+
+// claimQueuedSuppressionLastEmitted caches, per cityPath, the fingerprint
+// (sorted, comma-joined bead IDs) of the last claim-queued suppression set
+// this process actually printed to stderr. defaultScaleCheckCountsAndDemand
+// runs on every demand snapshot — at most scaleCheckDemandMinInterval apart,
+// i.e. up to once/second — so an unattended stalled watcher previously wrote
+// an unbounded, identical line every tick: ~36,000 times over the ~10h
+// 2026-08-05 route-claim-watch incident this diagnostic exists to surface.
+// A missing entry means either "never printed for this city" or "the
+// previous tick was healthy" (see the Delete on Count==0 below); both must
+// print on the next non-zero tick, so only an exact fingerprint match
+// suppresses re-emission.
+var claimQueuedSuppressionLastEmitted sync.Map // map[string]string
+
+func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCheckTarget, caches ...*readyDemandCache) (map[string]int, map[string]scaleCheckDemand, map[string]bool, claimQueuedSuppression, []error) {
 	cache := optionalReadyDemandCache(caches)
 	counts := make(map[string]int, len(targets))
 	demand := make(map[string]scaleCheckDemand, len(targets))
+	var suppression claimQueuedSuppression
 	if len(targets) == 0 {
-		return counts, demand, nil, nil
+		return counts, demand, nil, suppression, nil
 	}
 
 	type scaleStoreGroup struct {
@@ -1524,6 +1600,11 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 	// probe no longer cold-gated, that double-count would be a persistent
 	// warm condition rather than a one-tick wake overshoot, so dedup by ID.
 	countedBeads := make(map[string]map[string]struct{})
+	// suppressedSeen dedups claim-queued-suppressed beads across store groups,
+	// mirroring countedBeads: when a rig store aliases the city store, the same
+	// bead is iterated in two groups and would otherwise inflate the per-tick
+	// suppression count. The count an operator reads must be physical beads.
+	suppressedSeen := make(map[string]struct{})
 	for key, group := range groups {
 		// Ready()/CachedReady() iteration surfaces actionable work
 		// matched against gc.routed_to/gc.run_target. Formula orders that
@@ -1543,6 +1624,16 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 				continue
 			}
 			if claimQueuedBehindHead(b) {
+				// Demand is intentionally suppressed (see claimQueuedBehindHead),
+				// but record it so a stalled route-claim-watch is observable:
+				// without this, ~40 ready beads sat unrouted for ~10h on
+				// 2026-08-05 and nothing distinguished "no work" from
+				// "demand suppressed by a dead watcher".
+				if _, dup := suppressedSeen[b.ID]; !dup {
+					suppressedSeen[b.ID] = struct{}{}
+					suppression.Count++
+					suppression.BeadIDs = append(suppression.BeadIDs, b.ID)
+				}
 				continue
 			}
 			template := controllerDemandRouteTarget(cfg, b, group.templates)
@@ -1591,7 +1682,8 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 			demand[template] = entry
 		}
 	}
-	return counts, demand, partialTemplates, errs
+	sort.Strings(suppression.BeadIDs)
+	return counts, demand, partialTemplates, suppression, errs
 }
 
 // claimQueuedBehindHead reports whether route-claim-watch has already decided
