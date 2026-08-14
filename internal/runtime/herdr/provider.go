@@ -443,6 +443,27 @@ func (p *Provider) Interrupt(name string) error {
 // name-only check re-Starts live sessions every tick: the spawn storm). An
 // exited agent whose pane idles at a shell prompt is NOT running, so
 // restarts still happen.
+//
+// Not pure: this is a read that mutates. Via resolveBinding, an exited
+// bindModeAgent pane past bindingLaunchGrace is reaped here — pane closed,
+// binding cleared — as a side effect of asking whether it is running (see
+// resolveBinding's own doc comment for the full mode/grace rules). That is
+// deliberate, not an oversight: nothing else currently reaps it. An
+// ephemeral wisp's pane sees no future Start (one-shot) and no explicit
+// Stop (nothing calls it once the wisp is done), so the opportunistic reap
+// inside whichever read touches the binding next is the only mechanism that
+// ever closes it — commit 889370f3 added it after finding 5 leaked shell
+// panes live after an hour of pool traffic with no reap at all. A `gc
+// doctor` (no --fix) run that calls this via ZombieSessionsCheck can
+// therefore close a pane as a side effect of a nominally read-only
+// diagnostic — surprising at the call site, but not data loss (only a
+// confirmably-exited agent's pane is ever touched). The proper fix is
+// giving herdr.Provider a DeadRuntimeSessionChecker implementation
+// (mirroring tmux's, see adapter.go) so the existing tick-driven
+// cleanupDeadRuntimeSessionCorpses sweep reaps these instead of any
+// incidental read — see gcy-lbqb for why that is a larger change than it
+// looks (ListRunning's current visibility filter would also need rework)
+// and is being tracked separately rather than attempted here.
 func (p *Provider) IsRunning(name string) bool {
 	_, running, err := resolveBinding(p.lookupOps(context.Background(), name))
 	if err != nil {

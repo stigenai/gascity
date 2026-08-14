@@ -104,6 +104,13 @@ type paneLookupOps struct {
 // (an in-flight Start provisionally bound it). A binding whose pane is
 // confirmed gone is cleared and resolves absent; a transport failure on
 // either tier surfaces as an error and clears nothing.
+//
+// This makes every caller — including read-only-shaped ones like IsRunning —
+// a read that can mutate. That is deliberate given nothing else currently
+// reaps these panes, not an oversight; see IsRunning's doc comment for the
+// full trade-off and gcy-lbqb for the tracked replacement (a
+// DeadRuntimeSessionChecker + tick-driven sweep, matching tmux, instead of
+// reaping opportunistically inside whichever read touches the binding next).
 func resolveBinding(ops paneLookupOps) (paneID string, running bool, err error) {
 	a, ok, err := ops.getAgent()
 	if err != nil {
