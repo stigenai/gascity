@@ -5387,3 +5387,44 @@ func TestRequestFreshRestart_RunningDefersCommitToReconcilerKill(t *testing.T) {
 		t.Fatalf("reset_committed_at = %q, want empty until the reconciler confirms the kill", got)
 	}
 }
+
+// TestRequestFreshRestart_InconclusiveProbeDefersCommitToReconcilerKill covers
+// gcy-dvg: a provider that can't confirm liveness either way (e.g. a k8s API
+// timeout, surfaced here via IsRunningErrors) must not be treated as "not
+// running" just because the plain, undifferentiated IsRunning bool would say
+// false. Collapsing "unconfirmed" into "not running" would let this commit
+// reset_committed_at immediately while the old runtime might still actually
+// be alive — racing a fresh incarnation against it, the exact race
+// RequestFreshRestart's live-runtime branch exists to prevent.
+func TestRequestFreshRestart_InconclusiveProbeDefersCommitToReconcilerKill(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := runtime.NewFake()
+	mgr := NewManagerWithOptions(store, sp)
+
+	info, err := mgr.CreateSession(context.Background(), CreateOptions{Template: "helper", Title: "my chat", Command: "claude", WorkDir: "/tmp", Provider: "claude", ExtraMeta: map[string]string{"session_origin": "manual"}, BeadOnly: true})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if sp.IsRunning(info.SessionName) {
+		t.Fatal("test fixture wrong: session should not be running")
+	}
+	sp.IsRunningErrors[info.SessionName] = errors.New("simulated k8s API timeout")
+
+	if err := mgr.RequestFreshRestart(info.ID); err != nil {
+		t.Fatalf("RequestFreshRestart: %v", err)
+	}
+
+	b, err := store.Get(info.ID)
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	if b.Metadata["restart_requested"] != "true" {
+		t.Fatalf("restart_requested = %q, want true", b.Metadata["restart_requested"])
+	}
+	if b.Metadata["continuation_reset_pending"] != "true" {
+		t.Fatalf("continuation_reset_pending = %q, want true", b.Metadata["continuation_reset_pending"])
+	}
+	if got := b.Metadata[ResetCommittedAtKey]; got != "" {
+		t.Fatalf("reset_committed_at = %q, want empty — an inconclusive probe must defer to the reconciler, not be treated as confirmed-not-running", got)
+	}
+}
