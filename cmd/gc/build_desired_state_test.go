@@ -6912,6 +6912,48 @@ func TestBuildDesiredState_RoutedDemandWakesOnlyCanonicalSingletonNamedSessions(
 	}
 }
 
+// TestBuildDesiredState_RouteDefaultFallbackDemandClampedToOne reproduces
+// gcy-69gw: route_default fallback demand was warm default-probe demand,
+// which is uncapped scale-to-want (one desired session per ready unrouted
+// bead) — unlike the analogous on_demand named-backing template case just
+// above, which namedOnDemandTemplates already clamps to 1. A route_default
+// agent is the same singleton-shaped router (one session drains the whole
+// unrouted queue sequentially), so N unrouted beads must desire 1 session,
+// not N — confirmed on the unfixed code this test would want 5, not 1.
+func TestBuildDesiredState_RouteDefaultFallbackDemandClampedToOne(t *testing.T) {
+	cityPath := t.TempDir()
+	store := beads.NewMemStore()
+	const template = "triage"
+	const unroutedCount = 5
+	for i := 0; i < unroutedCount; i++ {
+		if _, err := store.Create(beads.Bead{
+			Title:  fmt.Sprintf("unrouted work %d", i),
+			Type:   "task",
+			Status: "open",
+		}); err != nil {
+			t.Fatalf("create unrouted bead %d: %v", i, err)
+		}
+	}
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:         template,
+			StartCommand: "true",
+			WorkQuery:    "printf ''",
+			RouteDefault: true,
+			// no MaxActiveSessions — without the clamp this scales linearly
+			// with the unrouted backlog instead of staying pinned at 1.
+		}},
+	}
+
+	dsResult := buildDesiredState("test-city", cityPath, time.Now().UTC(), cfg, runtime.NewFake(), store, io.Discard)
+
+	if got := dsResult.ScaleCheckCounts[template]; got != 1 {
+		t.Fatalf("ScaleCheckCounts[%q] = %d, want 1 — %d unrouted beads all falling back to the same route_default agent must not scale it to %d sessions (scale_counts=%v)",
+			template, got, unroutedCount, unroutedCount, dsResult.ScaleCheckCounts)
+	}
+}
+
 func TestBuildDesiredState_OnDemandNamedSession_RuntimeAssigneeDoesNotMaterialize(t *testing.T) {
 	cityPath := t.TempDir()
 	rigPath := filepath.Join(cityPath, "fixture")

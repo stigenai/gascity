@@ -403,6 +403,14 @@ func buildDesiredStateWithSessionBeads(
 	// Their pool demand is clamped to 1 at the merge so one pool slot wakes the
 	// session without over-spawning {name}-N phantoms when N routed beads arrive.
 	namedOnDemandTemplates := map[string]bool{}
+	// routeDefaultTemplates marks a route_default agent's own template. Like
+	// an on_demand named-backing template, it is a singleton-shaped router:
+	// one pool slot drains the whole unrouted-fallback queue sequentially, so
+	// its pool demand is clamped to 1 at the merge — otherwise N unrouted
+	// beads that all fall back to this one agent request N router sessions
+	// (gcy-69gw), the same wake-storm shape namedOnDemandTemplates already
+	// guards against for explicit gc.routed_to fan-in.
+	routeDefaultTemplates := map[string]bool{}
 	// activeStores is the set of stores a cold custom-scale_check pool is probed
 	// against (city + every non-suspended rig store), so routed demand a sleeping
 	// rig pool can't see locally — e.g. work queued in the city store — still
@@ -565,6 +573,9 @@ func buildDesiredStateWithSessionBeads(
 		if store != nil && !hasCustomScaleCheck {
 			ownTarget := defaultScaleCheckTargetForAgent(cityPath, cfg, &cfg.Agents[i], store, rigStores)
 			defaultScaleTargets = append(defaultScaleTargets, ownTarget)
+			if cfg.Agents[i].RouteDefault {
+				routeDefaultTemplates[template] = true
+			}
 			// Cross-store demand (FR-S0.1 / vp-s37): a rig pool's routed demand
 			// may live in the city store (vp-kvp cross-store delivery), which
 			// the own-rig probe above cannot see. Add a city-store probe so the
@@ -759,6 +770,14 @@ func buildDesiredStateWithSessionBeads(
 				// slot is enough to drain N queued routed tasks sequentially. Clamp to
 				// 1 so N unassigned gc.routed_to beads do not spawn {name}-N phantoms.
 				if namedOnDemandTemplates[template] && count > 1 {
+					count = 1
+				}
+				// A route_default agent's own template is the same singleton shape:
+				// one pool slot drains the whole unrouted-fallback queue
+				// sequentially. Without this, N unrouted beads that all fall back
+				// to this one agent (controllerDemandRouteDefaultTemplate) request
+				// N router sessions — gcy-69gw.
+				if routeDefaultTemplates[template] && count > 1 {
 					count = 1
 				}
 				if count > scaleCheckCounts[template] {

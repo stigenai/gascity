@@ -3195,7 +3195,13 @@ type Agent struct {
 	// demand for this template instead of being silently dropped. Without a
 	// route_default, such work is demand for nobody — no pool ever scales up
 	// to route it. At most one agent per scope may set this; ValidateAgents
-	// rejects a second.
+	// rejects a second. Fallback demand is clamped to 1 desired session
+	// regardless of how many unrouted beads are waiting: a route_default
+	// agent is a singleton-shaped router, and one session drains the
+	// fallback queue sequentially the same way an on_demand named session's
+	// pool demand is clamped for N queued routed tasks. Set an explicit
+	// max_active_sessions if this agent needs more than one concurrent
+	// session for reasons other than fallback demand.
 	RouteDefault bool `toml:"route_default,omitempty"`
 	// ScaleCheck is a shell command template whose output reports new
 	// unassigned session demand. In bead-backed reconciliation this is

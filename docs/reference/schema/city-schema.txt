@@ -204,7 +204,7 @@
         },
         "route_default": {
           "type": "boolean",
-          "description": "RouteDefault marks this agent's template as the fallback demand target\nfor its scope (rig store if rig-scoped, city store if city-scoped): a\nready, unassigned bead whose routed-to candidates (gc.routed_to, legacy\ngc.run_target) match no configured template in that scope counts as\ndemand for this template instead of being silently dropped. Without a\nroute_default, such work is demand for nobody — no pool ever scales up\nto route it. At most one agent per scope may set this; ValidateAgents\nrejects a second."
+          "description": "RouteDefault marks this agent's template as the fallback demand target\nfor its scope (rig store if rig-scoped, city store if city-scoped): a\nready, unassigned bead whose routed-to candidates (gc.routed_to, legacy\ngc.run_target) match no configured template in that scope counts as\ndemand for this template instead of being silently dropped. Without a\nroute_default, such work is demand for nobody — no pool ever scales up\nto route it. At most one agent per scope may set this; ValidateAgents\nrejects a second. Fallback demand is clamped to 1 desired session\nregardless of how many unrouted beads are waiting: a route_default\nagent is a singleton-shaped router, and one session drains the\nfallback queue sequentially the same way an on_demand named session's\npool demand is clamped for N queued routed tasks. Set an explicit\nmax_active_sessions if this agent needs more than one concurrent\nsession for reasons other than fallback demand."
         },
         "scale_check": {
           "type": "string",
