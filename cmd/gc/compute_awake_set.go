@@ -120,6 +120,15 @@ type AwakeDecision struct {
 	// restart-style cycle so the next wake starts a fresh conversation on
 	// the newly assigned bead.
 	RequiresFreshCycle bool
+	// CappedByMaxActiveSessions is true when this session has assigned work
+	// (HasAssignedWork) but was excluded from this tick's awake set solely
+	// because its template or the workspace is at its max_active_sessions
+	// ceiling (gcy-y6s5) — not because the work vanished. The reconciler
+	// must not treat this as a stranded pool worker: same signature
+	// (asleep, not alive, pool-managed, owns assigned work), different
+	// cause, and unassigning/closing the bead would just re-admit it next
+	// tick against the same cap (gcy-lfy3).
+	CappedByMaxActiveSessions bool
 }
 
 // ComputeAwakeSet determines which sessions should be awake.
@@ -342,6 +351,15 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 	}
 
 	assignedAnchor := make(map[string]string) // sessionName → matched work bead ID
+	// cappedSessions marks a sleeping pool bead excluded from this tick's
+	// awake set solely by withinActiveSessionsCap, as opposed to having no
+	// assigned work at all. HasAssignedWork stays true for these (see the
+	// comment at assignedAnchor's population below), so without this signal
+	// the reconciler's stranded-worker detector cannot tell a deliberately
+	// parked, at-capacity session apart from a genuinely leaked one — both
+	// look identical as "asleep, not alive, pool-managed, owns assigned
+	// work" (gcy-lfy3).
+	cappedSessions := make(map[string]bool)
 	for _, bead := range input.SessionBeads {
 		if bead.State == "closed" {
 			continue
@@ -386,6 +404,7 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 		assignedAnchor[bead.SessionName] = anchorBead
 		sleepingPoolBead := isGenericPoolBead(bead) && !isRunningBead(bead)
 		if sleepingPoolBead && !withinActiveSessionsCap(bead.Template) {
+			cappedSessions[bead.SessionName] = true
 			continue
 		}
 		desired[bead.SessionName] = "assigned-work"
@@ -459,7 +478,8 @@ func ComputeAwakeSet(input AwakeInput) map[string]AwakeDecision {
 		name := bead.SessionName
 		anchor, hasAssignedWork := assignedAnchor[name]
 		decision := AwakeDecision{
-			HasAssignedWork: hasAssignedWork,
+			HasAssignedWork:           hasAssignedWork,
+			CappedByMaxActiveSessions: cappedSessions[name],
 		}
 		if hasAssignedWork {
 			decision.AssignedWorkBeadID = anchor

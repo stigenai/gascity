@@ -2875,6 +2875,125 @@ func TestReconcileSessionBeads_PoolSlotWithStrandedWorkEmitsDiagnostic(t *testin
 	}
 }
 
+// TestReconcileSessionBeads_MaxActiveSessionsCappedSessionNotStranded covers
+// gcy-lfy3: a sleeping pool session that ComputeAwakeSet deliberately excluded
+// from the awake set because its template is at max_active_sessions (gcy-y6s5)
+// has the EXACT same on-disk signature as a genuinely stranded worker — asleep,
+// not alive, pool-managed, owns in_progress work — because HasAssignedWork
+// stays true either way. Without decision.CappedByMaxActiveSessions threading
+// through to the poolFreeable gate, this reconcile tick would emit a false
+// session.stranded diagnostic and, after the confirmation window, unassign the
+// work and close the bead — this is the reconciler-level collision the
+// ComputeAwakeSet-only tests (compute_awake_set_test.go) cannot see, since
+// reconcileSessionBeadsAtPath computes its own awakeDecisions internally
+// rather than taking one as input.
+func TestReconcileSessionBeads_MaxActiveSessionsCappedSessionNotStranded(t *testing.T) {
+	env := newReconcilerTestEnv()
+	env.cfg = &config.City{
+		Agents: []config.Agent{{Name: "worker", MaxActiveSessions: intPtr(1)}},
+	}
+
+	// worker-active fills the cap's only slot.
+	env.addDesired("worker-active", "worker", true)
+	active := env.createSessionBead("worker-active", "worker")
+	env.setSessionMetadata(&active, map[string]string{
+		"state":                "active",
+		poolManagedMetadataKey: boolMetadata(true),
+	})
+	if _, err := env.store.Create(beads.Bead{
+		Title:    "active work",
+		Type:     "task",
+		Status:   "in_progress",
+		Assignee: active.ID,
+	}); err != nil {
+		t.Fatalf("Create active work bead: %v", err)
+	}
+
+	// worker-capped owns in_progress work but is asleep and excluded from
+	// the awake set solely by the cap above — not stranded.
+	env.addDesired("worker-capped", "worker", false)
+	capped := env.createSessionBead("worker-capped", "worker")
+	env.setSessionMetadata(&capped, map[string]string{
+		"state":                "asleep",
+		"sleep_reason":         "idle",
+		poolManagedMetadataKey: boolMetadata(true),
+	})
+	cappedWork, err := env.store.Create(beads.Bead{
+		Title:    "capped implementation",
+		Type:     "task",
+		Status:   "open",
+		Assignee: capped.ID,
+	})
+	if err != nil {
+		t.Fatalf("Create capped work bead: %v", err)
+	}
+	inProgress := "in_progress"
+	if err := env.store.Update(cappedWork.ID, beads.UpdateOpts{Status: &inProgress}); err != nil {
+		t.Fatalf("Update capped work bead status: %v", err)
+	}
+	cappedWork, err = env.store.Get(cappedWork.ID)
+	if err != nil {
+		t.Fatalf("Get(cappedWork) after status update: %v", err)
+	}
+
+	rec := &capturingRecorder{}
+	env.rec = rec
+
+	// assignedWorkBeads must include the capped session's own work bead:
+	// ComputeAwakeSet's cap decision (and thus CappedByMaxActiveSessions)
+	// only engages for a session it can match to assigned demand through
+	// this parameter — the reconciler's separate, later stranded-check
+	// query against the live store is a different code path and does not
+	// feed back into ComputeAwakeSet's own view.
+	reconcileSessionBeadsAtPath(
+		context.Background(),
+		"",
+		[]beads.Bead{active, capped},
+		env.desiredState,
+		map[string]bool{"worker": true},
+		env.cfg,
+		env.sp,
+		env.store,
+		newFakeDrainOps(),
+		[]beads.Bead{cappedWork},
+		nil,
+		nil,
+		env.dt,
+		nil,
+		false,
+		nil,
+		"",
+		nil,
+		env.clk,
+		env.rec,
+		0,
+		0,
+		&env.stdout,
+		&env.stderr,
+	)
+
+	if stranded := rec.strandedEvents(); len(stranded) != 0 {
+		t.Fatalf("session.stranded events = %d, want 0 (capped session is not stranded); got: %+v", len(stranded), stranded)
+	}
+
+	postCapped, err := env.store.Get(capped.ID)
+	if err != nil {
+		t.Fatalf("Get(capped) after tick: %v", err)
+	}
+	if postCapped.Status == "closed" {
+		t.Fatal("capped session bead closed — the cap must not free its pool slot as if it were leaked")
+	}
+
+	postWork, err := env.store.Get(cappedWork.ID)
+	if err != nil {
+		t.Fatalf("Get(cappedWork) after tick: %v", err)
+	}
+	if postWork.Assignee != capped.ID || postWork.Status != "in_progress" {
+		t.Fatalf("capped work bead = {assignee: %q, status: %q}, want unchanged {assignee: %q, status: in_progress} — the cap must not unassign/reopen it",
+			postWork.Assignee, postWork.Status, capped.ID)
+	}
+}
+
 // strandedRepairReconcileEnv builds a pool-managed session whose runtime is dead
 // while it still holds one in_progress work bead as assignee — the exact shape
 // TestReconcileSessionBeads_PoolSlotWithStrandedWorkEmitsDiagnostic exercises,

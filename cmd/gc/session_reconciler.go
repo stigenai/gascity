@@ -3756,7 +3756,14 @@ func reconcileSessionBeadsTracedWithNamedDemand(
 		// keep the same bead so later wake/restart happens in place instead
 		// of minting a fresh canonical owner.
 		hasAssignedWork := false
-		poolFreeable := !shouldWake && !target.alive && isPoolSessionSlotFreeableInfo(info) && isPoolManagedSessionInfo(info)
+		// decision.CappedByMaxActiveSessions excludes a session ComputeAwakeSet
+		// deliberately left asleep at its max_active_sessions ceiling from this
+		// stranded-worker signature — that combination (asleep, not alive,
+		// pool-managed, owns assigned work) is otherwise identical to a
+		// genuinely leaked worker, and unassigning/closing it here would just
+		// re-admit it next tick against the same cap (gcy-lfy3).
+		poolFreeable := !shouldWake && !target.alive && isPoolSessionSlotFreeableInfo(info) &&
+			isPoolManagedSessionInfo(info) && !decision.CappedByMaxActiveSessions
 		if poolFreeable {
 			var assignedErr error
 			hasAssignedWork, assignedErr = sessionHasOpenAssignedWorkForReachableStore(cityPath, cfg, store, rigStores, info)

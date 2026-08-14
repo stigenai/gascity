@@ -939,6 +939,14 @@ func TestMaxActiveSessions_CapsNewlyWakingAssignedWork(t *testing.T) {
 	if !d.HasAssignedWork || d.AssignedWorkBeadID != "hw-3" {
 		t.Fatalf("polecat-mc-3 decision = %+v, want HasAssignedWork=true AssignedWorkBeadID=hw-3 even though capped asleep", d)
 	}
+	// CappedByMaxActiveSessions (gcy-lfy3) must distinguish this from a
+	// stranded worker: same HasAssignedWork+asleep shape, different cause.
+	if !d.CappedByMaxActiveSessions {
+		t.Fatalf("polecat-mc-3 decision = %+v, want CappedByMaxActiveSessions=true", d)
+	}
+	if d2 := result["polecat-mc-1"]; d2.CappedByMaxActiveSessions {
+		t.Fatalf("polecat-mc-1 decision = %+v, want CappedByMaxActiveSessions=false (it woke normally, within the cap)", d2)
+	}
 }
 
 func TestMaxActiveSessions_AlreadyActiveSessionsAreGrandfathered(t *testing.T) {
