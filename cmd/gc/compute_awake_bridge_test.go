@@ -738,3 +738,67 @@ func TestBuildAwakeInputFromReconcilerNamedAlwaysPostChurnRewakes(t *testing.T) 
 		t.Errorf("wake reason = %q, want named-always", got.Reason)
 	}
 }
+
+// TestBuildAwakeInputFromReconcilerCarriesMaxActiveSessionsCaps pins the
+// gcy-y6s5 wiring: cfg.Workspace.MaxActiveSessions must reach
+// AwakeInput.WorkspaceMaxActiveSessions, and each agent's resolved cap
+// (its own override, else its rig's, else the workspace default) must reach
+// AwakeAgent.MaxActiveSessions — the two fields ComputeAwakeSet uses to bound
+// the standing awake pool population instead of only new admissions.
+func TestBuildAwakeInputFromReconcilerCarriesMaxActiveSessionsCaps(t *testing.T) {
+	now := time.Now().UTC()
+	cfg := &config.City{
+		Workspace: config.Workspace{MaxActiveSessions: intPtr(6)},
+		Rigs: []config.Rig{
+			{Name: "myrig", MaxActiveSessions: intPtr(3)},
+		},
+		Agents: []config.Agent{
+			{Name: "own-cap", MaxActiveSessions: intPtr(2)}, // agent override wins
+			{Name: "rig-cap", Dir: "myrig"},                 // no override, inherits rig
+			{Name: "workspace-cap"},                         // no override, inherits workspace
+		},
+	}
+
+	input := buildAwakeInputFromReconciler(
+		cfg, "", nil,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		now,
+	)
+
+	if input.WorkspaceMaxActiveSessions != 6 {
+		t.Fatalf("WorkspaceMaxActiveSessions = %d, want 6", input.WorkspaceMaxActiveSessions)
+	}
+	if len(input.Agents) != 3 {
+		t.Fatalf("len(Agents) = %d, want 3", len(input.Agents))
+	}
+	want := []int{2, 3, 6}
+	for i, w := range want {
+		if got := input.Agents[i].MaxActiveSessions; got != w {
+			t.Errorf("Agents[%d] (%s): MaxActiveSessions = %d, want %d", i, cfg.Agents[i].Name, got, w)
+		}
+	}
+}
+
+// TestBuildAwakeInputFromReconcilerMaxActiveSessionsUnsetIsZero guards the
+// backward-compatible sentinel: a city that never sets max_active_sessions
+// anywhere must produce 0 (AwakeAgent/AwakeInput's "unlimited"), not a real
+// zero pointer dereferenced into an accidental cap of zero.
+func TestBuildAwakeInputFromReconcilerMaxActiveSessionsUnsetIsZero(t *testing.T) {
+	now := time.Now().UTC()
+	cfg := &config.City{
+		Agents: []config.Agent{{Name: "unbounded"}},
+	}
+
+	input := buildAwakeInputFromReconciler(
+		cfg, "", nil,
+		nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		now,
+	)
+
+	if input.WorkspaceMaxActiveSessions != 0 {
+		t.Fatalf("WorkspaceMaxActiveSessions = %d, want 0 (unlimited)", input.WorkspaceMaxActiveSessions)
+	}
+	if len(input.Agents) != 1 || input.Agents[0].MaxActiveSessions != 0 {
+		t.Fatalf("Agents = %+v, want single agent with MaxActiveSessions=0 (unlimited)", input.Agents)
+	}
+}
