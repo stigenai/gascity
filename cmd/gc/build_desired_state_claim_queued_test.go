@@ -361,3 +361,125 @@ func TestClaimQueuedBehindHead(t *testing.T) {
 		})
 	}
 }
+
+// --- gcy-gbgd: the claim-queued stderr diagnostic above must stay bounded.
+// Review of PR #53 found it unbounded in two dimensions: an unbounded ID
+// list (formatClaimQueuedSuppressedIDs' job below) and an unbounded re-print
+// rate (claimQueuedSuppressionLastEmitted's job) — in the wedged
+// route-claim-watch scenario the diagnostic exists to surface (~40 beads,
+// ~10h on 2026-08-05) the original version would have written ~36,000
+// identical lines carrying ~40 IDs each.
+
+// TestFormatClaimQueuedSuppressedIDs covers the ID-list cap, mirroring
+// formatStrandedMessage's strandedWorkIDListLimit handling
+// (session_reconciler.go): under the limit prints every ID, over it
+// truncates with a "+N more" suffix rather than growing unbounded.
+func TestFormatClaimQueuedSuppressedIDs(t *testing.T) {
+	tests := []struct {
+		name string
+		ids  []string
+		want string
+	}{
+		{name: "empty", ids: nil, want: ""},
+		{name: "under limit", ids: []string{"a", "b", "c"}, want: "a,b,c"},
+		{
+			name: "exactly at limit prints all, no suffix",
+			ids:  []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"},
+			want: "a,b,c,d,e,f,g,h,i,j",
+		},
+		{
+			name: "over limit truncates with a +N more suffix",
+			ids:  []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"},
+			want: "a,b,c,d,e,f,g,h,i,j (+2 more)",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := formatClaimQueuedSuppressedIDs(tc.ids); got != tc.want {
+				t.Fatalf("formatClaimQueuedSuppressedIDs(%v) = %q, want %q", tc.ids, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildDesiredStateClaimQueuedSuppressionStderrDedupsAcrossUnchangedTicks
+// locks in the re-print fix: PR #53's original diagnostic re-emitted the
+// full suppressed-bead-ID list on every demand snapshot — up to once/second
+// via scaleCheckDemandMinInterval, with nothing to distinguish an unchanged
+// tick from a new one. The fix must still print the FIRST time a suppressed
+// set is observed, go SILENT on a following tick with that same set
+// unchanged, and — critically — re-announce if the exact same bead becomes
+// suppressed again after an intervening healthy tick. That last case is the
+// one a naive "remember every ID ever printed" cache would get wrong: it
+// would permanently silence a bead that clears and later re-wedges.
+func TestBuildDesiredStateClaimQueuedSuppressionStderrDedupsAcrossUnchangedTicks(t *testing.T) {
+	const template = "coder"
+	cityDir := t.TempDir()
+	store := beads.NewMemStore()
+	queued, err := store.Create(beads.Bead{
+		Title:  "queued behind head",
+		Type:   "task",
+		Status: "open",
+		Metadata: map[string]string{
+			beadmeta.RoutedToMetadataKey:         template,
+			beadmeta.ClaimStateMetadataKey:       beadmeta.ClaimStateQueued,
+			beadmeta.ClaimQueueReasonMetadataKey: "behind_head",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create queued bead: %v", err)
+	}
+
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:         template,
+			StartCommand: "true",
+		}},
+	}
+
+	tick := func() string {
+		sessionSnapshot, err := loadSessionBeadSnapshot(store)
+		if err != nil {
+			t.Fatalf("load session snapshot: %v", err)
+		}
+		var stderr strings.Builder
+		buildDesiredStateWithSessionBeads(
+			"trace-town", cityDir, time.Now().UTC(), cfg, runtime.NewFake(),
+			store, nil, sessionSnapshot, nil, &stderr,
+		)
+		return stderr.String()
+	}
+
+	if out := tick(); !strings.Contains(out, "scaleCheck:") || !strings.Contains(out, queued.ID) {
+		t.Fatalf("tick 1 stderr = %q, want the suppression diagnostic naming %s", out, queued.ID)
+	}
+
+	if out := tick(); strings.Contains(out, "scaleCheck:") {
+		t.Fatalf("tick 2 stderr = %q, want silence (unchanged suppressed set)", out)
+	}
+
+	// Un-suppress the bead (a healthy tick) — must clear the dedup cache,
+	// not just stay silent because Count happens to be 0.
+	if err := store.SetMetadataBatch(queued.ID, map[string]string{
+		beadmeta.ClaimStateMetadataKey: "claimed",
+	}); err != nil {
+		t.Fatalf("SetMetadataBatch (un-suppress): %v", err)
+	}
+	if out := tick(); strings.Contains(out, "scaleCheck:") {
+		t.Fatalf("tick 3 stderr = %q, want silence (nothing suppressed)", out)
+	}
+
+	// The exact same bead ID becomes suppressed again. If the healthy tick
+	// above had not cleared the dedup cache, this would wrongly stay silent
+	// forever since the fingerprint matches tick 1's.
+	if err := store.SetMetadataBatch(queued.ID, map[string]string{
+		beadmeta.ClaimStateMetadataKey:       beadmeta.ClaimStateQueued,
+		beadmeta.ClaimQueueReasonMetadataKey: "behind_head",
+	}); err != nil {
+		t.Fatalf("SetMetadataBatch (re-suppress): %v", err)
+	}
+	if out := tick(); !strings.Contains(out, "scaleCheck:") || !strings.Contains(out, queued.ID) {
+		t.Fatalf("tick 4 stderr = %q, want the suppression diagnostic to re-announce %s", out, queued.ID)
+	}
+}
