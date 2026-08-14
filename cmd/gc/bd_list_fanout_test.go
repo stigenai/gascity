@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -144,7 +145,7 @@ func TestDoBdListFanOutMergesAcrossStores(t *testing.T) {
 	primary := bdCityScopeTarget(cityDir, cfg)
 
 	var calls []fanOutCall
-	run := func(_ []string, dir string, _ []string) (string, error) {
+	run := func(_ []string, dir string, _ []string, _ io.Writer) (string, error) {
 		calls = append(calls, fanOutCall{dir: dir})
 		switch dir {
 		case cityDir:
@@ -185,7 +186,7 @@ func TestDoBdListFanOutRespectsLimit(t *testing.T) {
 	primary := bdCityScopeTarget(cityDir, cfg)
 
 	var calls []fanOutCall
-	run := func(_ []string, dir string, _ []string) (string, error) {
+	run := func(_ []string, dir string, _ []string, _ io.Writer) (string, error) {
 		calls = append(calls, fanOutCall{dir: dir})
 		// Every store "has" 2 rows; a limit of 3 should stop after the
 		// second store (city:2 + alpha:1, or however the truncation lands)
@@ -222,7 +223,7 @@ func TestDoBdListFanOutUnlimitedReturnsEverything(t *testing.T) {
 	cfg := &config.City{Rigs: []config.Rig{{Name: "alpha", Path: filepath.Join(cityDir, "alpha"), Prefix: "al"}}}
 	primary := bdCityScopeTarget(cityDir, cfg)
 
-	run := func(_ []string, dir string, _ []string) (string, error) {
+	run := func(_ []string, dir string, _ []string, _ io.Writer) (string, error) {
 		if dir == filepath.Join(cityDir, "alpha") {
 			return `[{"id":"al-1"},{"id":"al-2"},{"id":"al-3"}]`, nil
 		}
@@ -247,7 +248,7 @@ func TestDoBdListFanOutPrimaryErrorIsFatal(t *testing.T) {
 
 	wantErr := errors.New("boom")
 	called := 0
-	run := func(_ []string, dir string, _ []string) (string, error) {
+	run := func(_ []string, dir string, _ []string, _ io.Writer) (string, error) {
 		called++
 		if dir == cityDir {
 			return "", wantErr
@@ -274,7 +275,7 @@ func TestDoBdListFanOutFederatedErrorIsBestEffort(t *testing.T) {
 	cfg := &config.City{Rigs: []config.Rig{{Name: "alpha", Path: filepath.Join(cityDir, "alpha"), Prefix: "al"}}}
 	primary := bdCityScopeTarget(cityDir, cfg)
 
-	run := func(_ []string, dir string, _ []string) (string, error) {
+	run := func(_ []string, dir string, _ []string, _ io.Writer) (string, error) {
 		if dir == cityDir {
 			return `[{"id":"city-1"}]`, nil
 		}
@@ -292,6 +293,71 @@ func TestDoBdListFanOutFederatedErrorIsBestEffort(t *testing.T) {
 	}
 }
 
+// TestDoBdListFanOutPrimarySilentFallbackIsFatal covers gcy-qu1d: bd exiting
+// 0 with its silent fallback-to-on-disk marker on the primary store must be
+// treated as fatal, matching doBd's own single-store contract exactly (same
+// exit code), not merged in as if the (possibly stale) results were
+// authoritative.
+func TestDoBdListFanOutPrimarySilentFallbackIsFatal(t *testing.T) {
+	cityDir := t.TempDir()
+	cfg := &config.City{Rigs: []config.Rig{{Name: "alpha", Path: filepath.Join(cityDir, "alpha"), Prefix: "al"}}}
+	primary := bdCityScopeTarget(cityDir, cfg)
+
+	called := 0
+	run := func(_ []string, dir string, _ []string, _ io.Writer) (string, error) {
+		called++
+		if dir == cityDir {
+			return "", errBdListFanOutSilentFallback
+		}
+		t.Fatalf("federated store %q must not be queried once the primary has already failed fatally", dir)
+		return "", nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := doBdListFanOut(cfg, cityDir, []string{"list", "--json"}, primary, &stdout, &stderr, run)
+	if code != bdSilentFallbackExitCode {
+		t.Fatalf("doBdListFanOut() = %d, want %d (bdSilentFallbackExitCode) on a primary silent fallback", code, bdSilentFallbackExitCode)
+	}
+	if !strings.Contains(stderr.String(), bdSilentFallbackUserMessage) {
+		t.Fatalf("stderr = %q, want it to contain bdSilentFallbackUserMessage", stderr.String())
+	}
+	if called != 1 {
+		t.Fatalf("run called %d times, want 1 (primary only)", called)
+	}
+}
+
+// TestDoBdListFanOutFederatedSilentFallbackWarnsAndSkips covers gcy-qu1d: a
+// federated store's silent fallback must not fail the whole call (primary's
+// results still merge), but — unlike a generic federated error, which is a
+// fully silent skip — it must surface a visible warning, since silently
+// merging possibly-stale on-disk data as if authoritative is a data
+// integrity concern the ordinary "store unreachable" skip isn't.
+func TestDoBdListFanOutFederatedSilentFallbackWarnsAndSkips(t *testing.T) {
+	cityDir := t.TempDir()
+	cfg := &config.City{Rigs: []config.Rig{{Name: "alpha", Path: filepath.Join(cityDir, "alpha"), Prefix: "al"}}}
+	primary := bdCityScopeTarget(cityDir, cfg)
+
+	run := func(_ []string, dir string, _ []string, _ io.Writer) (string, error) {
+		if dir == cityDir {
+			return `[{"id":"city-1"}]`, nil
+		}
+		return "", errBdListFanOutSilentFallback
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := doBdListFanOut(cfg, cityDir, []string{"list", "--json"}, primary, &stdout, &stderr, run)
+	if code != 0 {
+		t.Fatalf("doBdListFanOut() = %d, want 0 (a federated store's silent fallback must not fail the whole call); stderr=%q", code, stderr.String())
+	}
+	gotIDs := decodeIDs(t, stdout.Bytes())
+	if !equalStrings(gotIDs, []string{"city-1"}) {
+		t.Fatalf("merged ids = %v, want [city-1] (primary's results survive a federated silent fallback)", gotIDs)
+	}
+	if !strings.Contains(stderr.String(), bdSilentFallbackUserMessage) {
+		t.Fatalf("stderr = %q, want a visible warning for the skipped federated store, not a fully silent skip", stderr.String())
+	}
+}
+
 func TestDoBdListFanOutPrimaryUnparseableOutputPassesThrough(t *testing.T) {
 	cityDir := t.TempDir()
 	cfg := &config.City{Rigs: []config.Rig{{Name: "alpha", Path: filepath.Join(cityDir, "alpha"), Prefix: "al"}}}
@@ -299,7 +365,7 @@ func TestDoBdListFanOutPrimaryUnparseableOutputPassesThrough(t *testing.T) {
 
 	const plainText = "id    title\ngc-1  example\n"
 	called := 0
-	run := func(_ []string, dir string, _ []string) (string, error) {
+	run := func(_ []string, dir string, _ []string, _ io.Writer) (string, error) {
 		called++
 		if dir == cityDir {
 			return plainText, nil
@@ -505,5 +571,111 @@ func TestDoBdListNoFanOutWithoutJSON(t *testing.T) {
 	}
 	if got := len(strings.Split(strings.TrimSpace(string(calls)), "\n")); got != 1 {
 		t.Fatalf("bd invoked %d times, want 1 (no --json means no fan-out)", got)
+	}
+}
+
+// fanOutFakeBdScriptWithSilentFallback writes a fake `bd` that behaves like
+// fanOutFakeBdScript, except when the target store's derived id equals
+// fallbackID: it still exits 0 with valid JSON on stdout, but also emits
+// bd's real silent-fallback marker pair to stderr — exercising
+// runBdListFanOut's actual subprocess stderr-tee-and-scan path end to end,
+// not just the injectable mock the tests above use.
+func fanOutFakeBdScriptWithSilentFallback(t *testing.T, binDir, capturePath, fallbackID string) {
+	t.Helper()
+	script := filepath.Join(binDir, "bd")
+	if err := os.WriteFile(script, []byte(`#!/bin/sh
+set -eu
+echo "1" >> "${CAPTURE_PATH}"
+scope="${GC_STORE_SCOPE:-}"
+rig="${GC_RIG:-}"
+id="city"
+if [ "$scope" = "rig" ]; then
+  id="$rig"
+fi
+if [ "$id" = "`+fallbackID+`" ]; then
+  echo "auto-importing into empty database" >&2
+fi
+for arg in "$@"; do
+  if [ "$arg" = "--json" ]; then
+    printf '[{"id":"%s-1"}]' "$id"
+    exit 0
+  fi
+done
+printf 'id    title\n%s-1  example\n' "$id"
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDoBdListFanOutEndToEndPrimarySilentFallbackIsFatal covers gcy-qu1d
+// through a real bd subprocess (not the injectable mock): the primary
+// store's stderr showing bd's real silent-fallback marker must fail the
+// whole call with bdSilentFallbackExitCode, proving runBdListFanOut's
+// stderr tee-and-scan actually works, not just its unit-level contract.
+func TestDoBdListFanOutEndToEndPrimarySilentFallbackIsFatal(t *testing.T) {
+	disableManagedDoltRecoveryForTest(t)
+	origCityFlag, origRigFlag := cityFlag, rigFlag
+	defer func() { cityFlag, rigFlag = origCityFlag, origRigFlag }()
+	cityFlag, rigFlag = "", ""
+
+	cityDir := t.TempDir()
+	writeFanOutTestCity(t, cityDir, []string{"alpha", "beta"})
+	// cwd outside the city so resolution falls through to the city default —
+	// the same ambiguous-fallback shape TestDoBdListFanOutEndToEndAcrossConfiguredRigs
+	// uses, which makes "city" the primary target.
+	setCwd(t, t.TempDir())
+
+	binDir := t.TempDir()
+	capture := filepath.Join(t.TempDir(), "calls.txt")
+	fanOutFakeBdScriptWithSilentFallback(t, binDir, capture, "city")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CAPTURE_PATH", capture)
+	t.Setenv("GC_CITY_PATH", cityDir)
+	t.Setenv("GC_RIG", "")
+
+	var stdout, stderr bytes.Buffer
+	got := doBd([]string{"list", "--json"}, &stdout, &stderr)
+	if got != bdSilentFallbackExitCode {
+		t.Fatalf("doBd() = %d, want %d (bdSilentFallbackExitCode); stderr=%q", got, bdSilentFallbackExitCode, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), bdSilentFallbackUserMessage) {
+		t.Fatalf("stderr = %q, want bdSilentFallbackUserMessage", stderr.String())
+	}
+}
+
+// TestDoBdListFanOutEndToEndFederatedSilentFallbackWarnsAndSkips covers
+// gcy-qu1d through a real bd subprocess: a federated (non-primary) store's
+// real silent-fallback marker must not fail the whole call, but must
+// forward a visible warning and exclude that store's results from the merge.
+func TestDoBdListFanOutEndToEndFederatedSilentFallbackWarnsAndSkips(t *testing.T) {
+	disableManagedDoltRecoveryForTest(t)
+	origCityFlag, origRigFlag := cityFlag, rigFlag
+	defer func() { cityFlag, rigFlag = origCityFlag, origRigFlag }()
+	cityFlag, rigFlag = "", ""
+
+	cityDir := t.TempDir()
+	writeFanOutTestCity(t, cityDir, []string{"alpha", "beta"})
+	setCwd(t, t.TempDir())
+
+	binDir := t.TempDir()
+	capture := filepath.Join(t.TempDir(), "calls.txt")
+	fanOutFakeBdScriptWithSilentFallback(t, binDir, capture, "beta")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CAPTURE_PATH", capture)
+	t.Setenv("GC_CITY_PATH", cityDir)
+	t.Setenv("GC_RIG", "")
+
+	var stdout, stderr bytes.Buffer
+	got := doBd([]string{"list", "--json"}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("doBd() = %d, want 0 (a federated store's silent fallback must not fail the whole call); stderr=%q", got, stderr.String())
+	}
+	gotIDs := decodeIDs(t, stdout.Bytes())
+	want := []string{"alpha-1", "city-1"}
+	if !equalStrings(gotIDs, want) {
+		t.Fatalf("merged ids = %v, want %v (beta's results skipped, others survive)", gotIDs, want)
+	}
+	if !strings.Contains(stderr.String(), bdSilentFallbackUserMessage) {
+		t.Fatalf("stderr = %q, want a visible warning for the skipped federated store", stderr.String())
 	}
 }
