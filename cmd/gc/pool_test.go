@@ -866,6 +866,7 @@ func TestDeepCopyAgentCoversAllFields(t *testing.T) {
 		OptionDefaults:               map[string]string{"effort": "max"},
 		BindingName:                  "gastown",
 		PackName:                     "gastown",
+		RouteDefault:                 true,
 	}
 
 	// Tombstone fields (deprecated in v0.15.1, removed in v0.16) are not

@@ -141,6 +141,10 @@
           "type": "integer",
           "description": "MinActiveSessions is the minimum number of sessions to keep alive.\nAgent-level only. Counts against rig/workspace caps. Replaces pool.min.\nThis controls pool sessions independently of [[named_session]]\nmode=\"always\"; both produce sessions, and gc doctor reports accidental\ncombinations."
         },
+        "route_default": {
+          "type": "boolean",
+          "description": "RouteDefault marks this agent's template as the fallback demand target\nfor its scope (rig store if rig-scoped, city store if city-scoped): a\nready, unassigned bead whose routed-to candidates (gc.routed_to, legacy\ngc.run_target) match no configured template in that scope counts as\ndemand for this template instead of being silently dropped. Without a\nroute_default, such work is demand for nobody — no pool ever scales up\nto route it. At most one agent per scope may set this; ValidateAgents\nrejects a second."
+        },
         "scale_check": {
           "type": "string",
           "description": "ScaleCheck is a shell command template whose output reports new\nunassigned session demand. In bead-backed reconciliation this is\nadditive: assigned work is resumed separately, and ScaleCheck reports\nonly how many new generic sessions to start, still bounded by all cap\nlevels. Legacy no-store evaluation continues to treat the output as\nthe desired session count. If it contains Go template placeholders, gc\nexpands them using the same PathContext fields as work_dir and\nsession_setup (Agent, AgentBase, Rig, RigRoot, CityRoot, CityName)\nbefore running the command."
@@ -621,6 +625,10 @@
         "min_active_sessions": {
           "type": "integer",
           "description": "MinActiveSessions overrides the minimum number of sessions to keep alive."
+        },
+        "route_default": {
+          "type": "boolean",
+          "description": "RouteDefault overrides the agent's route_default fallback-routing flag\n(see Agent.RouteDefault for semantics)."
         },
         "scale_check": {
           "type": "string",
