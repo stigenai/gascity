@@ -1,15 +1,28 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/config"
 )
+
+// errBdListFanOutSilentFallback signals that a fanned-out bd call exited 0
+// but its stderr showed bd's silent fallback-to-on-disk marker — distinct
+// from a real subprocess/parse failure so doBdListFanOut can react
+// differently: fatal (matching doBd's own contract) for the primary store,
+// a visible warning instead of a fully silent skip for a federated one. See
+// bdOutputIndicatesSilentFallback and doBd's own tail in cmd_bd.go, which
+// this mirrors.
+var errBdListFanOutSilentFallback = errors.New(bdSilentFallbackUserMessage)
 
 // bdListDefaultLimit mirrors bd list's own documented default (`bd list
 // --help`: "-n, --limit int Limit results (default 50, use 0 for
@@ -17,10 +30,10 @@ import (
 const bdListDefaultLimit = 50
 
 // bdListFanOutRunner runs `bd <args...>` against one store's dir and env and
-// returns its stdout. Injectable so doBdListFanOut's merge/limit logic can be
-// tested without a real bd subprocess — mirrors hookStoreRunner
-// (hook_cross_store.go).
-type bdListFanOutRunner func(args []string, dir string, env []string) (string, error)
+// returns its stdout, teeing the child's stderr to the given writer.
+// Injectable so doBdListFanOut's merge/limit logic can be tested without a
+// real bd subprocess — mirrors hookStoreRunner (hook_cross_store.go).
+type bdListFanOutRunner func(args []string, dir string, env []string, stderr io.Writer) (string, error)
 
 // bdListShouldFanOut reports whether a `gc bd` invocation is eligible for
 // cross-store read federation.
@@ -92,6 +105,14 @@ func bdListRequestedLimit(args []string) (limit int, unlimited bool) {
 			raw = args[i+1]
 		case strings.HasPrefix(a, "--limit="):
 			raw = strings.TrimPrefix(a, "--limit=")
+		case strings.HasPrefix(a, "-n") && a != "-n":
+			// pflag's attached-short-flag form, e.g. "-n5" (no space) —
+			// bd itself honors this; without this case the merge-truncation
+			// heuristic falls through to bdListDefaultLimit instead of the
+			// requested value (gcy-ovdk). An over-fetch, not data loss: each
+			// store's own bd subprocess still receives bdArgs unmodified and
+			// honors the real limit.
+			raw = strings.TrimPrefix(a, "-n")
 		default:
 			continue
 		}
@@ -176,8 +197,16 @@ func doBdListFanOut(cfg *config.City, cityPath string, bdArgs []string, primary 
 			}
 			continue
 		}
-		out, err := run(bdArgs, target.ScopeRoot, env)
+		out, err := run(bdArgs, target.ScopeRoot, env, stderr)
 		if err != nil {
+			if errors.Is(err, errBdListFanOutSilentFallback) {
+				if fatal {
+					fmt.Fprintln(stderr, bdSilentFallbackUserMessage) //nolint:errcheck // best-effort stderr
+					return bdSilentFallbackExitCode
+				}
+				fmt.Fprintf(stderr, "%s (skipping %s store's results)\n", bdSilentFallbackUserMessage, scopeLabel(target)) //nolint:errcheck // best-effort stderr
+				continue
+			}
 			if fatal {
 				fmt.Fprintf(stderr, "gc bd: %v\n", err) //nolint:errcheck // best-effort stderr
 				return 1
@@ -214,8 +243,14 @@ func doBdListFanOut(cfg *config.City, cityPath string, bdArgs []string, primary 
 
 // runBdListFanOut is the production bdListFanOutRunner: a real bd subprocess
 // against one store, matching doBd's own single-target exec.Command setup
-// (bd resolved from PATH, cmd.Dir/cmd.Env pinned to the target store).
-func runBdListFanOut(args []string, dir string, env []string) (string, error) {
+// (bd resolved from PATH, cmd.Dir/cmd.Env pinned to the target store) —
+// including the three things doBd's tail does that a bare cmd.Output() call
+// skips: teeing stderr live instead of discarding it, scanning it for bd's
+// silent fallback-to-on-disk marker (bdOutputIndicatesSilentFallback) so an
+// exit-0 "success" with an unreachable managed Dolt server surfaces as a
+// hard error via errBdListFanOutSilentFallback instead of silently merging
+// possibly-stale data, and tracing the call via beads.TraceBDCall.
+func runBdListFanOut(args []string, dir string, env []string, stderr io.Writer) (string, error) {
 	bdPath, err := exec.LookPath("bd")
 	if err != nil {
 		return "", fmt.Errorf("bd not found in PATH")
@@ -223,9 +258,29 @@ func runBdListFanOut(args []string, dir string, env []string) (string, error) {
 	cmd := exec.Command(bdPath, args...)
 	cmd.Dir = dir
 	cmd.Env = workQueryEnvForDir(env, dir)
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	stderrScan := &headLimitedWriter{limit: bdStderrScanLimit}
+	cmd.Stderr = io.MultiWriter(stderr, stderrScan)
+
+	traceStart := time.Now()
+	runErr := cmd.Run()
+	traceExit := 0
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			traceExit = exitErr.ExitCode()
+		} else {
+			traceExit = -1
+		}
 	}
-	return string(out), nil
+	beads.TraceBDCall("go:gc-bd-list-fanout", dir, args, traceStart, traceExit, runErr)
+
+	if runErr != nil {
+		return "", runErr
+	}
+	if bdOutputIndicatesSilentFallback(stderrScan.String()) {
+		return "", errBdListFanOutSilentFallback
+	}
+	return stdout.String(), nil
 }
