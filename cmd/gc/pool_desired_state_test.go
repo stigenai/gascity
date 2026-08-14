@@ -1753,6 +1753,167 @@ func TestCanonicalSingletonAliasHeldTemplates_ExcludesFailedCreateHolder(t *test
 	}
 }
 
+// TestComputePoolDesiredStates_IdleManualSingletonHolderIsCountedNotDuplicated
+// covers the gcy-chr round-2 gap the mayor identified 2026-08-14 05:58Z: a
+// manual-origin session that already occupies a min=1 canonical singleton's
+// alias but has NO assigned work never reaches the resume tier (which only
+// fires for sessions with actual in-progress work, see the loop above) and is
+// explicitly excluded from the general reuse scan (reusablePoolSessionInfo).
+// Before this fix such a session was invisible to usage.agentCount: nothing
+// ever generated a SessionRequest for it, so it could never reach
+// realizePoolDesiredSessions's item loop to be recognized and stamped
+// pool_managed for the Tier-3 claim gate (poolDemandOriginGateScript) — the
+// chicken-and-egg gap blocking an always-warm singleton's very first routed
+// claim. canonicalSingletonAliasHeldTemplates alone only prevents a duplicate
+// spawn; it does not make the holder countable or reachable for stamping.
+func TestComputePoolDesiredStates_IdleManualSingletonHolderIsCountedNotDuplicated(t *testing.T) {
+	cfg := &config.City{
+		Agents: []config.Agent{poolAgent("triage", "gascity", intPtr(1), 1)},
+	}
+	manual := beads.Bead{
+		ID:     "sess-manual-triage",
+		Status: "open",
+		Type:   sessionBeadType,
+		Metadata: map[string]string{
+			"session_name":   "triage-manual",
+			"template":       "gascity/triage",
+			"alias":          "gascity/triage",
+			"session_origin": "manual",
+			"state":          "active",
+		},
+	}
+	sessions := sessionInfosFromBeads([]beads.Bead{manual})
+
+	result := ComputePoolDesiredStates(cfg, nil, sessions, nil)
+
+	var got *PoolDesiredState
+	for i := range result {
+		if result[i].Template == "gascity/triage" {
+			got = &result[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("no desired state for gascity/triage; result=%+v", result)
+	}
+	if len(got.Requests) != 1 {
+		t.Fatalf("gascity/triage requests = %d, want 1 (manual holder counted once, no duplicate spawn); got=%+v", len(got.Requests), got.Requests)
+	}
+	if got.Requests[0].SessionBeadID != manual.ID {
+		t.Fatalf("request SessionBeadID = %q, want %q (must adopt the existing manual holder, not plan a fresh create)", got.Requests[0].SessionBeadID, manual.ID)
+	}
+}
+
+// TestComputePoolDesiredStates_ManualSingletonHolderWithAssignedWorkNotDoubleCounted
+// proves the new floor-hold tier defers to a genuine resume-tier request when
+// the same manual session already has real in-progress work driving one: the
+// floor-hold scan must not add a second, work-less request for a session
+// already represented with its real WorkBeadID, which would risk the wrong
+// one winning cap admission or gc-metadata dedup.
+func TestComputePoolDesiredStates_ManualSingletonHolderWithAssignedWorkNotDoubleCounted(t *testing.T) {
+	cfg := &config.City{
+		Agents: []config.Agent{poolAgent("triage", "gascity", intPtr(1), 1)},
+	}
+	manual := beads.Bead{
+		ID:     "sess-manual-triage",
+		Status: "open",
+		Type:   sessionBeadType,
+		Metadata: map[string]string{
+			"session_name":   "triage-manual",
+			"template":       "gascity/triage",
+			"alias":          "gascity/triage",
+			"session_origin": "manual",
+			"state":          "active",
+		},
+	}
+	sessions := sessionInfosFromBeads([]beads.Bead{manual})
+	work := []beads.Bead{
+		workBead("w1", "gascity/triage", "sess-manual-triage", "in_progress", 5),
+	}
+
+	result := ComputePoolDesiredStates(cfg, work, sessions, nil)
+
+	var got *PoolDesiredState
+	for i := range result {
+		if result[i].Template == "gascity/triage" {
+			got = &result[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("no desired state for gascity/triage; result=%+v", result)
+	}
+	if len(got.Requests) != 1 {
+		t.Fatalf("gascity/triage requests = %d, want 1 (assigned-work resume request only, no duplicate floor-hold request); got=%+v", len(got.Requests), got.Requests)
+	}
+	if got.Requests[0].Tier != "resume" {
+		t.Fatalf("request tier = %q, want %q (real assigned work must win over the floor-hold synthetic tier)", got.Requests[0].Tier, "resume")
+	}
+	if got.Requests[0].WorkBeadID != "w1" {
+		t.Fatalf("request WorkBeadID = %q, want %q", got.Requests[0].WorkBeadID, "w1")
+	}
+}
+
+// TestComputePoolDesiredStates_ManualFloorHoldOrderingIsDeterministic is the
+// regression guard for a MEDIUM finding in PR #92 review:
+// canonicalSingletonManualAliasHolders returns a map, and floor-hold requests
+// used to be appended in that map's randomized iteration order. Every
+// floor-hold request ties under the cap-admission sort (same tier,
+// BeadPriority 0), so insertion order alone decided which template won a
+// shared cap when more than one singleton held its alias -- flapping
+// randomly tick to tick (reproduced 261/39 over 300 runs in review). With two
+// templates competing for a workspace cap of 1, the sorted-first template
+// must win every time, not whichever the map handed out first.
+func TestComputePoolDesiredStates_ManualFloorHoldOrderingIsDeterministic(t *testing.T) {
+	workspaceMax := 1
+	cfg := &config.City{
+		Workspace: config.Workspace{MaxActiveSessions: &workspaceMax},
+		Agents: []config.Agent{
+			poolAgent("triage", "z-rig", intPtr(1), 1),
+			poolAgent("triage", "a-rig", intPtr(1), 1),
+		},
+	}
+	sessions := sessionInfosFromBeads([]beads.Bead{
+		{
+			ID:     "sess-z",
+			Status: "open",
+			Type:   sessionBeadType,
+			Metadata: map[string]string{
+				"session_name":   "z-manual",
+				"template":       "z-rig/triage",
+				"alias":          "z-rig/triage",
+				"session_origin": "manual",
+				"state":          "active",
+			},
+		},
+		{
+			ID:     "sess-a",
+			Status: "open",
+			Type:   sessionBeadType,
+			Metadata: map[string]string{
+				"session_name":   "a-manual",
+				"template":       "a-rig/triage",
+				"alias":          "a-rig/triage",
+				"session_origin": "manual",
+				"state":          "active",
+			},
+		},
+	})
+
+	result := ComputePoolDesiredStates(cfg, nil, sessions, nil)
+
+	var templatesWithRequests []string
+	for _, ds := range result {
+		if len(ds.Requests) > 0 {
+			templatesWithRequests = append(templatesWithRequests, ds.Template)
+		}
+	}
+	if len(templatesWithRequests) != 1 {
+		t.Fatalf("templates with an accepted request = %v, want exactly 1 under workspace_max=1", templatesWithRequests)
+	}
+	if templatesWithRequests[0] != "a-rig/triage" {
+		t.Fatalf("winning template = %q, want %q (sorted-first must win deterministically, not map-iteration order)", templatesWithRequests[0], "a-rig/triage")
+	}
+}
+
 // Regression (gcy-jkf0): an open bead admitted only by the open-routed
 // orphan-release pass carries no readiness verdict. When its orphaned
 // assignee still resolves to a not-yet-closed session bead — a real,

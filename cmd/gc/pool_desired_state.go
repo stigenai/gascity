@@ -249,6 +249,53 @@ func computePoolDesiredStates(
 		}
 	}
 
+	// Floor-hold tier: a canonical singleton's alias may already be held by a
+	// live manual-origin session with no assigned work (e.g. an always-warm
+	// min=1 triage singleton before its first routed claim). Neither the
+	// resume tier above (requires assigned work) nor the general reuse scan
+	// (reusablePoolSessionInfo excludes manual origin, permanently) ever
+	// represents such a session, so without this it stays invisible to
+	// usage.agentCount and never reaches realizePoolDesiredSessions to be
+	// recognized and stamped pool_managed for the Tier-3 claim gate. Skip any
+	// holder the resume loop above already represented with its real work
+	// bead — that request must win, not be shadowed by this work-less one.
+	resumedSessionIDs := make(map[string]struct{}, len(resumeRequests))
+	for _, req := range resumeRequests {
+		if req.SessionBeadID != "" {
+			resumedSessionIDs[req.SessionBeadID] = struct{}{}
+		}
+	}
+	manualAliasHolders := canonicalSingletonManualAliasHolders(cfg, sessionInfos)
+	manualAliasHolderTemplates := make([]string, 0, len(manualAliasHolders))
+	for template := range manualAliasHolders {
+		manualAliasHolderTemplates = append(manualAliasHolderTemplates, template)
+	}
+	// Deterministic order: map iteration is randomized, and every floor-hold
+	// request ties under the sort comparators below (same tier, BeadPriority
+	// 0), so insertion order decides which template wins a shared cap
+	// (workspace/rig max) when more than one singleton holds its alias this
+	// tick. Without this, cap admission flaps randomly tick to tick (review
+	// finding on PR #92, gcy-chr — reproduced 261/39 over 300 runs).
+	// poolInFlightNewRequests sorts its own session scan for the same reason.
+	sort.Strings(manualAliasHolderTemplates)
+	for _, template := range manualAliasHolderTemplates {
+		holder := manualAliasHolders[template]
+		if _, already := resumedSessionIDs[holder.ID]; already {
+			continue
+		}
+		resumeRequests = append(resumeRequests, SessionRequest{
+			Template:      template,
+			Tier:          floorHoldTier,
+			SessionBeadID: holder.ID,
+		})
+		if trace != nil {
+			trace.RecordDecision(TraceSitePoolManualFloorHold, TraceReasonManualFloorHold, TraceOutcomeScheduled, template, "", traceRecordPayload{
+				"tier":    floorHoldTier,
+				"session": holder.ID,
+			})
+		}
+	}
+
 	limits := newNestedCapLimits(cfg)
 	usage := acceptedNestedCapUsage(limits, resumeRequests)
 	allRequests := append([]SessionRequest(nil), resumeRequests...)
@@ -376,6 +423,50 @@ func canonicalSingletonAliasHeldTemplates(cfg *config.City, sessionInfos []sessi
 			// match instead of Alias.
 			if isNamedSessionInfo(sb) && strings.TrimSpace(sb.Template) == template {
 				held[template] = struct{}{}
+				break
+			}
+		}
+	}
+	return held
+}
+
+// canonicalSingletonManualAliasHolders returns, for each canonical-singleton
+// agent template, the live MANUAL-origin session (if any) currently holding
+// its configured alias. Unlike canonicalSingletonAliasHeldTemplates (which
+// excludes pool-managed holders because an ordinary pool-managed session is
+// already counted via the general reuse scan, reusablePoolSessionInfo), this
+// scan does NOT exclude pool-managed: a manual session's session_origin is
+// never reclassified even after it is stamped pool_managed (gcy-chr's Tier-3
+// carve-out is deliberately origin-preserving), so reusablePoolSessionInfo
+// permanently excludes it from that general reuse scan regardless of
+// pool_managed. Without representing it here on every tick, it would drop out
+// of desired-state accounting the moment it is first stamped, and the
+// min-fill loop would then plan a genuine duplicate create the next tick
+// since the reuse scan still cannot see it. See gcy-chr (mayor decision
+// 2026-08-14 05:58Z: "stamp where the reconciler COUNTS the session").
+func canonicalSingletonManualAliasHolders(cfg *config.City, sessionInfos []sessionpkg.Info) map[string]sessionpkg.Info {
+	held := make(map[string]sessionpkg.Info)
+	if cfg == nil {
+		return held
+	}
+	for i := range cfg.Agents {
+		agent := &cfg.Agents[i]
+		if agent.Suspended || !agent.UsesCanonicalSingletonPoolIdentity() {
+			continue
+		}
+		template := agent.QualifiedName()
+		for _, sb := range sessionInfos {
+			if sb.Closed || isDrainedSessionInfo(sb) || isFailedCreateSessionInfo(sb) {
+				continue
+			}
+			if strings.TrimSpace(sb.MetadataState) == string(sessionpkg.StateDraining) || sb.MetadataState == "asleep" {
+				continue
+			}
+			if isNamedSessionInfo(sb) || !isManualSessionInfoForAgent(sb, agent) {
+				continue
+			}
+			if strings.TrimSpace(sb.Alias) == template {
+				held[template] = sb
 				break
 			}
 		}
@@ -796,8 +887,15 @@ func isKnownPoolTemplate(assignee string, cfg *config.City) bool {
 	return false
 }
 
+// floorHoldTier marks a synthetic request representing a live manual-origin
+// session that already occupies a canonical singleton's alias with no
+// driving work bead (see canonicalSingletonManualAliasHolders). It is
+// resume-like: the session already exists regardless of whether this request
+// wins cap admission, so it must sort and count the same way "resume" does.
+const floorHoldTier = "manual-floor-hold"
+
 func isResumeLikeTier(tier string) bool {
-	return tier == "resume" || tier == "wake-known-identity"
+	return tier == "resume" || tier == "wake-known-identity" || tier == floorHoldTier
 }
 
 // isConfiguredNamedSessionIdentity reports whether assignee names a
