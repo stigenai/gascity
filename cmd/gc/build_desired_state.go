@@ -1485,6 +1485,21 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 	groups := make(map[string]*scaleStoreGroup)
 	var errs []error
 	var partialTemplates map[string]bool
+	// templateHomeStoreKey records each template's OWN scope — "rig:<name>"
+	// for a rig-scoped agent, "city" for a city-scoped one — as opposed to
+	// every group its template happens to appear in. A rig-scoped pool's
+	// template is deliberately probed against the city store too (cross-store
+	// routed delivery, vp-kvp), which puts it in the "city" group's
+	// `templates` set alongside genuinely city-scoped templates. That
+	// membership is correct for matching an explicit gc.routed_to, but wrong
+	// for route_default fallback selection (see
+	// controllerDemandRouteDefaultTemplate), so the fallback check needs a
+	// template's real home key, not just "which groups is it in". A
+	// template's home is whichever non-"city" storeKey it was probed under,
+	// if any — the cross-store probe only ever ADDS a "city" entry alongside
+	// an already-present rig entry, never the reverse, so "prefer the first
+	// non-city key seen" reliably recovers the owning scope.
+	templateHomeStoreKey := make(map[string]string, len(targets))
 	for _, target := range targets {
 		template := strings.TrimSpace(target.template)
 		if template == "" {
@@ -1505,6 +1520,9 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 		key := strings.TrimSpace(target.storeKey)
 		if key == "" {
 			key = fmt.Sprintf("%p", target.store)
+		}
+		if existing, ok := templateHomeStoreKey[template]; !ok || (existing == "city" && key != "city") {
+			templateHomeStoreKey[template] = key
 		}
 		group := groups[key]
 		if group == nil {
@@ -1538,7 +1556,7 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 				ready = nil
 			}
 		}
-		defaultTemplate := controllerDemandRouteDefaultTemplate(cfg, group.templates)
+		defaultTemplate := controllerDemandRouteDefaultTemplate(cfg, key, group.templates, templateHomeStoreKey)
 		for _, b := range ready {
 			if strings.TrimSpace(b.Assignee) != "" {
 				continue
@@ -1757,12 +1775,23 @@ func controllerDemandRouteTarget(cfg *config.City, b beads.Bead, templates map[s
 
 // controllerDemandRouteDefaultTemplate returns the store group's designated
 // fallback demand target — the qualified name of the one agent among
-// templates whose config sets route_default = true — or "" if none is
-// configured. config.ValidateAgents enforces at most one route_default agent
-// per scope (keyed by Agent.Dir) at config-load time; if that is ever
-// bypassed, the first match in cfg.Agents order wins rather than
-// double-counting a bead across two templates.
-func controllerDemandRouteDefaultTemplate(cfg *config.City, templates map[string]struct{}) string {
+// templates whose config sets route_default = true AND whose own scope
+// matches this group — or "" if none is configured. Agent.RouteDefault's
+// contract is per-scope: "rig store if rig-scoped, city store if
+// city-scoped". Checking templates membership alone is not enough to honor
+// that: a rig-scoped agent's template is deliberately also a member of the
+// "city" group (cross-store routed delivery, vp-kvp), so without the
+// groupStoreKey/templateHomeStoreKey check below, a rig-scoped route_default
+// agent would absorb every unrouted CITY-store bead city-wide instead of
+// just its own rig's unrouted work — see gcy-nwlt. templateHomeStoreKey maps
+// each candidate's qualified template to its real home scope (see the
+// builder in defaultScaleCheckCountsAndDemand); the fallback only applies
+// when that home matches the group actually being evaluated.
+// config.ValidateAgents enforces at most one route_default agent per scope
+// (keyed by Agent.Dir) at config-load time; if that is ever bypassed, the
+// first match in cfg.Agents order wins rather than double-counting a bead
+// across two templates.
+func controllerDemandRouteDefaultTemplate(cfg *config.City, groupStoreKey string, templates map[string]struct{}, templateHomeStoreKey map[string]string) string {
 	if cfg == nil {
 		return ""
 	}
@@ -1773,6 +1802,9 @@ func controllerDemandRouteDefaultTemplate(cfg *config.City, templates map[string
 		}
 		qualified := agent.QualifiedName()
 		if _, ok := templates[qualified]; !ok {
+			continue
+		}
+		if templateHomeStoreKey[qualified] != groupStoreKey {
 			continue
 		}
 		return qualified
