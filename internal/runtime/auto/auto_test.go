@@ -437,6 +437,104 @@ func TestIsRunningFallsThrough(t *testing.T) {
 	}
 }
 
+// TestIsRunningChecked_ConfirmedTrueShortCircuits covers gcy-dyl: mirrors
+// IsRunning's own early return without needing to consult the other backend.
+func TestIsRunningChecked_ConfirmedTrueShortCircuits(t *testing.T) {
+	defaultSP := runtime.NewFake()
+	acpSP := runtime.NewFake()
+	p := New(defaultSP, acpSP)
+
+	_ = defaultSP.Start(context.Background(), "agent", runtime.Config{})
+	running, err := p.IsRunningChecked("agent")
+	if err != nil || !running {
+		t.Fatalf("IsRunningChecked(agent) = (%v,%v), want confirmed running", running, err)
+	}
+}
+
+// TestIsRunningChecked_FallsThroughOnConfirmedFalse covers gcy-dyl: the
+// happy-path fall-through TestIsRunningFallsThrough already proves for the
+// bare bool must still work, cleanly (no error), through the checked path.
+func TestIsRunningChecked_FallsThroughOnConfirmedFalse(t *testing.T) {
+	defaultSP := runtime.NewFake()
+	acpSP := runtime.NewFake()
+	p := New(defaultSP, acpSP)
+
+	_ = defaultSP.Start(context.Background(), "stale-agent", runtime.Config{})
+	p.RouteACP("stale-agent")
+
+	running, err := p.IsRunningChecked("stale-agent")
+	if err != nil || !running {
+		t.Fatalf("IsRunningChecked(stale-agent) = (%v,%v), want fall through to default and confirm running", running, err)
+	}
+}
+
+// TestIsRunningChecked_InconclusivePrimaryFallsThroughToConfirmedSecondary
+// covers gcy-dyl: an inconclusive routed probe must not be treated as
+// confirmed-not-running — it must still fall through to the other backend,
+// same as a confirmed-false would, and recover a confirmed answer if the
+// other backend has one.
+func TestIsRunningChecked_InconclusivePrimaryFallsThroughToConfirmedSecondary(t *testing.T) {
+	defaultSP := runtime.NewFake()
+	acpSP := runtime.NewFake()
+	p := New(defaultSP, acpSP)
+
+	defaultSP.IsRunningErrors["agent"] = errors.New("simulated timeout")
+	_ = acpSP.Start(context.Background(), "agent", runtime.Config{})
+
+	running, err := p.IsRunningChecked("agent")
+	if err != nil || !running {
+		t.Fatalf("IsRunningChecked(agent) = (%v,%v), want fall through past the inconclusive primary to the confirmed-running secondary", running, err)
+	}
+}
+
+// TestIsRunningChecked_BothInconclusivePropagatesError covers gcy-dyl: when
+// neither backend can confirm liveness, the final result must stay
+// inconclusive rather than silently collapsing to a confirmed negative.
+func TestIsRunningChecked_BothInconclusivePropagatesError(t *testing.T) {
+	defaultSP := runtime.NewFake()
+	acpSP := runtime.NewFake()
+	p := New(defaultSP, acpSP)
+
+	defaultSP.IsRunningErrors["agent"] = errors.New("simulated default timeout")
+	acpSP.IsRunningErrors["agent"] = errors.New("simulated acp timeout")
+
+	running, err := p.IsRunningChecked("agent")
+	if err == nil {
+		t.Fatal("IsRunningChecked(agent) swallowed both backends' inconclusive probes")
+	}
+	if running {
+		t.Fatal("IsRunningChecked(agent) reported running alongside a non-nil (inconclusive) error")
+	}
+}
+
+// TestIsAttachedChecked_DelegatesToRoutedBackend covers gcy-dyl for
+// IsAttachedChecked (simple single-route delegate, no fall-through).
+func TestIsAttachedChecked_DelegatesToRoutedBackend(t *testing.T) {
+	defaultSP := runtime.NewFake()
+	acpSP := runtime.NewFake()
+	p := New(defaultSP, acpSP)
+	p.RouteACP("agent")
+
+	acpSP.IsAttachedErrors["agent"] = errors.New("simulated timeout")
+	if _, err := p.IsAttachedChecked("agent"); err == nil {
+		t.Fatal("IsAttachedChecked(agent) should route to ACP and surface its inconclusive probe")
+	}
+}
+
+// TestProcessAliveChecked_DelegatesToRoutedBackend covers gcy-dyl for
+// ProcessAliveChecked (simple single-route delegate, no fall-through).
+func TestProcessAliveChecked_DelegatesToRoutedBackend(t *testing.T) {
+	defaultSP := runtime.NewFake()
+	acpSP := runtime.NewFake()
+	p := New(defaultSP, acpSP)
+	p.RouteACP("agent")
+
+	acpSP.ProcessAliveErrors["agent"] = errors.New("simulated timeout")
+	if _, err := p.ProcessAliveChecked("agent", []string{"claude"}); err == nil {
+		t.Fatal("ProcessAliveChecked(agent) should route to ACP and surface its inconclusive probe")
+	}
+}
+
 func TestIsDeadRuntimeSessionChecksUnroutedFallbackChecker(t *testing.T) {
 	defaultSP := runtime.NewFake()
 	acpSP := newDeadRuntimeCheckProvider()

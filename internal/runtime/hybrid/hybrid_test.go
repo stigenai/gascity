@@ -43,6 +43,66 @@ func TestProvider_ResolvesFencedStopPerRoute(t *testing.T) {
 	}
 }
 
+// TestIsRunningChecked_RoutesAndPropagatesInconclusive covers gcy-dyl: a
+// hybrid-wrapped k8s session must keep IsRunningChecked's
+// confirmed-vs-inconclusive distinction instead of this router silently
+// collapsing it back to a bare bool. Both the correct-backend routing and
+// the error propagation are load-bearing — a wrong backend or a swallowed
+// error would both pass a weaker test.
+func TestIsRunningChecked_RoutesAndPropagatesInconclusive(t *testing.T) {
+	local := runtime.NewFake()
+	remote := runtime.NewFake()
+	h := New(local, remote, isRemote)
+
+	if running, err := h.IsRunningChecked("local-agent"); running || err != nil {
+		t.Fatalf("IsRunningChecked(local-agent) = (%v,%v), want confirmed-not-running", running, err)
+	}
+	local.IsRunningErrors["local-agent"] = errors.New("simulated local timeout")
+	if _, err := h.IsRunningChecked("local-agent"); err == nil {
+		t.Fatal("IsRunningChecked(local-agent) swallowed local's inconclusive probe")
+	}
+	// The remote backend's own error must not leak onto the local route.
+	remote.IsRunningErrors["remote-agent-1"] = errors.New("simulated remote timeout")
+	if _, err := h.IsRunningChecked("local-agent"); err == nil {
+		t.Fatal("IsRunningChecked(local-agent) should still be inconclusive from local's own error, not masked by remote's")
+	}
+
+	if _, err := h.IsRunningChecked("remote-agent-1"); err == nil {
+		t.Fatal("IsRunningChecked(remote-agent-1) should route to remote and surface remote's inconclusive probe")
+	}
+}
+
+// TestIsAttachedChecked_RoutesPerBackend covers gcy-dyl for IsAttachedChecked.
+func TestIsAttachedChecked_RoutesPerBackend(t *testing.T) {
+	local := runtime.NewFake()
+	remote := runtime.NewFake()
+	h := New(local, remote, isRemote)
+
+	remote.IsAttachedErrors["remote-agent-1"] = errors.New("simulated remote timeout")
+	if _, err := h.IsAttachedChecked("remote-agent-1"); err == nil {
+		t.Fatal("IsAttachedChecked(remote-agent-1) should route to remote and surface its inconclusive probe")
+	}
+	if _, err := h.IsAttachedChecked("local-agent"); err != nil {
+		t.Fatalf("IsAttachedChecked(local-agent) = err %v, want nil (routes to local, unaffected by remote's error)", err)
+	}
+}
+
+// TestProcessAliveChecked_RoutesPerBackend covers gcy-dyl for
+// ProcessAliveChecked.
+func TestProcessAliveChecked_RoutesPerBackend(t *testing.T) {
+	local := runtime.NewFake()
+	remote := runtime.NewFake()
+	h := New(local, remote, isRemote)
+
+	remote.ProcessAliveErrors["remote-agent-1"] = errors.New("simulated remote timeout")
+	if _, err := h.ProcessAliveChecked("remote-agent-1", []string{"claude"}); err == nil {
+		t.Fatal("ProcessAliveChecked(remote-agent-1) should route to remote and surface its inconclusive probe")
+	}
+	if _, err := h.ProcessAliveChecked("local-agent", []string{"claude"}); err != nil {
+		t.Fatalf("ProcessAliveChecked(local-agent) = err %v, want nil (routes to local, unaffected by remote's error)", err)
+	}
+}
+
 func (p *freshListProvider) ListRunningFresh(prefix string) ([]string, error) {
 	p.freshCalls++
 	var names []string

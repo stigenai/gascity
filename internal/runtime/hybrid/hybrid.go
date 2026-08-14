@@ -29,6 +29,9 @@ var (
 	_ runtime.FreshRunningSessionLister       = (*Provider)(nil)
 	_ runtime.InstanceTokenFencedStopProvider = (*Provider)(nil)
 	_ runtime.InstanceTokenFencedStopResolver = (*Provider)(nil)
+	_ runtime.ProcessAliveChecker             = (*Provider)(nil)
+	_ runtime.RunningChecker                  = (*Provider)(nil)
+	_ runtime.AttachedChecker                 = (*Provider)(nil)
 )
 
 // New creates a hybrid provider. isRemote returns true for sessions
@@ -109,9 +112,23 @@ func (p *Provider) IsDeadRuntimeSession(name string) (bool, error) {
 	return checker.IsDeadRuntimeSession(name)
 }
 
+// IsRunningChecked delegates to the routed backend's checked capability when
+// available, mirroring IsRunning's routing so a hybrid-wrapped k8s session
+// keeps the confirmed-vs-inconclusive distinction PR #69 added instead of
+// silently losing it behind this router (gcy-dyl).
+func (p *Provider) IsRunningChecked(name string) (bool, error) {
+	return runtime.IsRunningChecked(p.route(name), name)
+}
+
 // IsAttached delegates to the routed backend.
 func (p *Provider) IsAttached(name string) bool {
 	return p.route(name).IsAttached(name)
+}
+
+// IsAttachedChecked delegates to the routed backend's checked capability
+// when available, mirroring IsAttached's routing (gcy-dyl).
+func (p *Provider) IsAttachedChecked(name string) (bool, error) {
+	return runtime.IsAttachedChecked(p.route(name), name)
 }
 
 // Attach delegates to the routed backend.
@@ -122,6 +139,12 @@ func (p *Provider) Attach(name string) error {
 // ProcessAlive delegates to the routed backend.
 func (p *Provider) ProcessAlive(name string, processNames []string) bool {
 	return p.route(name).ProcessAlive(name, processNames)
+}
+
+// ProcessAliveChecked delegates to the routed backend's checked capability
+// when available, mirroring ProcessAlive's routing (gcy-dyl).
+func (p *Provider) ProcessAliveChecked(name string, processNames []string) (bool, error) {
+	return runtime.ProcessAliveChecked(p.route(name), name, processNames)
 }
 
 // ObserveLiveness delegates to the routed backend through runtime.ObserveLiveness

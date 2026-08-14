@@ -34,6 +34,9 @@ var (
 	_ runtime.RelaunchProvider              = (*Provider)(nil)
 	_ runtime.LivenessObserver              = (*Provider)(nil)
 	_ runtime.FreshRunningSessionLister     = (*Provider)(nil)
+	_ runtime.ProcessAliveChecker           = (*Provider)(nil)
+	_ runtime.RunningChecker                = (*Provider)(nil)
+	_ runtime.AttachedChecker               = (*Provider)(nil)
 )
 
 // New creates a composite provider. defaultSP handles sessions not
@@ -179,6 +182,27 @@ func (p *Provider) IsRunning(name string) bool {
 	return p.acpSP.IsRunning(name)
 }
 
+// IsRunningChecked mirrors IsRunning's routed-then-fall-through structure
+// using each backend's checked capability when available, so an auto-routed
+// k8s session keeps the confirmed-vs-inconclusive distinction PR #69 added
+// instead of silently losing it behind this router (gcy-dyl). A confirmed
+// "running" from the routed backend short-circuits, matching IsRunning's own
+// early return; anything else (confirmed not-running or inconclusive) falls
+// through to the other backend, whose own (bool, error) is returned as-is —
+// same fall-through target IsRunning already checks, now error-aware.
+func (p *Provider) IsRunningChecked(name string) (bool, error) {
+	if running, err := runtime.IsRunningChecked(p.route(name), name); err == nil && running {
+		return true, nil
+	}
+	p.mu.RLock()
+	isACP := p.routes[name]
+	p.mu.RUnlock()
+	if isACP {
+		return runtime.IsRunningChecked(p.defaultSP, name)
+	}
+	return runtime.IsRunningChecked(p.acpSP, name)
+}
+
 // IsDeadRuntimeSession checks both backends for a positive dead-artifact
 // report because ListRunning is also merged across both backends.
 func (p *Provider) IsDeadRuntimeSession(name string) (bool, error) {
@@ -208,6 +232,12 @@ func (p *Provider) IsAttached(name string) bool {
 	return p.route(name).IsAttached(name)
 }
 
+// IsAttachedChecked delegates to the routed backend's checked capability
+// when available, mirroring IsAttached's routing (gcy-dyl).
+func (p *Provider) IsAttachedChecked(name string) (bool, error) {
+	return runtime.IsAttachedChecked(p.route(name), name)
+}
+
 // Attach delegates to the routed backend. ACP sessions return an error.
 func (p *Provider) Attach(name string) error {
 	p.mu.RLock()
@@ -222,6 +252,12 @@ func (p *Provider) Attach(name string) error {
 // ProcessAlive delegates to the routed backend.
 func (p *Provider) ProcessAlive(name string, processNames []string) bool {
 	return p.route(name).ProcessAlive(name, processNames)
+}
+
+// ProcessAliveChecked delegates to the routed backend's checked capability
+// when available, mirroring ProcessAlive's routing (gcy-dyl).
+func (p *Provider) ProcessAliveChecked(name string, processNames []string) (bool, error) {
+	return runtime.ProcessAliveChecked(p.route(name), name, processNames)
 }
 
 // ObserveLiveness delegates to the routed backend through runtime.ObserveLiveness
