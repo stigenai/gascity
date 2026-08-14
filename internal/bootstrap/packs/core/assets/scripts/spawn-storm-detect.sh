@@ -33,7 +33,18 @@ fi
 
 # Step 1: Find beads that were recently reset to pool.
 # Look for open beads that have been updated (recovery resets them to open + unassigned).
-OPEN_BEADS=$(gc bd list --status=open --assignee="" --json --limit=0 2>/dev/null) || exit 0
+# Pinned to this order's own rig (GC_RIG, set by the controller for a
+# rig-scoped exec order) rather than a bare `gc bd list`: since gascity#81,
+# an unscoped list federates across every configured rig, which would let
+# each rig's independent ledger (LEDGER above) see the whole fleet's resets
+# instead of just its own — the same underlying reset event would then get
+# counted, and threshold-cross, redundantly in every rig's ledger, producing
+# duplicated/premature SPAWN_STORM escalation mail (gcy-5vm0).
+RIG_SCOPE=()
+if [ -n "${GC_RIG:-}" ]; then
+    RIG_SCOPE=(--rig="$GC_RIG")
+fi
+OPEN_BEADS=$(gc bd list --status=open --assignee="" --json --limit=0 "${RIG_SCOPE[@]}" 2>/dev/null) || exit 0
 if [ -z "$OPEN_BEADS" ] || [ "$OPEN_BEADS" = "[]" ]; then
     exit 0
 fi

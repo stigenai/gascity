@@ -215,6 +215,29 @@ func TestNotifyOnHumanGateCreationScriptContract(t *testing.T) {
 	}
 }
 
+// TestSpawnStormDetectScriptContract pins spawn-storm-detect.sh's rig-scope
+// pinning on its gc bd list query. This order defaults to rig scope (no
+// [order] scope field — spawn-storm-detect.toml), and its ledger is keyed
+// per rig (LEDGER, under GC_PACK_STATE_DIR, itself rig-scoped for this
+// order), so it depends on seeing only its own rig's open+unassigned beads.
+// Since gascity#81, an unscoped `gc bd list --json` federates across every
+// configured rig instead of naturally landing on the caller's own rig —
+// without this pin, every rig's independent order instance would see the
+// whole fleet's resets and could count, and threshold-cross, the same
+// underlying reset event redundantly in multiple ledgers, producing
+// duplicated/premature SPAWN_STORM escalation mail (gcy-5vm0).
+func TestSpawnStormDetectScriptContract(t *testing.T) {
+	data, err := fs.ReadFile(PackFS, "assets/scripts/spawn-storm-detect.sh")
+	if err != nil {
+		t.Fatalf("reading spawn-storm-detect.sh: %v", err)
+	}
+	body := string(data)
+
+	if !strings.Contains(body, `--rig="$GC_RIG"`) {
+		t.Error("spawn-storm-detect.sh must pin its gc bd list query to GC_RIG (this order's own rig) — an unscoped list federates across every configured rig since gascity#81, breaking this script's per-rig ledger isolation")
+	}
+}
+
 // assertCooldownExecOrder checks a cooldown-triggered exec order: it must
 // validate, run on a cooldown trigger with a parseable interval, dispatch via
 // exec (not a formula/pool), and point at a script embedded in the pack.
