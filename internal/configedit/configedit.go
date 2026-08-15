@@ -20,6 +20,7 @@ import (
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/fsys"
 	"github.com/gastownhall/gascity/internal/suspensionstate"
+	workdirutil "github.com/gastownhall/gascity/internal/workdir"
 	"github.com/gastownhall/gascity/internal/workspacesvc"
 )
 
@@ -100,7 +101,7 @@ func (e *Editor) Edit(fn func(cfg *config.City) error) error {
 		return err
 	}
 
-	if err := validateCityForEdit(cfg); err != nil {
+	if err := validateCityForEdit(filepath.Dir(e.tomlPath), cfg); err != nil {
 		return err
 	}
 
@@ -136,7 +137,7 @@ func (e *Editor) EditExpanded(fn func(raw, expanded *config.City) error) error {
 		return err
 	}
 
-	if err := validateCityForEdit(raw); err != nil {
+	if err := validateCityForEdit(filepath.Dir(e.tomlPath), raw); err != nil {
 		return err
 	}
 
@@ -156,8 +157,11 @@ func (e *Editor) Do(fn func() error) error {
 	return fn()
 }
 
-func validateCityForEdit(cfg *config.City) error {
+func validateCityForEdit(cityPath string, cfg *config.City) error {
 	if err := config.ValidateAgents(cfg.Agents); err != nil {
+		return fmt.Errorf("%w: agents: %w", ErrValidation, err)
+	}
+	if err := workdirutil.ValidateRouteDefaultScopes(cityPath, cfg.Agents, cfg.Rigs); err != nil {
 		return fmt.Errorf("%w: agents: %w", ErrValidation, err)
 	}
 	if err := config.ValidateRigs(cfg.Rigs, config.EffectiveHQPrefix(cfg)); err != nil {
@@ -1064,7 +1068,7 @@ func (e *Editor) UpdateAgent(name string, patch AgentUpdate) error {
 		if !stripAgentPatchUpdate(raw, agent.QualifiedName(), patch) {
 			return writeLocalDiscoveredAgentUpdate(e.fs, cityRoot, updated, patch)
 		}
-		if err := validateCityForEdit(raw); err != nil {
+		if err := validateCityForEdit(cityRoot, raw); err != nil {
 			return err
 		}
 		return e.commitLocalDiscoveredAgentUpdate(cityRoot, agent, func() error {
@@ -1076,7 +1080,7 @@ func (e *Editor) UpdateAgent(name string, patch AgentUpdate) error {
 	for i := range raw.Agents {
 		if config.AgentMatchesIdentity(&raw.Agents[i], name) {
 			applyAgentUpdate(&raw.Agents[i], patch)
-			if err := validateCityForEdit(raw); err != nil {
+			if err := validateCityForEdit(cityRoot, raw); err != nil {
 				return err
 			}
 			return e.write(raw)
@@ -1123,7 +1127,7 @@ func (e *Editor) DeleteAgent(name string) error {
 				return removeLocalDiscoveredAgentConfig(e.fs, cityRoot, agent)
 			}, nil)
 		}
-		if err := validateCityForEdit(raw); err != nil {
+		if err := validateCityForEdit(cityRoot, raw); err != nil {
 			return err
 		}
 		return e.commitLocalDiscoveredAgentUpdate(cityRoot, agent, func() error {
@@ -1135,7 +1139,7 @@ func (e *Editor) DeleteAgent(name string) error {
 	for i := range raw.Agents {
 		if config.AgentMatchesIdentity(&raw.Agents[i], name) {
 			raw.Agents = append(raw.Agents[:i], raw.Agents[i+1:]...)
-			if err := validateCityForEdit(raw); err != nil {
+			if err := validateCityForEdit(cityRoot, raw); err != nil {
 				return err
 			}
 			return e.write(raw)
@@ -1224,7 +1228,7 @@ func (e *Editor) DeleteRig(name string) error {
 	}
 	cfg.Agents = kept
 
-	if err := validateCityForEdit(cfg); err != nil {
+	if err := validateCityForEdit(filepath.Dir(e.tomlPath), cfg); err != nil {
 		return err
 	}
 

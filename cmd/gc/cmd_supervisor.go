@@ -33,6 +33,7 @@ import (
 	sessionpkg "github.com/gastownhall/gascity/internal/session"
 	"github.com/gastownhall/gascity/internal/supervisor"
 	"github.com/gastownhall/gascity/internal/telemetry"
+	workdirutil "github.com/gastownhall/gascity/internal/workdir"
 	"github.com/gastownhall/gascity/internal/workspacesvc"
 	"github.com/spf13/cobra"
 )
@@ -2594,6 +2595,11 @@ func prepareCityForSupervisor(cityPath, cityName string, cfg *config.City, stder
 	// Validate agents.
 	if err := runStep("validating_agents", func() error {
 		return config.ValidateAgents(cfg.Agents)
+	}); err != nil {
+		return fmt.Errorf("validate agents: %w", err)
+	}
+	if err := runStep("validating_route_default_scopes", func() error {
+		return workdirutil.ValidateRouteDefaultScopes(cityPath, cfg.Agents, cfg.Rigs)
 	}); err != nil {
 		return fmt.Errorf("validate agents: %w", err)
 	}

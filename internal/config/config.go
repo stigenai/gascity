@@ -3194,10 +3194,15 @@ type Agent struct {
 	// gc.run_target) match no configured template in that scope counts as
 	// demand for this template instead of being silently dropped. Without a
 	// route_default, such work is demand for nobody — no pool ever scales up
-	// to route it. At most one agent per scope may set this; ValidateAgents
-	// rejects a second. Only the FALLBACK-derived share of this template's
-	// demand is clamped to 1 desired session, regardless of how many
-	// unrouted beads are waiting: a route_default agent is a
+	// to route it. At most one agent per resolved runtime scope (its rig, or
+	// the city when unscoped) may set this: ValidateAgents rejects an exact
+	// Dir duplicate immediately, and workdir.ValidateRouteDefaultScopes —
+	// run once a city's rigs are known — rejects every other same-scope
+	// collision (e.g. a bare rig name and a path to that rig's root) by
+	// resolving each agent's actual scope the same way pool/controller
+	// demand routing does (gcy-qdky). Only the FALLBACK-derived share of
+	// this template's demand is clamped to 1 desired session, regardless
+	// of how many unrouted beads are waiting: a route_default agent is a
 	// singleton-shaped router for that queue, and one session drains it
 	// sequentially the same way an on_demand named session's pool demand is
 	// clamped for N queued routed tasks. Demand from beads explicitly routed

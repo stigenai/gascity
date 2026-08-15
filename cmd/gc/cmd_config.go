@@ -10,6 +10,7 @@ import (
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/formula"
 	"github.com/gastownhall/gascity/internal/fsys"
+	workdirutil "github.com/gastownhall/gascity/internal/workdir"
 	"github.com/gastownhall/gascity/internal/workspacesvc"
 	"github.com/spf13/cobra"
 )
@@ -121,6 +122,9 @@ func doConfigShow(validate, showProvenance, asJSON bool, stdout, stderr io.Write
 	// Run validation.
 	var validationErrors []string
 	if err := config.ValidateAgents(cfg.Agents); err != nil {
+		validationErrors = append(validationErrors, err.Error())
+	}
+	if err := workdirutil.ValidateRouteDefaultScopes(cityPath, cfg.Agents, cfg.Rigs); err != nil {
 		validationErrors = append(validationErrors, err.Error())
 	}
 	if err := config.ValidateRigs(cfg.Rigs, config.EffectiveHQPrefix(cfg)); err != nil {

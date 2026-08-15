@@ -1464,12 +1464,12 @@ func readyAssignedWorkAssignees(cfg *config.City, sessionBeads *sessionBeadSnaps
 // defaultScaleCheckTarget.homeStoreKey / storeKey namespace: "city", or
 // "rig:<name>". Every defaultScaleCheckTarget producer uses this so a
 // template's home is always computed the same way regardless of which
-// producer built the target (gcy-dhnu).
+// producer built the target (gcy-dhnu). It's a thin alias for
+// workdirutil.HomeStoreKey so config validation (workdirutil.
+// ValidateRouteDefaultScopes) can key its route_default conflict check on
+// the exact same scope namespace this runtime routing uses (gcy-qdky).
 func defaultScaleCheckHomeStoreKey(rigName string) string {
-	if rigName == "" {
-		return "city"
-	}
-	return "rig:" + rigName
+	return workdirutil.HomeStoreKey(rigName)
 }
 
 func defaultScaleCheckTargetForAgent(
