@@ -23,6 +23,9 @@ var (
 	_ runtime.RelaunchProvider                = (*seamBackedProvider)(nil)
 	_ runtime.FreshRunningSessionLister       = (*seamBackedProvider)(nil)
 	_ runtime.InstanceTokenFencedStopProvider = (*seamBackedProvider)(nil)
+	_ runtime.RunningChecker                  = (*seamBackedProvider)(nil)
+	_ runtime.AttachedChecker                 = (*seamBackedProvider)(nil)
+	_ runtime.ProcessAliveChecker             = (*seamBackedProvider)(nil)
 )
 
 // NewSeamBacked constructs a k8s provider served through the seams.
@@ -88,4 +91,24 @@ func (s *seamBackedProvider) RemoveMeta(name, key string) error {
 
 func (s *seamBackedProvider) Peek(name string, lines int) (string, error) {
 	return s.raw.Peek(name, lines)
+}
+
+// The generic seam adapter's IsRunning/IsAttached/ProcessAlive collapse any
+// Open/Observe error (including an inconclusive API timeout) into a
+// confirmed negative — exactly the collapse PR #69 (gcy-2sh/gcy-rfn) added
+// the checked variants to eliminate. Route them through the raw provider,
+// which already distinguishes a confirmed negative from an inconclusive
+// probe, so callers using runtime.IsRunningChecked/IsAttachedChecked/
+// ProcessAliveChecked for destructive remediation get that distinction
+// through the seam wrapper too (gcy-envb).
+func (s *seamBackedProvider) IsRunningChecked(name string) (bool, error) {
+	return s.raw.IsRunningChecked(name)
+}
+
+func (s *seamBackedProvider) IsAttachedChecked(name string) (bool, error) {
+	return s.raw.IsAttachedChecked(name)
+}
+
+func (s *seamBackedProvider) ProcessAliveChecked(name string, processNames []string) (bool, error) {
+	return s.raw.ProcessAliveChecked(name, processNames)
 }
