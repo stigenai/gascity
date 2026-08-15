@@ -795,6 +795,30 @@ func TestBeadPrefixForCityFallsBackToBeadPrefix(t *testing.T) {
 	}
 }
 
+// TestCrossRigErrorStatesRefusalAndRemedy reproduces gcy-2mp3: the cross-rig
+// guard's error text must read as a refusal (state that routing was blocked
+// and how to override), matching the wording cmd/gc's --dry-run preview
+// already uses at checkCrossRig — not a neutral progress/status line an
+// agent could mistake for a successful route.
+func TestCrossRigErrorStatesRefusalAndRemedy(t *testing.T) {
+	cfg := &config.City{
+		Rigs: []config.Rig{
+			{Name: "fe", Path: "/fe", Prefix: "fe"},
+		},
+	}
+	a := config.Agent{Name: "triage", Dir: "fe"}
+	err := CrossRigRouteError("be-42", a, cfg)
+	if err == nil {
+		t.Fatal("CrossRigRouteError = nil, want a cross-rig error for a mismatched prefix")
+	}
+	msg := err.Error()
+	for _, want := range []string{"blocked", "--force", "be-42", `"be"`, `"fe"`} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("CrossRigError.Error() = %q, want it to contain %q", msg, want)
+		}
+	}
+}
+
 func TestLooksLikeConfiguredBeadIDAcceptsHyphenatedPrefix(t *testing.T) {
 	cfg := &config.City{
 		Rigs: []config.Rig{
