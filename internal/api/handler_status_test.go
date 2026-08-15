@@ -713,6 +713,46 @@ func TestBuildStatusBodyCarriesDrainingSessionState(t *testing.T) {
 	}
 }
 
+// TestBuildStatusBodyReportsRunningForRealOnDemandSessionName reproduces
+// gcy-wy8j: on-demand sessions get a real runtime session name with a
+// per-spawn suffix (the session ID, e.g. "myrig--worker-st-99eycn") that
+// agentSessionName's deterministic template ("myrig--worker") can never
+// reconstruct. Before the fix, buildStatusBody queried the runtime provider
+// with the wrong (computed) name and unconditionally reported the agent as
+// stopped even though its real, differently-named session was live.
+func TestBuildStatusBodyReportsRunningForRealOnDemandSessionName(t *testing.T) {
+	state := newFakeState(t)
+	const realSessionName = "myrig--worker-st-99eycn"
+	state.sp.Start(context.Background(), realSessionName, runtime.Config{}) //nolint:errcheck
+
+	cityStore := beads.NewMemStore()
+	if _, err := cityStore.Create(beads.Bead{
+		Type:   session.BeadType,
+		Status: "open",
+		Labels: []string{session.LabelSession},
+		Metadata: map[string]string{
+			"state":        string(session.StateActive),
+			"template":     "myrig/worker",
+			"session_name": realSessionName,
+		},
+	}); err != nil {
+		t.Fatalf("Create session bead: %v", err)
+	}
+	state.cityBeadStore = cityStore
+
+	body := (&Server{state: state}).buildStatusBody(context.Background(), false)
+	if len(body.AgentDetails) != 1 {
+		t.Fatalf("AgentDetails = %#v, want one row", body.AgentDetails)
+	}
+	got := body.AgentDetails[0]
+	if !got.Running {
+		t.Errorf("AgentDetails[0].Running = false, want true: the real session %q is live even though the computed name %q is not", realSessionName, "myrig--worker")
+	}
+	if got.SessionName != realSessionName {
+		t.Errorf("AgentDetails[0].SessionName = %q, want the real recorded name %q", got.SessionName, realSessionName)
+	}
+}
+
 // TestBuildStatusBodyLiteOmitsExpensiveBlocks verifies the lite variant drops
 // the three expensive per-request blocks while keeping the cheap fleet
 // overview (agent/rig counts) intact.

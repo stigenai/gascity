@@ -171,6 +171,16 @@ func (s *Server) buildStatusBody(ctx context.Context, lite bool) StatusBody {
 			}
 			sessName := agentSessionName(cityName, ea.qualifiedName, sessTmpl)
 			info, hasInfo := sessionSnapshot.bySessionName[sessName]
+			if !hasInfo {
+				// On-demand sessions get a real runtime session name with a
+				// per-spawn suffix (the session ID) that agentSessionName's
+				// deterministic template cannot reconstruct — this identity
+				// can still have a live session recorded under byTemplate
+				// even though its computed name matches nothing (gcy-wy8j).
+				if real, ok := realSessionForIdentity(sp, sessionSnapshot.byTemplate[ea.qualifiedName]); ok {
+					sessName, info, hasInfo = real.sessionName, real, true
+				}
+			}
 			running := statusProviderRunning(sp, sessName)
 			if running {
 				rawRunning++
@@ -973,6 +983,25 @@ func statusProviderRunning(sp interface{ IsRunning(string) bool }, sessionName s
 		return false
 	}
 	return sp.IsRunning(sessionName)
+}
+
+// realSessionForIdentity picks the recorded session most relevant to a
+// configured agent identity from candidates (sessionSnapshot.byTemplate),
+// for use when agentSessionName's computed name has no exact bySessionName
+// match. Prefers a running instance so one displayed row backed by several
+// concurrent sessions sharing a canonical identity reports running if any
+// instance is live; otherwise falls back to the first known instance so its
+// state (e.g. suspended) still surfaces instead of an unmaterialized row.
+func realSessionForIdentity(sp interface{ IsRunning(string) bool }, candidates []statusSessionInfo) (statusSessionInfo, bool) {
+	if len(candidates) == 0 {
+		return statusSessionInfo{}, false
+	}
+	for _, cand := range candidates {
+		if statusProviderRunning(sp, cand.sessionName) {
+			return cand, true
+		}
+	}
+	return candidates[0], true
 }
 
 // HealthInput is the Huma input for GET /v0/city/{cityName}/health.
