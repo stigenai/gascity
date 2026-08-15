@@ -663,13 +663,23 @@ func validBeadSuffix(suffix string) bool {
 	return true
 }
 
-// RigPrefixForAgent returns the rig prefix that an agent's rig uses for bead IDs.
-func RigPrefixForAgent(a config.Agent, cfg *config.City) string {
+// RigPrefixForAgent returns the rig prefix that an agent's rig uses for bead
+// IDs. Resolution mirrors workdirutil.ConfiguredRigName (exact a.Dir==rig.Name
+// match, falling back to resolving a.Dir against cityPath and comparing to
+// rig.Path) rather than a bare equality check: a.Dir holds work_dir, which
+// packs-based cities template to a filesystem path ({{.RigRoot}}), not the
+// bare rig name, so equality-only matching returned "" — and callers treated
+// "" as "can't determine, allow" — for effectively every agent (gt-mfye).
+func RigPrefixForAgent(cityPath string, a config.Agent, cfg *config.City) string {
 	if a.Dir == "" || cfg == nil {
 		return ""
 	}
+	name := workdirutil.ConfiguredRigName(cityPath, a, cfg.Rigs)
+	if name == "" {
+		return ""
+	}
 	for _, r := range cfg.Rigs {
-		if r.Name == a.Dir {
+		if r.Name == name {
 			return r.EffectivePrefix()
 		}
 	}
@@ -678,8 +688,8 @@ func RigPrefixForAgent(a config.Agent, cfg *config.City) string {
 
 // CheckCrossRig returns a warning message if a rig-scoped agent receives
 // a bead from a different rig. Returns "" if routing is safe.
-func CheckCrossRig(beadID string, a config.Agent, cfg *config.City) string {
-	err := CrossRigRouteError(beadID, a, cfg)
+func CheckCrossRig(cityPath, beadID string, a config.Agent, cfg *config.City) string {
+	err := CrossRigRouteError(cityPath, beadID, a, cfg)
 	if err == nil {
 		return ""
 	}
@@ -697,11 +707,14 @@ type CrossRigError struct {
 
 // Error returns the cross-rig routing diagnostic.
 func (e *CrossRigError) Error() string {
-	return fmt.Sprintf("cross-rig routing — bead %s (prefix %q) → agent %s (rig prefix %q)", e.BeadID, e.BeadPrefix, e.Target, e.RigPrefix)
+	return fmt.Sprintf(
+		"gc sling: refusing cross-rig route: bead %s (prefix %q) belongs to a different rig than target %s (rig prefix %q); "+
+			"create the bead directly in the target rig's store instead — per-rig bead stores can't see foreign-prefix beads",
+		e.BeadID, e.BeadPrefix, e.Target, e.RigPrefix)
 }
 
 // CrossRigRouteError returns a typed cross-rig error when routing is unsafe.
-func CrossRigRouteError(beadID string, a config.Agent, cfg *config.City) *CrossRigError {
+func CrossRigRouteError(cityPath, beadID string, a config.Agent, cfg *config.City) *CrossRigError {
 	if cfg == nil || a.Dir == "" {
 		return nil
 	}
@@ -709,7 +722,7 @@ func CrossRigRouteError(beadID string, a config.Agent, cfg *config.City) *CrossR
 	if bp == "" {
 		return nil
 	}
-	rp := RigPrefixForAgent(a, cfg)
+	rp := RigPrefixForAgent(cityPath, a, cfg)
 	if rp == "" {
 		return nil
 	}

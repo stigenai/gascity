@@ -104,7 +104,7 @@ func preflight(opts SlingOpts, deps SlingDeps, querier BeadQuerier) (SlingResult
 		}
 	}
 	if shouldGuardCrossRig(opts) {
-		if err := CrossRigRouteError(opts.BeadOrFormula, a, deps.Cfg); err != nil {
+		if err := CrossRigRouteError(deps.CityPath, opts.BeadOrFormula, a, deps.Cfg); err != nil {
 			return result, err
 		}
 	}
@@ -1480,7 +1480,7 @@ func DoSlingBatch(opts SlingOpts, deps SlingDeps, querier BeadChildQuerier) (Sli
 
 	// Cross-rig guard on container.
 	if !opts.Force && !opts.DryRun {
-		if err := CrossRigRouteError(b.ID, a, deps.Cfg); err != nil {
+		if err := CrossRigRouteError(deps.CityPath, b.ID, a, deps.Cfg); err != nil {
 			return SlingResult{}, err
 		}
 	}
