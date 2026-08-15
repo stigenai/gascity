@@ -377,6 +377,12 @@
               "null"
             ]
           },
+          "RouteDefault": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "ScaleCheck": {
             "type": [
               "string",
@@ -547,6 +553,7 @@
           "InjectFragmentsAppend",
           "MaxActiveSessions",
           "MinActiveSessions",
+          "RouteDefault",
           "ScaleCheck",
           "OptionDefaults"
         ],
