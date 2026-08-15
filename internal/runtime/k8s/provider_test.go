@@ -782,6 +782,62 @@ func TestListRunningFreshBypassesObservationSnapshotThroughProductionWrapper(t *
 	}
 }
 
+// TestSeamWrapperPreservesCheckedLivenessDistinctions is the seam-wrapper
+// analogue of TestIsRunningCheckedDistinguishesConfirmedFromInconclusive /
+// TestIsAttachedCheckedDistinguishesConfirmedFromInconclusive /
+// TestProcessAliveCheckedDistinguishesConfirmedFromInconclusive: production
+// only ever constructs the k8s provider through NewSeamBacked (there is no
+// direct, non-seam construction path), so the checked variants must survive
+// that wrapper too. Before the seam wrapper implemented RunningChecker /
+// AttachedChecker / ProcessAliveChecker, every k8s liveness probe collapsed
+// an inconclusive API failure into a confirmed negative via the generic
+// seam's lossy IsRunning/IsAttached/ProcessAlive bool methods (gcy-envb) —
+// precisely the collapse PR #69 (gcy-2sh/gcy-rfn) eliminated for the raw
+// provider.
+func TestSeamWrapperPreservesCheckedLivenessDistinctions(t *testing.T) {
+	fake := newFakeK8sOps()
+	raw := newProviderWithOps(fake)
+	provider := newSeamBacked(raw)
+
+	runningChecker, ok := provider.(runtime.RunningChecker)
+	if !ok {
+		t.Fatalf("production k8s provider %T does not implement runtime.RunningChecker", provider)
+	}
+	attachedChecker, ok := provider.(runtime.AttachedChecker)
+	if !ok {
+		t.Fatalf("production k8s provider %T does not implement runtime.AttachedChecker", provider)
+	}
+	processAliveChecker, ok := provider.(runtime.ProcessAliveChecker)
+	if !ok {
+		t.Fatalf("production k8s provider %T does not implement runtime.ProcessAliveChecker", provider)
+	}
+
+	// Inconclusive: the pod lookup itself fails (e.g. a timed-out LIST), the
+	// same fault every direct-provider checked test above uses.
+	fake.listErr = context.DeadlineExceeded
+
+	if running, err := runningChecker.IsRunningChecked("gc-test-agent"); running || err == nil {
+		t.Errorf("IsRunningChecked through the seam wrapper = (%v, %v), want (false, non-nil) for an inconclusive probe", running, err)
+	}
+	if attached, err := attachedChecker.IsAttachedChecked("gc-test-agent"); attached || err == nil {
+		t.Errorf("IsAttachedChecked through the seam wrapper = (%v, %v), want (false, non-nil) for an inconclusive probe", attached, err)
+	}
+	if alive, err := processAliveChecker.ProcessAliveChecked("gc-test-agent", []string{"claude"}); alive || err == nil {
+		t.Errorf("ProcessAliveChecked through the seam wrapper = (%v, %v), want (false, non-nil) for an inconclusive probe", alive, err)
+	}
+
+	// runtime.IsRunningChecked/IsAttachedChecked are the generic helpers
+	// liveness probes and doctor checks actually call; confirm the
+	// type-assertion in those helpers reaches the seam wrapper's checked
+	// implementation, not just a direct assertion in this test.
+	if running, err := runtime.IsRunningChecked(provider, "gc-test-agent"); running || err == nil {
+		t.Errorf("runtime.IsRunningChecked(provider, ...) = (%v, %v), want (false, non-nil) for an inconclusive probe", running, err)
+	}
+	if attached, err := runtime.IsAttachedChecked(provider, "gc-test-agent"); attached || err == nil {
+		t.Errorf("runtime.IsAttachedChecked(provider, ...) = (%v, %v), want (false, non-nil) for an inconclusive probe", attached, err)
+	}
+}
+
 func TestRunningPodSnapshotCoalescesConcurrentFailure(t *testing.T) {
 	wantErr := errors.New("Kubernetes API unavailable")
 	ops := newSnapshotListOps()
