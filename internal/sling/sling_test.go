@@ -1016,7 +1016,7 @@ func TestCheckCrossRigDetectsHyphenatedPrefixMismatch(t *testing.T) {
 	// routing through silently. The longest-prefix resolver returns
 	// "agent-diagnostics", so the guard fires correctly.
 	a := config.Agent{Name: "worker", Dir: "agent"}
-	if msg := CheckCrossRig("agent-diagnostics-hnn", a, cfg); msg == "" {
+	if msg := CheckCrossRig(sharedTestCityDir, "agent-diagnostics-hnn", a, cfg); msg == "" {
 		t.Error("expected cross-rig warning: bead in rig 'agent-diagnostics' routed to worker in rig 'agent' must not be silently permitted")
 	}
 }
@@ -1031,24 +1031,86 @@ func TestCheckCrossRigSling(t *testing.T) {
 
 	t.Run("same rig allowed", func(t *testing.T) {
 		a := config.Agent{Name: "worker", Dir: "myrig"}
-		if msg := CheckCrossRig("BL-42", a, cfg); msg != "" {
+		if msg := CheckCrossRig(sharedTestCityDir, "BL-42", a, cfg); msg != "" {
 			t.Errorf("expected no warning, got %q", msg)
 		}
 	})
 
 	t.Run("different rig blocked", func(t *testing.T) {
 		a := config.Agent{Name: "worker", Dir: "other"}
-		if msg := CheckCrossRig("BL-42", a, cfg); msg == "" {
+		if msg := CheckCrossRig(sharedTestCityDir, "BL-42", a, cfg); msg == "" {
 			t.Error("expected cross-rig warning")
 		}
 	})
 
 	t.Run("city agent no block", func(t *testing.T) {
 		a := config.Agent{Name: "mayor"}
-		if msg := CheckCrossRig("BL-42", a, cfg); msg != "" {
+		if msg := CheckCrossRig(sharedTestCityDir, "BL-42", a, cfg); msg != "" {
 			t.Errorf("expected no warning, got %q", msg)
 		}
 	})
+}
+
+// TestRigPrefixForAgentPathDir reproduces gt-mfye: packs-based cities
+// template an agent's work_dir to {{.RigRoot}}, a filesystem path, not the
+// bare rig name — so a.Dir never equality-matches rig.Name in practice, and
+// the plain-equality version of this resolver returned "" (= "can't
+// determine") for every real agent, which every caller treated as "allow".
+func TestRigPrefixForAgentPathDir(t *testing.T) {
+	cityPath := "/nonexistent/gt-mfye-test-city"
+	cfg := &config.City{
+		Rigs: []config.Rig{
+			{Name: "blocks-operator", Path: "/nonexistent/gt-mfye-test-city/rigs/blocks-operator", Prefix: "bo"},
+			{Name: "runbook", Path: "/nonexistent/gt-mfye-test-city/rigs/runbook", Prefix: "rb"},
+		},
+	}
+	a := config.Agent{Name: "coder", Dir: "/nonexistent/gt-mfye-test-city/rigs/blocks-operator"}
+
+	if got := RigPrefixForAgent(cityPath, a, cfg); got != "bo" {
+		t.Errorf("RigPrefixForAgent = %q, want %q (path-based fallback should resolve the rig)", got, "bo")
+	}
+	if err := CrossRigRouteError(cityPath, "rb-8iux", a, cfg); err == nil {
+		t.Fatal("expected cross-rig error: bead in rig 'runbook' routed to an agent whose Dir path resolves to rig 'blocks-operator' must not be silently permitted")
+	}
+}
+
+// TestDoSlingCrossRigBlocksWithPathDirAndReassign reproduces the exact gt-mfye
+// repro shape end to end: gc sling --reassign <cross-rig target> <bead-id>,
+// where the target agent's Dir is a work_dir path (as every packs-based city
+// configures it) rather than the bare rig name. Before the fix this silently
+// fell through preflight, returned err == nil, and the caller printed a
+// success-shaped "Slung X -> Y" line despite writing no route.
+func TestDoSlingCrossRigBlocksWithPathDirAndReassign(t *testing.T) {
+	runner := newFakeRunner()
+	sp := runtime.NewFake()
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Rigs: []config.Rig{
+			{Name: "runbook", Path: "/nonexistent/gt-mfye-test-city/rigs/runbook", Prefix: "rb"},
+			{Name: "blocks-operator", Path: "/nonexistent/gt-mfye-test-city/rigs/blocks-operator", Prefix: "bo"},
+		},
+	}
+	a := config.Agent{
+		Name: "coder", Dir: "/nonexistent/gt-mfye-test-city/rigs/blocks-operator",
+		MaxActiveSessions: intPtr(1),
+	}
+
+	deps := testDeps(cfg, sp, runner.run)
+	deps.CityPath = "/nonexistent/gt-mfye-test-city"
+	deps.Store = seededStore("rb-8iux")
+	result, err := DoSling(SlingOpts{
+		Target: a, BeadOrFormula: "rb-8iux", Reassign: true,
+	}, deps, nil)
+
+	if err == nil {
+		t.Fatal("expected cross-rig error; DoSling must not report success for an unrouted bead")
+	}
+	if result.ConvoyID != "" {
+		t.Error("no convoy should have been created")
+	}
+	if len(runner.calls) != 0 {
+		t.Error("runner should not have been called")
+	}
 }
 
 // --- DoSling integration tests (structured result) ---
