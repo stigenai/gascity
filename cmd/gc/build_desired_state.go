@@ -403,14 +403,6 @@ func buildDesiredStateWithSessionBeads(
 	// Their pool demand is clamped to 1 at the merge so one pool slot wakes the
 	// session without over-spawning {name}-N phantoms when N routed beads arrive.
 	namedOnDemandTemplates := map[string]bool{}
-	// routeDefaultTemplates marks a route_default agent's own template. Like
-	// an on_demand named-backing template, it is a singleton-shaped router:
-	// one pool slot drains the whole unrouted-fallback queue sequentially, so
-	// its pool demand is clamped to 1 at the merge — otherwise N unrouted
-	// beads that all fall back to this one agent request N router sessions
-	// (gcy-69gw), the same wake-storm shape namedOnDemandTemplates already
-	// guards against for explicit gc.routed_to fan-in.
-	routeDefaultTemplates := map[string]bool{}
 	// activeStores is the set of stores a cold custom-scale_check pool is probed
 	// against (city + every non-suspended rig store), so routed demand a sleeping
 	// rig pool can't see locally — e.g. work queued in the city store — still
@@ -573,9 +565,6 @@ func buildDesiredStateWithSessionBeads(
 		if store != nil && !hasCustomScaleCheck {
 			ownTarget := defaultScaleCheckTargetForAgent(cityPath, cfg, &cfg.Agents[i], store, rigStores)
 			defaultScaleTargets = append(defaultScaleTargets, ownTarget)
-			if cfg.Agents[i].RouteDefault {
-				routeDefaultTemplates[template] = true
-			}
 			// Cross-store demand (FR-S0.1 / vp-s37): a rig pool's routed demand
 			// may live in the city store (vp-kvp cross-store delivery), which
 			// the own-rig probe above cannot see. Add a city-store probe so the
@@ -772,14 +761,13 @@ func buildDesiredStateWithSessionBeads(
 				if namedOnDemandTemplates[template] && count > 1 {
 					count = 1
 				}
-				// A route_default agent's own template is the same singleton shape:
-				// one pool slot drains the whole unrouted-fallback queue
-				// sequentially. Without this, N unrouted beads that all fall back
-				// to this one agent (controllerDemandRouteDefaultTemplate) request
-				// N router sessions — gcy-69gw.
-				if routeDefaultTemplates[template] && count > 1 {
-					count = 1
-				}
+				// route_default fallback demand (gcy-69gw) is clamped inside
+				// defaultScaleCheckCountsAndDemand itself, per-bead, so only the
+				// fallback-derived share of count is capped to 1 — demand from
+				// beads explicitly routed to the same template is not (gcy-nk8l).
+				// That distinction is invisible here: count is already a merged
+				// total by this point, with no way to tell fallback from routed
+				// beads apart, so the clamp cannot correctly happen at this stage.
 				if count > scaleCheckCounts[template] {
 					scaleCheckCounts[template] = count
 				}
@@ -1561,6 +1549,20 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 	// probe no longer cold-gated, that double-count would be a persistent
 	// warm condition rather than a one-tick wake overshoot, so dedup by ID.
 	countedBeads := make(map[string]map[string]struct{})
+	// fallbackAdmitted caps a route_default template's FALLBACK-derived
+	// demand to one bead: a route_default agent is a singleton-shaped router
+	// for its unrouted queue, and one session drains it sequentially, the
+	// same wake-storm guard namedOnDemandTemplates applies for N queued
+	// gc.routed_to beads targeting an on_demand named session (gcy-69gw). A
+	// template can be the route_default fallback for at most one store group
+	// (controllerDemandRouteDefaultTemplate is keyed on the candidate's own
+	// home scope), so one map here — not one per group — correctly caps it
+	// across the whole call. Demand from beads explicitly routed to this
+	// same template (controllerDemandRouteTarget's viaFallback=false) is
+	// never subject to this cap and counts normally, however large
+	// (gcy-nk8l): route_default's singleton contract covers only the
+	// fallback queue it invents, not an agent's own explicit routing.
+	fallbackAdmitted := make(map[string]bool)
 	for key, group := range groups {
 		// Ready()/CachedReady() iteration surfaces actionable work
 		// matched against gc.routed_to/gc.run_target. Formula orders that
@@ -1583,9 +1585,15 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 			if claimQueuedBehindHead(b) {
 				continue
 			}
-			template := controllerDemandRouteTarget(cfg, b, group.templates, defaultTemplate)
+			template, viaFallback := controllerDemandRouteTarget(cfg, b, group.templates, defaultTemplate)
 			if _, ok := group.templates[template]; !ok {
 				continue
+			}
+			if viaFallback {
+				if fallbackAdmitted[template] {
+					continue
+				}
+				fallbackAdmitted[template] = true
 			}
 			seen := countedBeads[template]
 			if seen == nil {
@@ -1771,25 +1779,31 @@ func defaultNamedSessionDemand(targets []defaultScaleCheckTarget, _ *config.City
 // `bd update --set-metadata` — still counts as demand for the base template.
 // Without this, an unnormalized instance-suffixed candidate never matches
 // group.templates (keyed by base template names) and the demand is silently
-// dropped, so the pool never scales up. The returned value is the normalized
-// template name, since callers use it as the counts/demand map key.
+// dropped, so the pool never scales up. The first returned value is the
+// normalized template name, since callers use it as the counts/demand map
+// key.
 //
 // defaultTemplate is the store group's route_default fallback (see
 // controllerDemandRouteDefaultTemplate), used when none of the bead's
 // candidates match: a bead with no route, or routed to a template absent
 // from this scope, would otherwise count as demand for nobody. Pass "" when
 // the group has no route_default configured.
-func controllerDemandRouteTarget(cfg *config.City, b beads.Bead, templates map[string]struct{}, defaultTemplate string) string {
+//
+// The second returned value reports whether the match came from that
+// fallback rather than an explicit candidate — callers clamp only
+// fallback-derived demand (gcy-nk8l), never demand a bead was explicitly
+// routed to, even when both resolve to the same route_default template.
+func controllerDemandRouteTarget(cfg *config.City, b beads.Bead, templates map[string]struct{}, defaultTemplate string) (string, bool) {
 	for _, candidate := range controllerDemandRouteCandidates(b) {
 		normalized := agentutil.NormalizePoolRouteTarget(cfg, candidate)
 		if _, ok := templates[normalized]; ok {
-			return normalized
+			return normalized, false
 		}
 	}
 	if defaultTemplate != "" {
-		return defaultTemplate
+		return defaultTemplate, true
 	}
-	return ""
+	return "", false
 }
 
 // controllerDemandRouteDefaultTemplate returns the store group's designated

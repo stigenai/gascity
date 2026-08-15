@@ -6954,6 +6954,101 @@ func TestBuildDesiredState_RouteDefaultFallbackDemandClampedToOne(t *testing.T) 
 	}
 }
 
+// TestBuildDesiredState_RouteDefaultExplicitlyRoutedDemandScalesNormally is
+// the counterpart gcy-nk8l reopened: gcy-69gw's fix clamped the route_default
+// template's TOTAL merged count to 1, which caught explicitly-routed
+// (gc.routed_to) demand in the same net as fallback demand — an agent with
+// route_default=true and N beads explicitly routed to it desired 1 session,
+// not N, even with zero unrouted work in play. Only the fallback-derived
+// share of demand may be clamped; explicit routing must scale exactly like
+// it would for any non-route_default agent.
+func TestBuildDesiredState_RouteDefaultExplicitlyRoutedDemandScalesNormally(t *testing.T) {
+	cityPath := t.TempDir()
+	store := beads.NewMemStore()
+	const template = "triage"
+	const routedCount = 10
+	for i := 0; i < routedCount; i++ {
+		if _, err := store.Create(beads.Bead{
+			Title:  fmt.Sprintf("explicitly routed work %d", i),
+			Type:   "task",
+			Status: "open",
+			Metadata: map[string]string{
+				beadmeta.RoutedToMetadataKey: template,
+			},
+		}); err != nil {
+			t.Fatalf("create routed bead %d: %v", i, err)
+		}
+	}
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:         template,
+			StartCommand: "true",
+			WorkQuery:    "printf ''",
+			RouteDefault: true,
+		}},
+	}
+
+	dsResult := buildDesiredState("test-city", cityPath, time.Now().UTC(), cfg, runtime.NewFake(), store, io.Discard)
+
+	if got := dsResult.ScaleCheckCounts[template]; got != routedCount {
+		t.Fatalf("ScaleCheckCounts[%q] = %d, want %d — route_default's fallback-queue clamp must not cap demand explicitly routed to the same template via gc.routed_to (scale_counts=%v)",
+			template, got, routedCount, dsResult.ScaleCheckCounts)
+	}
+}
+
+// TestBuildDesiredState_RouteDefaultMixedExplicitAndFallbackDemand covers the
+// blended shape the bug's own repro called out: a route_default agent with
+// BOTH explicitly-routed and unrouted-fallback beads in flight at once. The
+// explicit share must scale uncapped while the fallback share stays clamped
+// to at most 1, so the desired count is routedCount+1, not routedCount and
+// not routedCount+unroutedCount.
+func TestBuildDesiredState_RouteDefaultMixedExplicitAndFallbackDemand(t *testing.T) {
+	cityPath := t.TempDir()
+	store := beads.NewMemStore()
+	const template = "triage"
+	const routedCount = 3
+	const unroutedCount = 4
+	for i := 0; i < routedCount; i++ {
+		if _, err := store.Create(beads.Bead{
+			Title:  fmt.Sprintf("explicitly routed work %d", i),
+			Type:   "task",
+			Status: "open",
+			Metadata: map[string]string{
+				beadmeta.RoutedToMetadataKey: template,
+			},
+		}); err != nil {
+			t.Fatalf("create routed bead %d: %v", i, err)
+		}
+	}
+	for i := 0; i < unroutedCount; i++ {
+		if _, err := store.Create(beads.Bead{
+			Title:  fmt.Sprintf("unrouted work %d", i),
+			Type:   "task",
+			Status: "open",
+		}); err != nil {
+			t.Fatalf("create unrouted bead %d: %v", i, err)
+		}
+	}
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:         template,
+			StartCommand: "true",
+			WorkQuery:    "printf ''",
+			RouteDefault: true,
+		}},
+	}
+
+	dsResult := buildDesiredState("test-city", cityPath, time.Now().UTC(), cfg, runtime.NewFake(), store, io.Discard)
+
+	const want = routedCount + 1
+	if got := dsResult.ScaleCheckCounts[template]; got != want {
+		t.Fatalf("ScaleCheckCounts[%q] = %d, want %d (=%d routed + 1 clamped fallback) — scale_counts=%v",
+			template, got, want, routedCount, dsResult.ScaleCheckCounts)
+	}
+}
+
 func TestBuildDesiredState_OnDemandNamedSession_RuntimeAssigneeDoesNotMaterialize(t *testing.T) {
 	cityPath := t.TempDir()
 	rigPath := filepath.Join(cityPath, "fixture")
