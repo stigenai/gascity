@@ -136,8 +136,21 @@ type poolEvalWork struct {
 type defaultScaleCheckTarget struct {
 	template string
 	storeKey string
-	store    beads.Store
-	err      error
+	// homeStoreKey is the template's OWN scope — "rig:<name>" for a
+	// rig-scoped agent, "city" for a city-scoped one — set explicitly by
+	// whichever code built this target, never inferred from storeKey or
+	// target ordering. storeKey says which store THIS probe queries (a
+	// template may appear in several targets, one per store it's probed
+	// against); homeStoreKey is constant across all of a template's targets
+	// regardless of which store each one queries. defaultScaleCheckCountsAndDemand
+	// reads it directly to decide route_default fallback eligibility
+	// (gcy-dhnu) — "prefer the first non-city storeKey seen" used to
+	// recover this heuristically and broke silently whenever a template's
+	// targets were built in an order, or from a producer, that didn't hold
+	// the heuristic's assumption.
+	homeStoreKey string
+	store        beads.Store
+	err          error
 }
 
 type scaleCheckDemand struct {
@@ -407,6 +420,16 @@ func buildDesiredStateWithSessionBeads(
 	// against (city + every non-suspended rig store), so routed demand a sleeping
 	// rig pool can't see locally — e.g. work queued in the city store — still
 	// wakes it. Only consulted for the clamped cold-wake probe.
+	//
+	// ref uses the same "city" / "rig:<name>" namespace defaultScaleCheckTargetForAgent
+	// uses for storeKey (gcy-dhnu) — not the bare rig.Name this used to carry.
+	// Both producers feed the same defaultScaleTargets slice, consumed together
+	// by defaultScaleCheckCountsAndDemand's storeKey-keyed groups map; two
+	// namespaces meant the SAME rig store formed two different groups
+	// depending on which producer built the probe, so a target's homeStoreKey
+	// (always the "rig:"/"city" form) could never equal a group key built by
+	// the other producer for that same store, even once homeStoreKey itself
+	// was correct.
 	type activeStore struct {
 		store beads.Store
 		ref   string
@@ -417,7 +440,7 @@ func buildDesiredStateWithSessionBeads(
 			continue
 		}
 		if s, ok := rigStores[rig.Name]; ok {
-			activeStores = append(activeStores, activeStore{store: s, ref: rig.Name})
+			activeStores = append(activeStores, activeStore{store: s, ref: "rig:" + rig.Name})
 		}
 	}
 
@@ -537,7 +560,7 @@ func buildDesiredStateWithSessionBeads(
 				// city-aliased, not city-scoped. The named-session target list
 				// mirrors these probes only for partial-query retention bookkeeping.
 				if !storeScopedControlDispatcher && ownTarget.storeKey != "city" && ownTarget.store != nil && ownTarget.err == nil && ownTarget.store != store {
-					cityTarget := defaultScaleCheckTarget{template: template, store: store, storeKey: "city"}
+					cityTarget := defaultScaleCheckTarget{template: template, store: store, storeKey: "city", homeStoreKey: ownTarget.homeStoreKey}
 					if namedSessionMode != "always" && !residentLive {
 						defaultScaleTargets = append(defaultScaleTargets, cityTarget)
 					}
@@ -547,7 +570,7 @@ func buildDesiredStateWithSessionBeads(
 			}
 			if store != nil && isCold && !storeScopedControlDispatcher {
 				for _, source := range activeStores {
-					defaultNamedScaleTargets = append(defaultNamedScaleTargets, defaultScaleCheckTarget{template: template, store: source.store, storeKey: source.ref})
+					defaultNamedScaleTargets = append(defaultNamedScaleTargets, defaultScaleCheckTarget{template: template, store: source.store, storeKey: source.ref, homeStoreKey: defaultScaleCheckHomeStoreKey(rigName)})
 				}
 			}
 			pendingPools = append(pendingPools, poolEvalWork{agentIdx: i, sp: sp, poolDir: poolDir, newDemand: store != nil})
@@ -617,7 +640,7 @@ func buildDesiredStateWithSessionBeads(
 			// claim a route from the city store. Keep their cold-wake probe on the
 			// owning store instead of applying generic cross-store pool delivery.
 			if !storeScopedControlDispatcher && ownTarget.storeKey != "city" && ownTarget.store != nil && ownTarget.err == nil && ownTarget.store != store {
-				defaultScaleTargets = append(defaultScaleTargets, defaultScaleCheckTarget{template: template, store: store, storeKey: "city"})
+				defaultScaleTargets = append(defaultScaleTargets, defaultScaleCheckTarget{template: template, store: store, storeKey: "city", homeStoreKey: ownTarget.homeStoreKey})
 			}
 			continue
 		}
@@ -630,7 +653,7 @@ func buildDesiredStateWithSessionBeads(
 		// it itself, or the pool will churn at the warm/cold boundary.
 		if store != nil && isCold && !storeScopedControlDispatcher {
 			for _, source := range activeStores {
-				defaultScaleTargets = append(defaultScaleTargets, defaultScaleCheckTarget{template: template, store: source.store, storeKey: source.ref})
+				defaultScaleTargets = append(defaultScaleTargets, defaultScaleCheckTarget{template: template, store: source.store, storeKey: source.ref, homeStoreKey: defaultScaleCheckHomeStoreKey(rigName)})
 			}
 			coldWakeTemplates[template] = true
 		}
@@ -761,6 +784,13 @@ func buildDesiredStateWithSessionBeads(
 				if namedOnDemandTemplates[template] && count > 1 {
 					count = 1
 				}
+				// route_default fallback demand (gcy-69gw) is clamped inside
+				// defaultScaleCheckCountsAndDemand itself, per-bead, so only the
+				// fallback-derived share of count is capped to 1 — demand from
+				// beads explicitly routed to the same template is not (gcy-nk8l).
+				// That distinction is invisible here: count is already a merged
+				// total by this point, with no way to tell fallback from routed
+				// beads apart, so the clamp cannot correctly happen at this stage.
 				if count > scaleCheckCounts[template] {
 					scaleCheckCounts[template] = count
 				}
@@ -1429,6 +1459,19 @@ func readyAssignedWorkAssignees(cfg *config.City, sessionBeads *sessionBeadSnaps
 	return result
 }
 
+// defaultScaleCheckHomeStoreKey renders an agent's own resolved rig name
+// (from configuredRigName; "" means city-scoped) into the canonical
+// defaultScaleCheckTarget.homeStoreKey / storeKey namespace: "city", or
+// "rig:<name>". Every defaultScaleCheckTarget producer uses this so a
+// template's home is always computed the same way regardless of which
+// producer built the target (gcy-dhnu). It's a thin alias for
+// workdirutil.HomeStoreKey so config validation (workdirutil.
+// ValidateRouteDefaultScopes) can key its route_default conflict check on
+// the exact same scope namespace this runtime routing uses (gcy-qdky).
+func defaultScaleCheckHomeStoreKey(rigName string) string {
+	return workdirutil.HomeStoreKey(rigName)
+}
+
 func defaultScaleCheckTargetForAgent(
 	cityPath string,
 	cfg *config.City,
@@ -1437,15 +1480,17 @@ func defaultScaleCheckTargetForAgent(
 	rigStores map[string]beads.Store,
 ) defaultScaleCheckTarget {
 	target := defaultScaleCheckTarget{
-		template: agentCfg.QualifiedName(),
-		storeKey: "city",
-		store:    cityStore,
+		template:     agentCfg.QualifiedName(),
+		storeKey:     "city",
+		homeStoreKey: "city",
+		store:        cityStore,
 	}
 	rigName := configuredRigName(cityPath, agentCfg, cfg.Rigs)
 	if rigName == "" {
 		return target
 	}
-	target.storeKey = "rig:" + rigName
+	target.storeKey = defaultScaleCheckHomeStoreKey(rigName)
+	target.homeStoreKey = target.storeKey
 	if rigStores != nil {
 		if rigStore := rigStores[rigName]; rigStore != nil {
 			target.store = rigStore
@@ -1485,6 +1530,30 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 	groups := make(map[string]*scaleStoreGroup)
 	var errs []error
 	var partialTemplates map[string]bool
+	// templateHomeStoreKey records each template's OWN scope — "rig:<name>"
+	// for a rig-scoped agent, "city" for a city-scoped one — as opposed to
+	// every group its template happens to appear in. A rig-scoped pool's
+	// template is deliberately probed against the city store too (cross-store
+	// routed delivery, vp-kvp), which puts it in the "city" group's
+	// `templates` set alongside genuinely city-scoped templates. That
+	// membership is correct for matching an explicit gc.routed_to, but wrong
+	// for route_default fallback selection (see
+	// controllerDemandRouteDefaultTemplate), so the fallback check needs a
+	// template's real home key, not just "which groups is it in".
+	//
+	// Read directly from each target's own homeStoreKey (gcy-dhnu) — every
+	// defaultScaleCheckTarget producer sets it explicitly now. This used to
+	// be inferred by "prefer the first non-city storeKey seen", justified by
+	// "the cross-store probe only ever ADDS a city entry alongside an
+	// already-present rig entry, never the reverse". That held for the
+	// single-target-per-store generic-pool producer (defaultScaleCheckTargetForAgent)
+	// but not for the cold custom-scale_check producer (activeStores below),
+	// which appends ONE target per active store for every such template —
+	// city, then every rig in cfg.Rigs declaration order, unrelated to which
+	// rig the template's own agent belongs to. "First non-city key seen"
+	// there was always cfg.Rigs[0]'s key, for every template on that path,
+	// regardless of its real home.
+	templateHomeStoreKey := make(map[string]string, len(targets))
 	for _, target := range targets {
 		template := strings.TrimSpace(target.template)
 		if template == "" {
@@ -1506,6 +1575,7 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 		if key == "" {
 			key = fmt.Sprintf("%p", target.store)
 		}
+		templateHomeStoreKey[template] = target.homeStoreKey
 		group := groups[key]
 		if group == nil {
 			group = &scaleStoreGroup{store: target.store, storeKey: key, templates: make(map[string]struct{})}
@@ -1524,6 +1594,20 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 	// probe no longer cold-gated, that double-count would be a persistent
 	// warm condition rather than a one-tick wake overshoot, so dedup by ID.
 	countedBeads := make(map[string]map[string]struct{})
+	// fallbackAdmitted caps a route_default template's FALLBACK-derived
+	// demand to one bead: a route_default agent is a singleton-shaped router
+	// for its unrouted queue, and one session drains it sequentially, the
+	// same wake-storm guard namedOnDemandTemplates applies for N queued
+	// gc.routed_to beads targeting an on_demand named session (gcy-69gw). A
+	// template can be the route_default fallback for at most one store group
+	// (controllerDemandRouteDefaultTemplate is keyed on the candidate's own
+	// home scope), so one map here — not one per group — correctly caps it
+	// across the whole call. Demand from beads explicitly routed to this
+	// same template (controllerDemandRouteTarget's viaFallback=false) is
+	// never subject to this cap and counts normally, however large
+	// (gcy-nk8l): route_default's singleton contract covers only the
+	// fallback queue it invents, not an agent's own explicit routing.
+	fallbackAdmitted := make(map[string]bool)
 	for key, group := range groups {
 		// Ready()/CachedReady() iteration surfaces actionable work
 		// matched against gc.routed_to/gc.run_target. Formula orders that
@@ -1538,6 +1622,7 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 				ready = nil
 			}
 		}
+		defaultTemplate := controllerDemandRouteDefaultTemplate(cfg, key, group.templates, templateHomeStoreKey)
 		for _, b := range ready {
 			if strings.TrimSpace(b.Assignee) != "" {
 				continue
@@ -1545,9 +1630,15 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 			if claimQueuedBehindHead(b) {
 				continue
 			}
-			template := controllerDemandRouteTarget(cfg, b, group.templates)
+			template, viaFallback := controllerDemandRouteTarget(cfg, b, group.templates, defaultTemplate)
 			if _, ok := group.templates[template]; !ok {
 				continue
+			}
+			if viaFallback {
+				if fallbackAdmitted[template] {
+					continue
+				}
+				fallbackAdmitted[template] = true
 			}
 			seen := countedBeads[template]
 			if seen == nil {
@@ -1733,14 +1824,80 @@ func defaultNamedSessionDemand(targets []defaultScaleCheckTarget, _ *config.City
 // `bd update --set-metadata` — still counts as demand for the base template.
 // Without this, an unnormalized instance-suffixed candidate never matches
 // group.templates (keyed by base template names) and the demand is silently
-// dropped, so the pool never scales up. The returned value is the normalized
-// template name, since callers use it as the counts/demand map key.
-func controllerDemandRouteTarget(cfg *config.City, b beads.Bead, templates map[string]struct{}) string {
+// dropped, so the pool never scales up. The first returned value is the
+// normalized template name, since callers use it as the counts/demand map
+// key.
+//
+// defaultTemplate is the store group's route_default fallback (see
+// controllerDemandRouteDefaultTemplate), used when none of the bead's
+// candidates match: a bead with no route, or routed to a template absent
+// from this scope, would otherwise count as demand for nobody. Pass "" when
+// the group has no route_default configured.
+//
+// The second returned value reports whether the match came from that
+// fallback rather than an explicit candidate — callers clamp only
+// fallback-derived demand (gcy-nk8l), never demand a bead was explicitly
+// routed to, even when both resolve to the same route_default template.
+func controllerDemandRouteTarget(cfg *config.City, b beads.Bead, templates map[string]struct{}, defaultTemplate string) (string, bool) {
 	for _, candidate := range controllerDemandRouteCandidates(b) {
 		normalized := agentutil.NormalizePoolRouteTarget(cfg, candidate)
 		if _, ok := templates[normalized]; ok {
-			return normalized
+			return normalized, false
 		}
+	}
+	if defaultTemplate != "" {
+		return defaultTemplate, true
+	}
+	return "", false
+}
+
+// controllerDemandRouteDefaultTemplate returns the store group's designated
+// fallback demand target — the qualified name of the one agent among
+// templates whose config sets route_default = true AND whose own scope
+// matches this group — or "" if none is configured. Agent.RouteDefault's
+// contract is per-scope: "rig store if rig-scoped, city store if
+// city-scoped". Checking templates membership alone is not enough to honor
+// that: a rig-scoped agent's template is deliberately also a member of the
+// "city" group (cross-store routed delivery, vp-kvp), so without the
+// groupStoreKey/templateHomeStoreKey check below, a rig-scoped route_default
+// agent would absorb every unrouted CITY-store bead city-wide instead of
+// just its own rig's unrouted work — see gcy-nwlt. templateHomeStoreKey maps
+// each candidate's qualified template to its real home scope (see the
+// builder in defaultScaleCheckCountsAndDemand); the fallback only applies
+// when that home matches the group actually being evaluated.
+// config.ValidateAgents' "at most one route_default per scope" rule is keyed
+// on the literal Agent.Dir string, not on the resolved runtime scope this
+// function checks against — those agree for the normal case (a rig-scoped
+// and a city-scoped route_default always have different Dir AND different
+// templateHomeStoreKey, so at most one candidate can ever match a given
+// groupStoreKey here) but not for a pathological one gcy-zaft flagged: two
+// agent blocks with DIFFERENT Dir strings that both resolve, via
+// configuredRigName's cfg.Rigs path-matching fallback, to the SAME rig. That
+// combination is not rejected by ValidateAgents (different Dir) and both
+// candidates would share one templateHomeStoreKey, so the first match in
+// cfg.Agents order still wins between them rather than double-counting a
+// bead across two templates. Deliberately not hardened here — it requires
+// two differently-spelled Dir values naming the same registered rig, which
+// no known config does — but a real occurrence would look like this
+// function silently picking one of two same-scope routers by declaration
+// order.
+func controllerDemandRouteDefaultTemplate(cfg *config.City, groupStoreKey string, templates map[string]struct{}, templateHomeStoreKey map[string]string) string {
+	if cfg == nil {
+		return ""
+	}
+	for i := range cfg.Agents {
+		agent := &cfg.Agents[i]
+		if !agent.RouteDefault {
+			continue
+		}
+		qualified := agent.QualifiedName()
+		if _, ok := templates[qualified]; !ok {
+			continue
+		}
+		if templateHomeStoreKey[qualified] != groupStoreKey {
+			continue
+		}
+		return qualified
 	}
 	return ""
 }

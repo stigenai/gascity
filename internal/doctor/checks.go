@@ -30,6 +30,7 @@ import (
 	"github.com/gastownhall/gascity/internal/pathutil"
 	"github.com/gastownhall/gascity/internal/pidutil"
 	"github.com/gastownhall/gascity/internal/runtime"
+	workdirutil "github.com/gastownhall/gascity/internal/workdir"
 	"github.com/gastownhall/gascity/internal/workspacesvc"
 )
 
@@ -114,9 +115,14 @@ func NewConfigValidCheck(cfg *config.City) *ConfigValidCheck {
 func (c *ConfigValidCheck) Name() string { return "config-valid" }
 
 // Run validates agents and rigs in the config.
-func (c *ConfigValidCheck) Run(_ *CheckContext) *CheckResult {
+func (c *ConfigValidCheck) Run(ctx *CheckContext) *CheckResult {
 	r := &CheckResult{Name: c.Name()}
 	if err := config.ValidateAgents(c.cfg.Agents); err != nil {
+		r.Status = StatusError
+		r.Message = fmt.Sprintf("agent validation: %v", err)
+		return r
+	}
+	if err := workdirutil.ValidateRouteDefaultScopes(ctx.CityPath, c.cfg.Agents, c.cfg.Rigs); err != nil {
 		r.Status = StatusError
 		r.Message = fmt.Sprintf("agent validation: %v", err)
 		return r

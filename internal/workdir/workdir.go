@@ -62,6 +62,38 @@ func ConfiguredRigName(cityPath string, a config.Agent, rigs []config.Rig) strin
 	return ""
 }
 
+// HomeStoreKey renders a resolved rig name ("" for city, as returned by
+// ConfiguredRigName) into the canonical store-scope key pool/controller
+// demand routing uses: "city", or "rig:<name>".
+func HomeStoreKey(rigName string) string {
+	if rigName == "" {
+		return "city"
+	}
+	return "rig:" + rigName
+}
+
+// ValidateRouteDefaultScopes returns an error if two or more agents set
+// RouteDefault within the same resolved runtime scope. It resolves each
+// agent's scope the same way pool/controller demand routing does (via
+// ConfiguredRigName + HomeStoreKey), so it catches every Dir spelling that
+// collapses onto one scope — not just identical Dir strings, which is all
+// a raw a.Dir comparison (e.g. config.ValidateAgents' cheap fast-path
+// check) can see (gcy-qdky).
+func ValidateRouteDefaultScopes(cityPath string, agents []config.Agent, rigs []config.Rig) error {
+	owner := make(map[string]string, len(agents))
+	for _, a := range agents {
+		if !a.RouteDefault {
+			continue
+		}
+		scope := HomeStoreKey(ConfiguredRigName(cityPath, a, rigs))
+		if prior, dup := owner[scope]; dup {
+			return fmt.Errorf("agent %q: route_default conflicts with %q — at most one agent per scope (%s) may set route_default", a.QualifiedName(), prior, scope)
+		}
+		owner[scope] = a.QualifiedName()
+	}
+	return nil
+}
+
 // RigRootForName returns the configured root path for rigName.
 func RigRootForName(rigName string, rigs []config.Rig) string {
 	for _, rig := range rigs {

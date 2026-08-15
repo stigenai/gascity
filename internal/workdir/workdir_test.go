@@ -235,6 +235,60 @@ func TestConfiguredRigNameMatchesSymlinkAliasPath(t *testing.T) {
 	}
 }
 
+func TestValidateRouteDefaultScopesRejectsCityScopedDifferentDirs(t *testing.T) {
+	// Neither Dir matches any configured rig, so both agents are
+	// city-scoped even though their Dir strings differ (gcy-qdky case 1).
+	cityPath := t.TempDir()
+	agents := []config.Agent{
+		{Name: "alpha", Dir: "tools/a", RouteDefault: true},
+		{Name: "beta", Dir: "tools/b", RouteDefault: true},
+	}
+	err := ValidateRouteDefaultScopes(cityPath, agents, nil)
+	if err == nil {
+		t.Fatal("expected error for two city-scoped route_default agents with different Dir strings")
+	}
+	if !strings.Contains(err.Error(), "route_default") || !strings.Contains(err.Error(), "city") {
+		t.Errorf("error = %q, want mention of route_default and the city scope", err)
+	}
+}
+
+func TestValidateRouteDefaultScopesRejectsSameRigDifferentDirSpellings(t *testing.T) {
+	// One agent spells its Dir as the bare rig name, the other as a path
+	// to that rig's root — both resolve to the same rig scope even though
+	// the Dir strings differ (gcy-qdky case 2).
+	cityPath := t.TempDir()
+	rigPath := filepath.Join(cityPath, "rigs", "hello-world")
+	rigs := []config.Rig{{Name: "hello-world", Path: rigPath}}
+	agents := []config.Agent{
+		{Name: "alpha", Dir: "hello-world", RouteDefault: true},
+		{Name: "beta", Dir: "rigs/hello-world", RouteDefault: true},
+	}
+	err := ValidateRouteDefaultScopes(cityPath, agents, rigs)
+	if err == nil {
+		t.Fatal("expected error for two route_default agents resolving to the same rig scope")
+	}
+	if !strings.Contains(err.Error(), "route_default") || !strings.Contains(err.Error(), "rig:hello-world") {
+		t.Errorf("error = %q, want mention of route_default and scope \"rig:hello-world\"", err)
+	}
+}
+
+func TestValidateRouteDefaultScopesOKAcrossDistinctRigsAndCity(t *testing.T) {
+	cityPath := t.TempDir()
+	rigs := []config.Rig{
+		{Name: "hello-world", Path: filepath.Join(cityPath, "hello-world")},
+		{Name: "other-rig", Path: filepath.Join(cityPath, "other-rig")},
+	}
+	agents := []config.Agent{
+		{Name: "triage", Dir: "hello-world", RouteDefault: true},
+		{Name: "lead", Dir: "other-rig", RouteDefault: true},
+		{Name: "citywide-router", RouteDefault: true},
+		{Name: "not-a-router", Dir: "hello-world"},
+	}
+	if err := ValidateRouteDefaultScopes(cityPath, agents, rigs); err != nil {
+		t.Errorf("ValidateRouteDefaultScopes: unexpected error for route_default in distinct scopes: %v", err)
+	}
+}
+
 func TestSamePathUsesSharedPathNormalization(t *testing.T) {
 	a := "/private/tmp/gc-home"
 	b := "/tmp/gc-home"

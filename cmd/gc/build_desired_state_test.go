@@ -982,6 +982,379 @@ func TestDefaultScaleCheckCountsAndDemandLeavesUnmatchedInstanceSuffixAlone(t *t
 	}
 }
 
+// TestDefaultScaleCheckCountsAndDemandFallsBackToRouteDefaultForUnroutedWork
+// covers the gcy-lbd fix: a ready, unassigned bead with no gc.routed_to/
+// gc.run_target at all is demand for nobody unless the store's scope has a
+// route_default agent configured, in which case it counts toward that
+// agent's template instead of being silently dropped.
+func TestDefaultScaleCheckCountsAndDemandFallsBackToRouteDefaultForUnroutedWork(t *testing.T) {
+	const routerTemplate = "hello-world/triage"
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{
+			{Name: "triage", Dir: "hello-world", RouteDefault: true, MinActiveSessions: intPtr(1)},
+		},
+	}
+	store := beads.NewMemStore()
+	work, err := store.Create(beads.Bead{
+		Title:  "nobody claimed this",
+		Type:   "task",
+		Status: "open",
+	})
+	if err != nil {
+		t.Fatalf("create unrouted bead: %v", err)
+	}
+
+	counts, demand, _, errs := defaultScaleCheckCountsAndDemand(cfg, []defaultScaleCheckTarget{{
+		template:     routerTemplate,
+		storeKey:     "rig:hello-world",
+		homeStoreKey: "rig:hello-world",
+		store:        store,
+	}})
+	if len(errs) != 0 {
+		t.Fatalf("defaultScaleCheckCountsAndDemand errs = %v", errs)
+	}
+	if got := counts[routerTemplate]; got != 1 {
+		t.Fatalf("defaultScaleCheckCountsAndDemand[%q] = %d, want 1 for an unrouted bead falling back to route_default", routerTemplate, got)
+	}
+	if got := demand[routerTemplate].WorkBeadIDs; !reflect.DeepEqual(got, []string{work.ID}) {
+		t.Fatalf("WorkBeadIDs = %v, want [%s]", got, work.ID)
+	}
+}
+
+// TestDefaultScaleCheckCountsAndDemandFallsBackToRouteDefaultWhenRoutedToUnknownTemplate
+// covers the other half of "unrouted": a bead whose gc.routed_to names a
+// template that doesn't exist in this store's scope (typo'd, decommissioned,
+// or simply never a real template here) is just as much demand for nobody as
+// a bead with no route at all, so it gets the same route_default fallback.
+func TestDefaultScaleCheckCountsAndDemandFallsBackToRouteDefaultWhenRoutedToUnknownTemplate(t *testing.T) {
+	const routerTemplate = "hello-world/triage"
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{
+			{Name: "triage", Dir: "hello-world", RouteDefault: true, MinActiveSessions: intPtr(1)},
+		},
+	}
+	store := beads.NewMemStore()
+	if _, err := store.Create(beads.Bead{
+		Title:  "routed to a decommissioned template",
+		Type:   "task",
+		Status: "open",
+		Metadata: map[string]string{
+			beadmeta.RoutedToMetadataKey: "hello-world/retired-agent",
+		},
+	}); err != nil {
+		t.Fatalf("create misrouted bead: %v", err)
+	}
+
+	counts, _, _, errs := defaultScaleCheckCountsAndDemand(cfg, []defaultScaleCheckTarget{{
+		template:     routerTemplate,
+		storeKey:     "rig:hello-world",
+		homeStoreKey: "rig:hello-world",
+		store:        store,
+	}})
+	if len(errs) != 0 {
+		t.Fatalf("defaultScaleCheckCountsAndDemand errs = %v", errs)
+	}
+	if got := counts[routerTemplate]; got != 1 {
+		t.Fatalf("defaultScaleCheckCountsAndDemand[%q] = %d, want 1 for a bead routed to an absent template falling back to route_default", routerTemplate, got)
+	}
+}
+
+// TestDefaultScaleCheckCountsAndDemandRouteDefaultDoesNotHijackMatchedRouting
+// guards the opposite failure mode: a route_default fallback must never
+// steal a bead that already matches a real template in scope.
+func TestDefaultScaleCheckCountsAndDemandRouteDefaultDoesNotHijackMatchedRouting(t *testing.T) {
+	const (
+		workerTemplate = "hello-world/worker"
+		routerTemplate = "hello-world/triage"
+	)
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{
+			{Name: "worker", Dir: "hello-world", MinActiveSessions: intPtr(1)},
+			{Name: "triage", Dir: "hello-world", RouteDefault: true, MinActiveSessions: intPtr(1)},
+		},
+	}
+	store := beads.NewMemStore()
+	if _, err := store.Create(beads.Bead{
+		Title:  "properly routed work",
+		Type:   "task",
+		Status: "open",
+		Metadata: map[string]string{
+			beadmeta.RoutedToMetadataKey: workerTemplate,
+		},
+	}); err != nil {
+		t.Fatalf("create routed bead: %v", err)
+	}
+
+	counts, _, _, errs := defaultScaleCheckCountsAndDemand(cfg, []defaultScaleCheckTarget{
+		{template: workerTemplate, storeKey: "rig:hello-world", homeStoreKey: "rig:hello-world", store: store},
+		{template: routerTemplate, storeKey: "rig:hello-world", homeStoreKey: "rig:hello-world", store: store},
+	})
+	if len(errs) != 0 {
+		t.Fatalf("defaultScaleCheckCountsAndDemand errs = %v", errs)
+	}
+	if got := counts[workerTemplate]; got != 1 {
+		t.Fatalf("defaultScaleCheckCountsAndDemand[%q] = %d, want 1 for correctly routed work", workerTemplate, got)
+	}
+	if got := counts[routerTemplate]; got != 0 {
+		t.Fatalf("defaultScaleCheckCountsAndDemand[%q] = %d, want 0 — route_default must not steal correctly routed work", routerTemplate, got)
+	}
+}
+
+// TestDefaultScaleCheckCountsAndDemandNoRouteDefaultLeavesUnroutedWorkUncounted
+// is the backward-compatibility guard: route_default is opt-in, so a scope
+// without one configured keeps the pre-existing behavior of dropping
+// unrouted ready work rather than counting it toward some guessed template.
+func TestDefaultScaleCheckCountsAndDemandNoRouteDefaultLeavesUnroutedWorkUncounted(t *testing.T) {
+	const template = "hello-world/worker"
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{
+			{Name: "worker", Dir: "hello-world", MinActiveSessions: intPtr(1)},
+		},
+	}
+	store := beads.NewMemStore()
+	if _, err := store.Create(beads.Bead{
+		Title:  "nobody claimed this either",
+		Type:   "task",
+		Status: "open",
+	}); err != nil {
+		t.Fatalf("create unrouted bead: %v", err)
+	}
+
+	counts, _, _, errs := defaultScaleCheckCountsAndDemand(cfg, []defaultScaleCheckTarget{{
+		template: template,
+		storeKey: "rig:hello-world",
+		store:    store,
+	}})
+	if len(errs) != 0 {
+		t.Fatalf("defaultScaleCheckCountsAndDemand errs = %v", errs)
+	}
+	if got := counts[template]; got != 0 {
+		t.Fatalf("defaultScaleCheckCountsAndDemand[%q] = %d, want 0 without a configured route_default", template, got)
+	}
+}
+
+// TestDefaultScaleCheckCountsAndDemandRouteDefaultIsScopedPerStoreGroup
+// guards against cross-rig leakage: route_default is resolved per store
+// group (matching defaultScaleCheckTarget.storeKey), so one rig's designated
+// router must not absorb another rig's unrouted work.
+func TestDefaultScaleCheckCountsAndDemandRouteDefaultIsScopedPerStoreGroup(t *testing.T) {
+	const (
+		routerA = "rig-a/router"
+		workerB = "rig-b/worker"
+	)
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{
+			{Name: "router", Dir: "rig-a", RouteDefault: true, MinActiveSessions: intPtr(1)},
+			{Name: "worker", Dir: "rig-b", MinActiveSessions: intPtr(1)},
+		},
+	}
+	storeA := beads.NewMemStore()
+	storeB := beads.NewMemStore()
+	if _, err := storeB.Create(beads.Bead{
+		Title:  "unrouted work in a rig with no route_default",
+		Type:   "task",
+		Status: "open",
+	}); err != nil {
+		t.Fatalf("create unrouted bead in rig-b: %v", err)
+	}
+
+	counts, _, _, errs := defaultScaleCheckCountsAndDemand(cfg, []defaultScaleCheckTarget{
+		{template: routerA, storeKey: "rig:rig-a", homeStoreKey: "rig:rig-a", store: storeA},
+		{template: workerB, storeKey: "rig:rig-b", homeStoreKey: "rig:rig-b", store: storeB},
+	})
+	if len(errs) != 0 {
+		t.Fatalf("defaultScaleCheckCountsAndDemand errs = %v", errs)
+	}
+	if got := counts[routerA]; got != 0 {
+		t.Fatalf("defaultScaleCheckCountsAndDemand[%q] = %d, want 0 — a rig's route_default must not catch another rig's unrouted work", routerA, got)
+	}
+	if got := counts[workerB]; got != 0 {
+		t.Fatalf("defaultScaleCheckCountsAndDemand[%q] = %d, want 0 — rig-b has no route_default configured", workerB, got)
+	}
+}
+
+// TestDefaultScaleCheckCountsAndDemandRouteDefaultDoesNotAbsorbCityStoreWorkOutsideItsScope
+// reproduces gcy-nwlt: TestDefaultScaleCheckCountsAndDemandRouteDefaultIsScopedPerStoreGroup
+// gives each rig its own store and its own group, which can never leak. Real
+// production input (build_desired_state.go:566-621) is different: every
+// rig-scoped default-probe pool gets its own rig-store target PLUS a SECOND
+// cross-store probe against the city store, using the same template name and
+// storeKey "city" (vp-kvp cross-store routed delivery). That second probe is
+// what actually merges rig-a's and rig-b's templates into one shared "city"
+// group — the case the older test cannot construct. A rig-scoped
+// route_default agent must not become the fallback for that shared group: it
+// may only catch unrouted work in its OWN rig's store, never unrouted work
+// sitting in the city store.
+func TestDefaultScaleCheckCountsAndDemandRouteDefaultDoesNotAbsorbCityStoreWorkOutsideItsScope(t *testing.T) {
+	const (
+		routerA = "rig-a/triage"
+		workerB = "rig-b/worker"
+	)
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{
+			{Name: "triage", Dir: "rig-a", RouteDefault: true, MinActiveSessions: intPtr(1)},
+			{Name: "worker", Dir: "rig-b", MinActiveSessions: intPtr(1)},
+		},
+	}
+	rigAStore := beads.NewMemStore()
+	rigBStore := beads.NewMemStore()
+	cityStore := beads.NewMemStore()
+	work, err := cityStore.Create(beads.Bead{
+		Title:  "unrouted work sitting in the city store",
+		Type:   "task",
+		Status: "open",
+	})
+	if err != nil {
+		t.Fatalf("create unrouted city-store bead: %v", err)
+	}
+
+	// Mirrors the exact target shape build_desired_state.go:619-620 builds in
+	// production for every rig-scoped default-probe pool: an own-rig target
+	// plus a same-template cross-store target against the city store.
+	counts, demand, _, errs := defaultScaleCheckCountsAndDemand(cfg, []defaultScaleCheckTarget{
+		{template: routerA, storeKey: "rig:rig-a", homeStoreKey: "rig:rig-a", store: rigAStore},
+		{template: routerA, storeKey: "city", homeStoreKey: "rig:rig-a", store: cityStore},
+		{template: workerB, storeKey: "rig:rig-b", homeStoreKey: "rig:rig-b", store: rigBStore},
+		{template: workerB, storeKey: "city", homeStoreKey: "rig:rig-b", store: cityStore},
+	})
+	if len(errs) != 0 {
+		t.Fatalf("defaultScaleCheckCountsAndDemand errs = %v", errs)
+	}
+	if got := counts[routerA]; got != 0 {
+		t.Fatalf("defaultScaleCheckCountsAndDemand[%q] = %d, want 0 — rig-a's route_default must not absorb unrouted work outside its own rig store", routerA, got)
+	}
+	if got := counts[workerB]; got != 0 {
+		t.Fatalf("defaultScaleCheckCountsAndDemand[%q] = %d, want 0 — rig-b has no route_default, and the unrouted bead lives in the city store, not rig-b's own store", workerB, got)
+	}
+	if got := demand[routerA].WorkBeadIDs; len(got) != 0 {
+		t.Fatalf("demand[%q].WorkBeadIDs = %v, want none — %s must stay uncounted, not silently attributed to rig-a's router", routerA, got, work.ID)
+	}
+}
+
+// TestDefaultScaleCheckCountsAndDemandRouteDefaultCatchesOwnCityScopeAlongsideRigScope
+// is the positive twin of the test above: a city-scoped route_default agent
+// coexisting with a rig-scoped one (different scopes, both legal per
+// config.ValidateAgents) must still catch unrouted city-store work — the
+// per-scope fix must not overcorrect into no fallback ever matching the
+// shared "city" group.
+func TestDefaultScaleCheckCountsAndDemandRouteDefaultCatchesOwnCityScopeAlongsideRigScope(t *testing.T) {
+	const (
+		routerA      = "rig-a/triage"
+		cityTemplate = "city-triage"
+	)
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{
+			{Name: "triage", Dir: "rig-a", RouteDefault: true, MinActiveSessions: intPtr(1)},
+			{Name: "city-triage", RouteDefault: true, MinActiveSessions: intPtr(1)},
+		},
+	}
+	rigAStore := beads.NewMemStore()
+	cityStore := beads.NewMemStore()
+	work, err := cityStore.Create(beads.Bead{
+		Title:  "unrouted work sitting in the city store",
+		Type:   "task",
+		Status: "open",
+	})
+	if err != nil {
+		t.Fatalf("create unrouted city-store bead: %v", err)
+	}
+
+	counts, demand, _, errs := defaultScaleCheckCountsAndDemand(cfg, []defaultScaleCheckTarget{
+		{template: routerA, storeKey: "rig:rig-a", homeStoreKey: "rig:rig-a", store: rigAStore},
+		{template: routerA, storeKey: "city", homeStoreKey: "rig:rig-a", store: cityStore},
+		{template: cityTemplate, storeKey: "city", homeStoreKey: "city", store: cityStore},
+	})
+	if len(errs) != 0 {
+		t.Fatalf("defaultScaleCheckCountsAndDemand errs = %v", errs)
+	}
+	if got := counts[cityTemplate]; got != 1 {
+		t.Fatalf("defaultScaleCheckCountsAndDemand[%q] = %d, want 1 — the city-scoped route_default must still catch unrouted city-store work", cityTemplate, got)
+	}
+	if got := counts[routerA]; got != 0 {
+		t.Fatalf("defaultScaleCheckCountsAndDemand[%q] = %d, want 0 — rig-a's router must not also claim it", routerA, got)
+	}
+	if got := demand[cityTemplate].WorkBeadIDs; !reflect.DeepEqual(got, []string{work.ID}) {
+		t.Fatalf("demand[%q].WorkBeadIDs = %v, want [%s]", cityTemplate, got, work.ID)
+	}
+}
+
+// TestDefaultScaleCheckCountsAndDemandRouteDefaultChoiceIsOrderIndependent
+// reproduces gcy-zaft: config.ValidateAgents keys its "at most one
+// route_default per scope" uniqueness rule on Agent.Dir, but the pre-fix
+// runtime scope was the store *group*, which is not the same partition (the
+// "city" group holds templates from every rig, per the cross-store probe —
+// see the DoesNotAbsorbCityStoreWorkOutsideItsScope test above). A
+// rig-scoped route_default agent and a city-scoped one both pass Dir-keyed
+// validation (different Dir), so both used to become candidates inside the
+// shared "city" group, and — before the scope check this file's earlier
+// tests added — the absorber was simply whichever agent came first in
+// cfg.Agents: reordering the exact same two [[agent]] blocks, with no other
+// config change, flipped which one caught a real city-store bead. Running
+// the identical target set with the two agents in both declared orders
+// proves the fix makes the outcome depend on scope, not declaration order.
+func TestDefaultScaleCheckCountsAndDemandRouteDefaultChoiceIsOrderIndependent(t *testing.T) {
+	const (
+		rigRouter  = "rig-a/rig-router"
+		cityRouter = "city-router"
+	)
+	rigRouterAgent := config.Agent{Name: "rig-router", Dir: "rig-a", RouteDefault: true, MinActiveSessions: intPtr(1)}
+	cityRouterAgent := config.Agent{Name: "city-router", RouteDefault: true, MinActiveSessions: intPtr(1)}
+
+	orders := []struct {
+		name   string
+		agents []config.Agent
+	}{
+		{"rig-router-declared-first", []config.Agent{rigRouterAgent, cityRouterAgent}},
+		{"city-router-declared-first", []config.Agent{cityRouterAgent, rigRouterAgent}},
+	}
+	for _, order := range orders {
+		t.Run(order.name, func(t *testing.T) {
+			cfg := &config.City{
+				Workspace: config.Workspace{Name: "test-city"},
+				Agents:    order.agents,
+			}
+			if err := config.ValidateAgents(cfg.Agents); err != nil {
+				t.Fatalf("ValidateAgents rejected a valid rig-scoped + city-scoped route_default pair: %v", err)
+			}
+			rigAStore := beads.NewMemStore()
+			cityStore := beads.NewMemStore()
+			work, err := cityStore.Create(beads.Bead{
+				Title:  "unrouted work sitting in the city store",
+				Type:   "task",
+				Status: "open",
+			})
+			if err != nil {
+				t.Fatalf("create unrouted city-store bead: %v", err)
+			}
+
+			counts, demand, _, errs := defaultScaleCheckCountsAndDemand(cfg, []defaultScaleCheckTarget{
+				{template: rigRouter, storeKey: "rig:rig-a", homeStoreKey: "rig:rig-a", store: rigAStore},
+				{template: rigRouter, storeKey: "city", homeStoreKey: "rig:rig-a", store: cityStore},
+				{template: cityRouter, storeKey: "city", homeStoreKey: "city", store: cityStore},
+			})
+			if len(errs) != 0 {
+				t.Fatalf("defaultScaleCheckCountsAndDemand errs = %v", errs)
+			}
+			if got := counts[cityRouter]; got != 1 {
+				t.Fatalf("defaultScaleCheckCountsAndDemand[%q] = %d, want 1 regardless of [[agent]] order — only the city-scoped router may claim city-store work", cityRouter, got)
+			}
+			if got := counts[rigRouter]; got != 0 {
+				t.Fatalf("defaultScaleCheckCountsAndDemand[%q] = %d, want 0 regardless of [[agent]] order — the rig-scoped router must never claim work outside rig-a's own store", rigRouter, got)
+			}
+			if got := demand[cityRouter].WorkBeadIDs; !reflect.DeepEqual(got, []string{work.ID}) {
+				t.Fatalf("demand[%q].WorkBeadIDs = %v, want [%s]", cityRouter, got, work.ID)
+			}
+		})
+	}
+}
+
 func TestDefaultScaleCheckCountsUsesLiveReadyWhenCachedRowWasAssigned(t *testing.T) {
 	const template = "gascity/workflows.codex-min"
 	backing := beads.NewMemStore()
@@ -6611,6 +6984,222 @@ func TestBuildDesiredState_RoutedDemandWakesOnlyCanonicalSingletonNamedSessions(
 		t.Fatalf("multi-instance template %q lost routed demand entirely (scale_counts=%v); "+
 			"the gate must withhold only the named wake, not the pool demand",
 			multiTemplate, dsResult.ScaleCheckCounts)
+	}
+}
+
+// TestBuildDesiredState_RouteDefaultFallbackDemandClampedToOne reproduces
+// gcy-69gw: route_default fallback demand was warm default-probe demand,
+// which is uncapped scale-to-want (one desired session per ready unrouted
+// bead) — unlike the analogous on_demand named-backing template case just
+// above, which namedOnDemandTemplates already clamps to 1. A route_default
+// agent is the same singleton-shaped router (one session drains the whole
+// unrouted queue sequentially), so N unrouted beads must desire 1 session,
+// not N — confirmed on the unfixed code this test would want 5, not 1.
+func TestBuildDesiredState_RouteDefaultFallbackDemandClampedToOne(t *testing.T) {
+	cityPath := t.TempDir()
+	store := beads.NewMemStore()
+	const template = "triage"
+	const unroutedCount = 5
+	for i := 0; i < unroutedCount; i++ {
+		if _, err := store.Create(beads.Bead{
+			Title:  fmt.Sprintf("unrouted work %d", i),
+			Type:   "task",
+			Status: "open",
+		}); err != nil {
+			t.Fatalf("create unrouted bead %d: %v", i, err)
+		}
+	}
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:         template,
+			StartCommand: "true",
+			WorkQuery:    "printf ''",
+			RouteDefault: true,
+			// no MaxActiveSessions — without the clamp this scales linearly
+			// with the unrouted backlog instead of staying pinned at 1.
+		}},
+	}
+
+	dsResult := buildDesiredState("test-city", cityPath, time.Now().UTC(), cfg, runtime.NewFake(), store, io.Discard)
+
+	if got := dsResult.ScaleCheckCounts[template]; got != 1 {
+		t.Fatalf("ScaleCheckCounts[%q] = %d, want 1 — %d unrouted beads all falling back to the same route_default agent must not scale it to %d sessions (scale_counts=%v)",
+			template, got, unroutedCount, unroutedCount, dsResult.ScaleCheckCounts)
+	}
+}
+
+// TestBuildDesiredState_RouteDefaultExplicitlyRoutedDemandScalesNormally is
+// the counterpart gcy-nk8l reopened: gcy-69gw's fix clamped the route_default
+// template's TOTAL merged count to 1, which caught explicitly-routed
+// (gc.routed_to) demand in the same net as fallback demand — an agent with
+// route_default=true and N beads explicitly routed to it desired 1 session,
+// not N, even with zero unrouted work in play. Only the fallback-derived
+// share of demand may be clamped; explicit routing must scale exactly like
+// it would for any non-route_default agent.
+func TestBuildDesiredState_RouteDefaultExplicitlyRoutedDemandScalesNormally(t *testing.T) {
+	cityPath := t.TempDir()
+	store := beads.NewMemStore()
+	const template = "triage"
+	const routedCount = 10
+	for i := 0; i < routedCount; i++ {
+		if _, err := store.Create(beads.Bead{
+			Title:  fmt.Sprintf("explicitly routed work %d", i),
+			Type:   "task",
+			Status: "open",
+			Metadata: map[string]string{
+				beadmeta.RoutedToMetadataKey: template,
+			},
+		}); err != nil {
+			t.Fatalf("create routed bead %d: %v", i, err)
+		}
+	}
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:         template,
+			StartCommand: "true",
+			WorkQuery:    "printf ''",
+			RouteDefault: true,
+		}},
+	}
+
+	dsResult := buildDesiredState("test-city", cityPath, time.Now().UTC(), cfg, runtime.NewFake(), store, io.Discard)
+
+	if got := dsResult.ScaleCheckCounts[template]; got != routedCount {
+		t.Fatalf("ScaleCheckCounts[%q] = %d, want %d — route_default's fallback-queue clamp must not cap demand explicitly routed to the same template via gc.routed_to (scale_counts=%v)",
+			template, got, routedCount, dsResult.ScaleCheckCounts)
+	}
+}
+
+// TestBuildDesiredState_RouteDefaultMixedExplicitAndFallbackDemand covers the
+// blended shape the bug's own repro called out: a route_default agent with
+// BOTH explicitly-routed and unrouted-fallback beads in flight at once. The
+// explicit share must scale uncapped while the fallback share stays clamped
+// to at most 1, so the desired count is routedCount+1, not routedCount and
+// not routedCount+unroutedCount.
+func TestBuildDesiredState_RouteDefaultMixedExplicitAndFallbackDemand(t *testing.T) {
+	cityPath := t.TempDir()
+	store := beads.NewMemStore()
+	const template = "triage"
+	const routedCount = 3
+	const unroutedCount = 4
+	for i := 0; i < routedCount; i++ {
+		if _, err := store.Create(beads.Bead{
+			Title:  fmt.Sprintf("explicitly routed work %d", i),
+			Type:   "task",
+			Status: "open",
+			Metadata: map[string]string{
+				beadmeta.RoutedToMetadataKey: template,
+			},
+		}); err != nil {
+			t.Fatalf("create routed bead %d: %v", i, err)
+		}
+	}
+	for i := 0; i < unroutedCount; i++ {
+		if _, err := store.Create(beads.Bead{
+			Title:  fmt.Sprintf("unrouted work %d", i),
+			Type:   "task",
+			Status: "open",
+		}); err != nil {
+			t.Fatalf("create unrouted bead %d: %v", i, err)
+		}
+	}
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:         template,
+			StartCommand: "true",
+			WorkQuery:    "printf ''",
+			RouteDefault: true,
+		}},
+	}
+
+	dsResult := buildDesiredState("test-city", cityPath, time.Now().UTC(), cfg, runtime.NewFake(), store, io.Discard)
+
+	const want = routedCount + 1
+	if got := dsResult.ScaleCheckCounts[template]; got != want {
+		t.Fatalf("ScaleCheckCounts[%q] = %d, want %d (=%d routed + 1 clamped fallback) — scale_counts=%v",
+			template, got, want, routedCount, dsResult.ScaleCheckCounts)
+	}
+}
+
+// TestBuildDesiredState_RouteDefaultColdCustomScaleCheckBindsOwnRigNotFirstRig
+// reproduces gcy-dhnu: defaultScaleCheckCountsAndDemand's per-template home
+// scope used to be inferred by "prefer the first non-city storeKey seen" —
+// correct for the generic-pool producer (defaultScaleCheckTargetForAgent,
+// one own-rig target per agent) but wrong for the cold custom-scale_check
+// producer (build_desired_state.go's activeStores loop), which appends ONE
+// target per active store — city, then every rig in cfg.Rigs declaration
+// order — for the SAME template. The first non-city key any such template
+// saw was always cfg.Rigs[0]'s key, regardless of which rig the agent
+// actually belongs to. A route_default agent on any rig OTHER than
+// cfg.Rigs[0], with a non-empty scale_check, while cold, therefore could not
+// see its own rig's unrouted work: its recorded home was cfg.Rigs[0], so its
+// own rig's group rejected it as a route_default candidate. This test drives
+// buildDesiredState end-to-end through the REAL activeStores construction
+// path (unlike the defaultScaleCheckCountsAndDemand-level tests above, which
+// hand-build targets and so cannot exercise a bug in how targets themselves
+// get built) — no prior test built targets from that shape (flagged as a gap
+// on gcy-dhnu itself, matching gcy-i4sg's note on the previous round).
+func TestBuildDesiredState_RouteDefaultColdCustomScaleCheckBindsOwnRigNotFirstRig(t *testing.T) {
+	const template = "rig-b/triage"
+	cityPath := t.TempDir()
+	rigAPath := filepath.Join(cityPath, "rigs", "rig-a")
+	rigBPath := filepath.Join(cityPath, "rigs", "rig-b")
+	if err := os.MkdirAll(rigAPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(rigBPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cityStore := beads.NewMemStore()
+	rigAStore := beads.NewMemStore()
+	rigBStore := beads.NewMemStore()
+	if _, err := rigBStore.Create(beads.Bead{
+		Title:  "unrouted work in rig-b, the router's own rig",
+		Type:   "task",
+		Status: "open",
+	}); err != nil {
+		t.Fatalf("create unrouted bead in rig-b: %v", err)
+	}
+
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		// rig-a is cfg.Rigs[0] deliberately: the bug always picked the FIRST
+		// rig's key as every cold custom-scale_check template's "home",
+		// regardless of the agent's real rig. Putting the route_default
+		// agent on the SECOND rig means a passing test proves the fix, not a
+		// coincidence of declaration order (mirrors gcy-zaft's order-
+		// independence proof for the sibling generic-pool bug).
+		Rigs: []config.Rig{
+			{Name: "rig-a", Path: rigAPath},
+			{Name: "rig-b", Path: rigBPath},
+		},
+		Agents: []config.Agent{{
+			Name:         "triage",
+			Dir:          "rig-b",
+			RouteDefault: true,
+			// Non-empty ScaleCheck is required to reach the cold
+			// activeStores probe path ("Custom-scale_check pools
+			// deliberately KEEP the cold-only probe") instead of the
+			// generic-pool ownTarget path. It reports 0 itself — the whole
+			// point of the cold-wake probe is to see demand the pool's own
+			// (currently sleeping) check cannot.
+			ScaleCheck: "printf 0",
+		}},
+	}
+	rigStores := map[string]beads.Store{"rig-a": rigAStore, "rig-b": rigBStore}
+
+	var stderr strings.Builder
+	dsResult := buildDesiredStateWithSessionBeads(
+		"test-city", cityPath, time.Now().UTC(), cfg, runtime.NewFake(),
+		cityStore, rigStores, nil, nil, &stderr,
+	)
+
+	if got := dsResult.ScaleCheckCounts[template]; got != 1 {
+		t.Fatalf("ScaleCheckCounts[%q] = %d, want 1 — a cold route_default agent on rig-b (not cfg.Rigs[0]) must see its OWN rig's unrouted work (stderr=%s)",
+			template, got, stderr.String())
 	}
 }
 

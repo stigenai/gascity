@@ -304,6 +304,7 @@ func deepCopyAgent(src *config.Agent, name, dir string) config.Agent {
 		ScaleCheck:           src.ScaleCheck,
 		BindingName:          src.BindingName,
 		PackName:             src.PackName,
+		RouteDefault:         src.RouteDefault,
 	}
 	if len(src.DependsOn) > 0 {
 		dst.DependsOn = make([]string, len(src.DependsOn))

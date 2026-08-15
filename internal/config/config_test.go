@@ -3389,6 +3389,47 @@ func TestValidatePoolMinGtMaxUnlimited(t *testing.T) {
 	}
 }
 
+func TestValidateAgentsRouteDefaultDuplicateInScopeRejected(t *testing.T) {
+	agents := []Agent{
+		{Name: "triage", Dir: "hello-world", RouteDefault: true},
+		{Name: "lead", Dir: "hello-world", RouteDefault: true},
+	}
+	err := ValidateAgents(agents)
+	if err == nil {
+		t.Fatal("expected error for two route_default agents in the same scope")
+	}
+	if !strings.Contains(err.Error(), "route_default") {
+		t.Errorf("error = %q, want mention of route_default", err)
+	}
+}
+
+func TestValidateAgentsRouteDefaultDuplicateInCityScopeRejected(t *testing.T) {
+	// Dir == "" is the city scope; two city-scoped route_default agents
+	// conflict the same way two rig-scoped ones do.
+	agents := []Agent{
+		{Name: "triage", RouteDefault: true},
+		{Name: "lead", RouteDefault: true},
+	}
+	err := ValidateAgents(agents)
+	if err == nil {
+		t.Fatal("expected error for two city-scoped route_default agents")
+	}
+	if !strings.Contains(err.Error(), "route_default") {
+		t.Errorf("error = %q, want mention of route_default", err)
+	}
+}
+
+func TestValidateAgentsRouteDefaultDifferentScopesOK(t *testing.T) {
+	agents := []Agent{
+		{Name: "triage", Dir: "hello-world", RouteDefault: true},
+		{Name: "lead", Dir: "other-rig", RouteDefault: true},
+		{Name: "citywide-router", RouteDefault: true},
+	}
+	if err := ValidateAgents(agents); err != nil {
+		t.Errorf("ValidateAgents: unexpected error for route_default in distinct scopes: %v", err)
+	}
+}
+
 func TestMaxActiveSessionsUnlimited(t *testing.T) {
 	tests := []struct {
 		max  int
