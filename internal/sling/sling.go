@@ -695,9 +695,13 @@ type CrossRigError struct {
 	RigPrefix  string
 }
 
-// Error returns the cross-rig routing diagnostic.
+// Error returns the cross-rig routing diagnostic. Wording matches the
+// --dry-run preview at cmd/gc/cmd_sling.go's checkCrossRig: this is the path
+// with consequences (it blocks the real route), so it must state the
+// refusal and the remedy, not read like a neutral progress line an agent
+// could mistake for a successful route (gcy-2mp3).
 func (e *CrossRigError) Error() string {
-	return fmt.Sprintf("cross-rig routing — bead %s (prefix %q) → agent %s (rig prefix %q)", e.BeadID, e.BeadPrefix, e.Target, e.RigPrefix)
+	return fmt.Sprintf("gc sling: cross-rig routing blocked — bead %s (prefix %q) targets %s (rig prefix %q); use --force to override", e.BeadID, e.BeadPrefix, e.Target, e.RigPrefix)
 }
 
 // CrossRigRouteError returns a typed cross-rig error when routing is unsafe.
