@@ -136,8 +136,21 @@ type poolEvalWork struct {
 type defaultScaleCheckTarget struct {
 	template string
 	storeKey string
-	store    beads.Store
-	err      error
+	// homeStoreKey is the template's OWN scope — "rig:<name>" for a
+	// rig-scoped agent, "city" for a city-scoped one — set explicitly by
+	// whichever code built this target, never inferred from storeKey or
+	// target ordering. storeKey says which store THIS probe queries (a
+	// template may appear in several targets, one per store it's probed
+	// against); homeStoreKey is constant across all of a template's targets
+	// regardless of which store each one queries. defaultScaleCheckCountsAndDemand
+	// reads it directly to decide route_default fallback eligibility
+	// (gcy-dhnu) — "prefer the first non-city storeKey seen" used to
+	// recover this heuristically and broke silently whenever a template's
+	// targets were built in an order, or from a producer, that didn't hold
+	// the heuristic's assumption.
+	homeStoreKey string
+	store        beads.Store
+	err          error
 }
 
 type scaleCheckDemand struct {
@@ -407,6 +420,16 @@ func buildDesiredStateWithSessionBeads(
 	// against (city + every non-suspended rig store), so routed demand a sleeping
 	// rig pool can't see locally — e.g. work queued in the city store — still
 	// wakes it. Only consulted for the clamped cold-wake probe.
+	//
+	// ref uses the same "city" / "rig:<name>" namespace defaultScaleCheckTargetForAgent
+	// uses for storeKey (gcy-dhnu) — not the bare rig.Name this used to carry.
+	// Both producers feed the same defaultScaleTargets slice, consumed together
+	// by defaultScaleCheckCountsAndDemand's storeKey-keyed groups map; two
+	// namespaces meant the SAME rig store formed two different groups
+	// depending on which producer built the probe, so a target's homeStoreKey
+	// (always the "rig:"/"city" form) could never equal a group key built by
+	// the other producer for that same store, even once homeStoreKey itself
+	// was correct.
 	type activeStore struct {
 		store beads.Store
 		ref   string
@@ -417,7 +440,7 @@ func buildDesiredStateWithSessionBeads(
 			continue
 		}
 		if s, ok := rigStores[rig.Name]; ok {
-			activeStores = append(activeStores, activeStore{store: s, ref: rig.Name})
+			activeStores = append(activeStores, activeStore{store: s, ref: "rig:" + rig.Name})
 		}
 	}
 
@@ -537,7 +560,7 @@ func buildDesiredStateWithSessionBeads(
 				// city-aliased, not city-scoped. The named-session target list
 				// mirrors these probes only for partial-query retention bookkeeping.
 				if !storeScopedControlDispatcher && ownTarget.storeKey != "city" && ownTarget.store != nil && ownTarget.err == nil && ownTarget.store != store {
-					cityTarget := defaultScaleCheckTarget{template: template, store: store, storeKey: "city"}
+					cityTarget := defaultScaleCheckTarget{template: template, store: store, storeKey: "city", homeStoreKey: ownTarget.homeStoreKey}
 					if namedSessionMode != "always" && !residentLive {
 						defaultScaleTargets = append(defaultScaleTargets, cityTarget)
 					}
@@ -547,7 +570,7 @@ func buildDesiredStateWithSessionBeads(
 			}
 			if store != nil && isCold && !storeScopedControlDispatcher {
 				for _, source := range activeStores {
-					defaultNamedScaleTargets = append(defaultNamedScaleTargets, defaultScaleCheckTarget{template: template, store: source.store, storeKey: source.ref})
+					defaultNamedScaleTargets = append(defaultNamedScaleTargets, defaultScaleCheckTarget{template: template, store: source.store, storeKey: source.ref, homeStoreKey: defaultScaleCheckHomeStoreKey(rigName)})
 				}
 			}
 			pendingPools = append(pendingPools, poolEvalWork{agentIdx: i, sp: sp, poolDir: poolDir, newDemand: store != nil})
@@ -617,7 +640,7 @@ func buildDesiredStateWithSessionBeads(
 			// claim a route from the city store. Keep their cold-wake probe on the
 			// owning store instead of applying generic cross-store pool delivery.
 			if !storeScopedControlDispatcher && ownTarget.storeKey != "city" && ownTarget.store != nil && ownTarget.err == nil && ownTarget.store != store {
-				defaultScaleTargets = append(defaultScaleTargets, defaultScaleCheckTarget{template: template, store: store, storeKey: "city"})
+				defaultScaleTargets = append(defaultScaleTargets, defaultScaleCheckTarget{template: template, store: store, storeKey: "city", homeStoreKey: ownTarget.homeStoreKey})
 			}
 			continue
 		}
@@ -630,7 +653,7 @@ func buildDesiredStateWithSessionBeads(
 		// it itself, or the pool will churn at the warm/cold boundary.
 		if store != nil && isCold && !storeScopedControlDispatcher {
 			for _, source := range activeStores {
-				defaultScaleTargets = append(defaultScaleTargets, defaultScaleCheckTarget{template: template, store: source.store, storeKey: source.ref})
+				defaultScaleTargets = append(defaultScaleTargets, defaultScaleCheckTarget{template: template, store: source.store, storeKey: source.ref, homeStoreKey: defaultScaleCheckHomeStoreKey(rigName)})
 			}
 			coldWakeTemplates[template] = true
 		}
@@ -1436,6 +1459,19 @@ func readyAssignedWorkAssignees(cfg *config.City, sessionBeads *sessionBeadSnaps
 	return result
 }
 
+// defaultScaleCheckHomeStoreKey renders an agent's own resolved rig name
+// (from configuredRigName; "" means city-scoped) into the canonical
+// defaultScaleCheckTarget.homeStoreKey / storeKey namespace: "city", or
+// "rig:<name>". Every defaultScaleCheckTarget producer uses this so a
+// template's home is always computed the same way regardless of which
+// producer built the target (gcy-dhnu).
+func defaultScaleCheckHomeStoreKey(rigName string) string {
+	if rigName == "" {
+		return "city"
+	}
+	return "rig:" + rigName
+}
+
 func defaultScaleCheckTargetForAgent(
 	cityPath string,
 	cfg *config.City,
@@ -1444,15 +1480,17 @@ func defaultScaleCheckTargetForAgent(
 	rigStores map[string]beads.Store,
 ) defaultScaleCheckTarget {
 	target := defaultScaleCheckTarget{
-		template: agentCfg.QualifiedName(),
-		storeKey: "city",
-		store:    cityStore,
+		template:     agentCfg.QualifiedName(),
+		storeKey:     "city",
+		homeStoreKey: "city",
+		store:        cityStore,
 	}
 	rigName := configuredRigName(cityPath, agentCfg, cfg.Rigs)
 	if rigName == "" {
 		return target
 	}
-	target.storeKey = "rig:" + rigName
+	target.storeKey = defaultScaleCheckHomeStoreKey(rigName)
+	target.homeStoreKey = target.storeKey
 	if rigStores != nil {
 		if rigStore := rigStores[rigName]; rigStore != nil {
 			target.store = rigStore
@@ -1501,11 +1539,20 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 	// membership is correct for matching an explicit gc.routed_to, but wrong
 	// for route_default fallback selection (see
 	// controllerDemandRouteDefaultTemplate), so the fallback check needs a
-	// template's real home key, not just "which groups is it in". A
-	// template's home is whichever non-"city" storeKey it was probed under,
-	// if any — the cross-store probe only ever ADDS a "city" entry alongside
-	// an already-present rig entry, never the reverse, so "prefer the first
-	// non-city key seen" reliably recovers the owning scope.
+	// template's real home key, not just "which groups is it in".
+	//
+	// Read directly from each target's own homeStoreKey (gcy-dhnu) — every
+	// defaultScaleCheckTarget producer sets it explicitly now. This used to
+	// be inferred by "prefer the first non-city storeKey seen", justified by
+	// "the cross-store probe only ever ADDS a city entry alongside an
+	// already-present rig entry, never the reverse". That held for the
+	// single-target-per-store generic-pool producer (defaultScaleCheckTargetForAgent)
+	// but not for the cold custom-scale_check producer (activeStores below),
+	// which appends ONE target per active store for every such template —
+	// city, then every rig in cfg.Rigs declaration order, unrelated to which
+	// rig the template's own agent belongs to. "First non-city key seen"
+	// there was always cfg.Rigs[0]'s key, for every template on that path,
+	// regardless of its real home.
 	templateHomeStoreKey := make(map[string]string, len(targets))
 	for _, target := range targets {
 		template := strings.TrimSpace(target.template)
@@ -1528,9 +1575,7 @@ func defaultScaleCheckCountsAndDemand(cfg *config.City, targets []defaultScaleCh
 		if key == "" {
 			key = fmt.Sprintf("%p", target.store)
 		}
-		if existing, ok := templateHomeStoreKey[template]; !ok || (existing == "city" && key != "city") {
-			templateHomeStoreKey[template] = key
-		}
+		templateHomeStoreKey[template] = target.homeStoreKey
 		group := groups[key]
 		if group == nil {
 			group = &scaleStoreGroup{store: target.store, storeKey: key, templates: make(map[string]struct{})}

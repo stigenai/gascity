@@ -1006,9 +1006,10 @@ func TestDefaultScaleCheckCountsAndDemandFallsBackToRouteDefaultForUnroutedWork(
 	}
 
 	counts, demand, _, errs := defaultScaleCheckCountsAndDemand(cfg, []defaultScaleCheckTarget{{
-		template: routerTemplate,
-		storeKey: "rig:hello-world",
-		store:    store,
+		template:     routerTemplate,
+		storeKey:     "rig:hello-world",
+		homeStoreKey: "rig:hello-world",
+		store:        store,
 	}})
 	if len(errs) != 0 {
 		t.Fatalf("defaultScaleCheckCountsAndDemand errs = %v", errs)
@@ -1047,9 +1048,10 @@ func TestDefaultScaleCheckCountsAndDemandFallsBackToRouteDefaultWhenRoutedToUnkn
 	}
 
 	counts, _, _, errs := defaultScaleCheckCountsAndDemand(cfg, []defaultScaleCheckTarget{{
-		template: routerTemplate,
-		storeKey: "rig:hello-world",
-		store:    store,
+		template:     routerTemplate,
+		storeKey:     "rig:hello-world",
+		homeStoreKey: "rig:hello-world",
+		store:        store,
 	}})
 	if len(errs) != 0 {
 		t.Fatalf("defaultScaleCheckCountsAndDemand errs = %v", errs)
@@ -1087,8 +1089,8 @@ func TestDefaultScaleCheckCountsAndDemandRouteDefaultDoesNotHijackMatchedRouting
 	}
 
 	counts, _, _, errs := defaultScaleCheckCountsAndDemand(cfg, []defaultScaleCheckTarget{
-		{template: workerTemplate, storeKey: "rig:hello-world", store: store},
-		{template: routerTemplate, storeKey: "rig:hello-world", store: store},
+		{template: workerTemplate, storeKey: "rig:hello-world", homeStoreKey: "rig:hello-world", store: store},
+		{template: routerTemplate, storeKey: "rig:hello-world", homeStoreKey: "rig:hello-world", store: store},
 	})
 	if len(errs) != 0 {
 		t.Fatalf("defaultScaleCheckCountsAndDemand errs = %v", errs)
@@ -1162,8 +1164,8 @@ func TestDefaultScaleCheckCountsAndDemandRouteDefaultIsScopedPerStoreGroup(t *te
 	}
 
 	counts, _, _, errs := defaultScaleCheckCountsAndDemand(cfg, []defaultScaleCheckTarget{
-		{template: routerA, storeKey: "rig:rig-a", store: storeA},
-		{template: workerB, storeKey: "rig:rig-b", store: storeB},
+		{template: routerA, storeKey: "rig:rig-a", homeStoreKey: "rig:rig-a", store: storeA},
+		{template: workerB, storeKey: "rig:rig-b", homeStoreKey: "rig:rig-b", store: storeB},
 	})
 	if len(errs) != 0 {
 		t.Fatalf("defaultScaleCheckCountsAndDemand errs = %v", errs)
@@ -1216,10 +1218,10 @@ func TestDefaultScaleCheckCountsAndDemandRouteDefaultDoesNotAbsorbCityStoreWorkO
 	// production for every rig-scoped default-probe pool: an own-rig target
 	// plus a same-template cross-store target against the city store.
 	counts, demand, _, errs := defaultScaleCheckCountsAndDemand(cfg, []defaultScaleCheckTarget{
-		{template: routerA, storeKey: "rig:rig-a", store: rigAStore},
-		{template: routerA, storeKey: "city", store: cityStore},
-		{template: workerB, storeKey: "rig:rig-b", store: rigBStore},
-		{template: workerB, storeKey: "city", store: cityStore},
+		{template: routerA, storeKey: "rig:rig-a", homeStoreKey: "rig:rig-a", store: rigAStore},
+		{template: routerA, storeKey: "city", homeStoreKey: "rig:rig-a", store: cityStore},
+		{template: workerB, storeKey: "rig:rig-b", homeStoreKey: "rig:rig-b", store: rigBStore},
+		{template: workerB, storeKey: "city", homeStoreKey: "rig:rig-b", store: cityStore},
 	})
 	if len(errs) != 0 {
 		t.Fatalf("defaultScaleCheckCountsAndDemand errs = %v", errs)
@@ -1265,9 +1267,9 @@ func TestDefaultScaleCheckCountsAndDemandRouteDefaultCatchesOwnCityScopeAlongsid
 	}
 
 	counts, demand, _, errs := defaultScaleCheckCountsAndDemand(cfg, []defaultScaleCheckTarget{
-		{template: routerA, storeKey: "rig:rig-a", store: rigAStore},
-		{template: routerA, storeKey: "city", store: cityStore},
-		{template: cityTemplate, storeKey: "city", store: cityStore},
+		{template: routerA, storeKey: "rig:rig-a", homeStoreKey: "rig:rig-a", store: rigAStore},
+		{template: routerA, storeKey: "city", homeStoreKey: "rig:rig-a", store: cityStore},
+		{template: cityTemplate, storeKey: "city", homeStoreKey: "city", store: cityStore},
 	})
 	if len(errs) != 0 {
 		t.Fatalf("defaultScaleCheckCountsAndDemand errs = %v", errs)
@@ -1333,9 +1335,9 @@ func TestDefaultScaleCheckCountsAndDemandRouteDefaultChoiceIsOrderIndependent(t 
 			}
 
 			counts, demand, _, errs := defaultScaleCheckCountsAndDemand(cfg, []defaultScaleCheckTarget{
-				{template: rigRouter, storeKey: "rig:rig-a", store: rigAStore},
-				{template: rigRouter, storeKey: "city", store: cityStore},
-				{template: cityRouter, storeKey: "city", store: cityStore},
+				{template: rigRouter, storeKey: "rig:rig-a", homeStoreKey: "rig:rig-a", store: rigAStore},
+				{template: rigRouter, storeKey: "city", homeStoreKey: "rig:rig-a", store: cityStore},
+				{template: cityRouter, storeKey: "city", homeStoreKey: "city", store: cityStore},
 			})
 			if len(errs) != 0 {
 				t.Fatalf("defaultScaleCheckCountsAndDemand errs = %v", errs)
@@ -7046,6 +7048,85 @@ func TestBuildDesiredState_RouteDefaultMixedExplicitAndFallbackDemand(t *testing
 	if got := dsResult.ScaleCheckCounts[template]; got != want {
 		t.Fatalf("ScaleCheckCounts[%q] = %d, want %d (=%d routed + 1 clamped fallback) — scale_counts=%v",
 			template, got, want, routedCount, dsResult.ScaleCheckCounts)
+	}
+}
+
+// TestBuildDesiredState_RouteDefaultColdCustomScaleCheckBindsOwnRigNotFirstRig
+// reproduces gcy-dhnu: defaultScaleCheckCountsAndDemand's per-template home
+// scope used to be inferred by "prefer the first non-city storeKey seen" —
+// correct for the generic-pool producer (defaultScaleCheckTargetForAgent,
+// one own-rig target per agent) but wrong for the cold custom-scale_check
+// producer (build_desired_state.go's activeStores loop), which appends ONE
+// target per active store — city, then every rig in cfg.Rigs declaration
+// order — for the SAME template. The first non-city key any such template
+// saw was always cfg.Rigs[0]'s key, regardless of which rig the agent
+// actually belongs to. A route_default agent on any rig OTHER than
+// cfg.Rigs[0], with a non-empty scale_check, while cold, therefore could not
+// see its own rig's unrouted work: its recorded home was cfg.Rigs[0], so its
+// own rig's group rejected it as a route_default candidate. This test drives
+// buildDesiredState end-to-end through the REAL activeStores construction
+// path (unlike the defaultScaleCheckCountsAndDemand-level tests above, which
+// hand-build targets and so cannot exercise a bug in how targets themselves
+// get built) — no prior test built targets from that shape (flagged as a gap
+// on gcy-dhnu itself, matching gcy-i4sg's note on the previous round).
+func TestBuildDesiredState_RouteDefaultColdCustomScaleCheckBindsOwnRigNotFirstRig(t *testing.T) {
+	const template = "rig-b/triage"
+	cityPath := t.TempDir()
+	rigAPath := filepath.Join(cityPath, "rigs", "rig-a")
+	rigBPath := filepath.Join(cityPath, "rigs", "rig-b")
+	if err := os.MkdirAll(rigAPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(rigBPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cityStore := beads.NewMemStore()
+	rigAStore := beads.NewMemStore()
+	rigBStore := beads.NewMemStore()
+	if _, err := rigBStore.Create(beads.Bead{
+		Title:  "unrouted work in rig-b, the router's own rig",
+		Type:   "task",
+		Status: "open",
+	}); err != nil {
+		t.Fatalf("create unrouted bead in rig-b: %v", err)
+	}
+
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		// rig-a is cfg.Rigs[0] deliberately: the bug always picked the FIRST
+		// rig's key as every cold custom-scale_check template's "home",
+		// regardless of the agent's real rig. Putting the route_default
+		// agent on the SECOND rig means a passing test proves the fix, not a
+		// coincidence of declaration order (mirrors gcy-zaft's order-
+		// independence proof for the sibling generic-pool bug).
+		Rigs: []config.Rig{
+			{Name: "rig-a", Path: rigAPath},
+			{Name: "rig-b", Path: rigBPath},
+		},
+		Agents: []config.Agent{{
+			Name:         "triage",
+			Dir:          "rig-b",
+			RouteDefault: true,
+			// Non-empty ScaleCheck is required to reach the cold
+			// activeStores probe path ("Custom-scale_check pools
+			// deliberately KEEP the cold-only probe") instead of the
+			// generic-pool ownTarget path. It reports 0 itself — the whole
+			// point of the cold-wake probe is to see demand the pool's own
+			// (currently sleeping) check cannot.
+			ScaleCheck: "printf 0",
+		}},
+	}
+	rigStores := map[string]beads.Store{"rig-a": rigAStore, "rig-b": rigBStore}
+
+	var stderr strings.Builder
+	dsResult := buildDesiredStateWithSessionBeads(
+		"test-city", cityPath, time.Now().UTC(), cfg, runtime.NewFake(),
+		cityStore, rigStores, nil, nil, &stderr,
+	)
+
+	if got := dsResult.ScaleCheckCounts[template]; got != 1 {
+		t.Fatalf("ScaleCheckCounts[%q] = %d, want 1 — a cold route_default agent on rig-b (not cfg.Rigs[0]) must see its OWN rig's unrouted work (stderr=%s)",
+			template, got, stderr.String())
 	}
 }
 
