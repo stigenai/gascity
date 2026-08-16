@@ -769,6 +769,7 @@ ServiceProcessConfig configures a controller-supervised local process that is re
 |-------|------|----------|---------|-------------|
 | `command` | []string |  |  | Command is the argv used to start the local service process. |
 | `health_path` | string |  |  | HealthPath, when set, is probed on the local listener before the service is marked ready. |
+| `startup_timeout` | string |  | `5s` | StartupTimeout bounds how long the supervisor waits for the process listener and health endpoint. Defaults to 5s. |
 
 ## ServicePublicationConfig
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -92,9 +91,9 @@ func (c *APIClient) OpenResolvedAttachment(ctx context.Context, descriptor Attac
 	if err := validateOpaqueID("conversation", descriptor.ConversationID); err != nil {
 		return nil, err
 	}
-	workspace := filepath.Clean(strings.TrimSpace(input.Workspace))
-	if !filepath.IsAbs(workspace) {
-		return nil, errors.New("omnigent attachment workspace must be absolute")
+	workspace, err := normalizeWorkspace(input.Workspace)
+	if err != nil {
+		return nil, err
 	}
 	identityLabels, err := gasCityIdentityLabels(input.Identity)
 	if err != nil {
@@ -115,7 +114,11 @@ func (c *APIClient) OpenResolvedAttachment(ctx context.Context, descriptor Attac
 	if snapshot.Archived {
 		return closeOnError(fmt.Errorf("omnigent conversation %q is archived", descriptor.ConversationID))
 	}
-	if filepath.Clean(snapshot.Workspace) != workspace {
+	snapshotWorkspace, err := normalizeWorkspace(snapshot.Workspace)
+	if err != nil {
+		return closeOnError(err)
+	}
+	if snapshotWorkspace != workspace {
 		return closeOnError(fmt.Errorf("omnigent conversation %q workspace %q does not match Gas City assignment %q", descriptor.ConversationID, snapshot.Workspace, workspace))
 	}
 	for key, expected := range identityLabels {
@@ -157,9 +160,9 @@ func OpenAttachment(ctx context.Context, client *APIClient, catalog *Catalog, in
 	if !profileIDPattern.MatchString(profileID) {
 		return nil, fmt.Errorf("invalid omnigent profile id %q", input.ProfileID)
 	}
-	workspace := filepath.Clean(strings.TrimSpace(input.Workspace))
-	if !filepath.IsAbs(workspace) {
-		return nil, errors.New("omnigent attachment workspace must be absolute")
+	workspace, err := normalizeWorkspace(input.Workspace)
+	if err != nil {
+		return nil, err
 	}
 	identityLabels, err := gasCityIdentityLabels(input.Identity)
 	if err != nil {
@@ -213,7 +216,11 @@ func OpenAttachment(ctx context.Context, client *APIClient, catalog *Catalog, in
 	if snapshot.Archived {
 		return closeOnError(fmt.Errorf("omnigent conversation %q is archived", conversationID))
 	}
-	if filepath.Clean(snapshot.Workspace) != workspace {
+	snapshotWorkspace, err := normalizeWorkspace(snapshot.Workspace)
+	if err != nil {
+		return closeOnError(err)
+	}
+	if snapshotWorkspace != workspace {
 		return closeOnError(fmt.Errorf("omnigent conversation %q workspace %q does not match Gas City assignment %q", conversationID, snapshot.Workspace, workspace))
 	}
 	for key, expected := range identityLabels {

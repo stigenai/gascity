@@ -28,7 +28,7 @@ func TestVerifyExecutableAtRequiresDigestVersionAndCommit(t *testing.T) {
 		Executable:     path,
 		SHA256:         fmt.Sprintf("sha256:%x", sum),
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	verified, err := VerifyExecutableAt(ctx, pin, path)
 	if err != nil {

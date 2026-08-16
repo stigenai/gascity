@@ -1,9 +1,10 @@
 # Local Omnigent example
 
 This opt-in pack keeps Gas City in charge of orchestration, workspaces,
-services, and visible herdr/tmux panes while a pinned local Omnigent process
+services, and visible herdr/tmux panes while a pinned local Omnigent service
 owns the selected harness, model, authentication, tool/sandbox policy, and
-conversation lifecycle.
+conversation lifecycle. Gas City supervises both Omnigent's loopback API and
+its foreground local host; neither may detach or choose remote placement.
 
 The default `offline-mock` profile is intended for a credential-free loopback
 provider named `gascity-offline-mock`. The other profiles may make external

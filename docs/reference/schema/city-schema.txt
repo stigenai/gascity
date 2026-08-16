@@ -2688,6 +2688,11 @@
         "health_path": {
           "type": "string",
           "description": "HealthPath, when set, is probed on the local listener before the\nservice is marked ready."
+        },
+        "startup_timeout": {
+          "type": "string",
+          "description": "StartupTimeout bounds how long the supervisor waits for the process\nlistener and health endpoint. Defaults to 5s.",
+          "default": "5s"
         }
       },
       "additionalProperties": false,

@@ -2,8 +2,8 @@
 name = "omnigent-local"
 schema = 2
 
-# The controller owns one process per city. The adapter verifies and starts the
-# pinned Omnigent executable described by
+# The controller owns one service per city. The adapter verifies and starts the
+# pinned Omnigent server and foreground local host described by
 # .gc/services/omnigent/config/profiles.yaml, then binds only the Unix socket
 # assigned by proxy_process supervision.
 [[service]]
@@ -17,6 +17,7 @@ allow_websockets = false
 [service.process]
 command = ["gc", "omnigent", "serve"]
 health_path = "/health"
+startup_timeout = "30s"
 
 [providers.omnigent]
 display_name = "Omnigent (local)"

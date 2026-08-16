@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -49,13 +50,14 @@ func TestOmnigentProxyProcessComposition(t *testing.T) {
 		t.Fatalf("test binary path cannot be safely embedded: %q", testBinary)
 	}
 	wrapper := filepath.Join(stateRoot, "omnigent-fixture")
-	childPIDPath := filepath.Join(stateRoot, "run", "child.pid")
-	wrapperBody := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'omnigent 0.10.0.dev0 (2aba5079)'; exit 0; fi\nprintf '%%s\\n' \"$$\" > '%s'\nexec '%s' -test.run='^TestOmnigentProxyProcessComposition$' -- child-helper \"$@\"\n", childPIDPath, testBinary)
+	serverPIDPath := filepath.Join(stateRoot, "run", "server-child.pid")
+	hostPIDPath := filepath.Join(stateRoot, "run", "host-child.pid")
+	wrapperBody := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'omnigent 0.10.0.dev0 (2aba5079)'; exit 0; fi\nif [ \"$1\" = \"host\" ]; then pid_path='%s'; else pid_path='%s'; fi\nprintf '%%s\\n' \"$$\" > \"$pid_path\"\nexec '%s' -test.run='^TestOmnigentProxyProcessComposition$' -- child-helper \"$@\"\n", hostPIDPath, serverPIDPath, testBinary)
 	if err := os.WriteFile(wrapper, []byte(wrapperBody), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	agentPath := filepath.Join(configDir, "mock-agent.yaml")
-	if err := os.WriteFile(agentPath, []byte("name: offline-mock\n"), 0o600); err != nil {
+	if err := os.WriteFile(agentPath, []byte("name: offline-mock\nprompt: work\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256([]byte(wrapperBody))
@@ -85,8 +87,9 @@ profiles:
 			Name: "omnigent",
 			Kind: "proxy_process",
 			Process: config.ServiceProcessConfig{
-				Command:    []string{testBinary, "-test.run=^TestOmnigentProxyProcessComposition$", "--", "service-helper"},
-				HealthPath: "/health",
+				Command:        []string{testBinary, "-test.run=^TestOmnigentProxyProcessComposition$", "--", "service-helper"},
+				HealthPath:     "/health",
+				StartupTimeout: "30s",
 			},
 		}}},
 		sp:    gcruntime.NewFake(),
@@ -105,22 +108,32 @@ profiles:
 		t.Fatalf("Reload: %v", err)
 	}
 	assertOmnigentCompositionReady(t, mgr, stateRoot)
-	firstChildPID := readOmnigentCompositionChildPID(t, childPIDPath)
+	firstServerPID := readOmnigentCompositionChildPID(t, serverPIDPath)
+	firstHostPID := readOmnigentCompositionChildPID(t, hostPIDPath)
 
+	if err := os.Remove(serverPIDPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(hostPIDPath); err != nil {
+		t.Fatal(err)
+	}
 	if err := mgr.Restart("omnigent"); err != nil {
 		t.Fatalf("Restart: %v", err)
 	}
 	assertOmnigentCompositionReady(t, mgr, stateRoot)
-	assertOmnigentCompositionProcessExited(t, firstChildPID)
-	secondChildPID := readOmnigentCompositionChildPID(t, childPIDPath)
-	if secondChildPID == firstChildPID {
-		t.Fatalf("Restart reused child pid %d", secondChildPID)
+	assertOmnigentCompositionProcessExited(t, firstHostPID)
+	assertOmnigentCompositionProcessExited(t, firstServerPID)
+	secondServerPID := readOmnigentCompositionChildPID(t, serverPIDPath)
+	secondHostPID := readOmnigentCompositionChildPID(t, hostPIDPath)
+	if secondServerPID == firstServerPID || secondHostPID == firstHostPID {
+		t.Fatalf("Restart reused child pids: server %d -> %d, host %d -> %d", firstServerPID, secondServerPID, firstHostPID, secondHostPID)
 	}
 	if err := mgr.Close(); err != nil {
 		t.Errorf("Close: %v", err)
 	}
 	closed = true
-	assertOmnigentCompositionProcessExited(t, secondChildPID)
+	assertOmnigentCompositionProcessExited(t, secondHostPID)
+	assertOmnigentCompositionProcessExited(t, secondServerPID)
 }
 
 func readOmnigentCompositionChildPID(t *testing.T, path string) int {
@@ -138,14 +151,20 @@ func readOmnigentCompositionChildPID(t *testing.T, path string) int {
 
 func assertOmnigentCompositionProcessExited(t *testing.T, pid int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for {
 		if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
 			return
 		}
-		time.Sleep(25 * time.Millisecond)
+		select {
+		case <-ticker.C:
+		case <-timer.C:
+			t.Fatalf("Omnigent child process %d survived supervised shutdown", pid)
+		}
 	}
-	t.Fatalf("Omnigent child process %d survived supervised shutdown", pid)
 }
 
 func assertOmnigentCompositionReady(t *testing.T, mgr *Manager, stateRoot string) {
@@ -212,6 +231,12 @@ func runOmnigentCompositionHelper(mode string) {
 		}
 		os.Exit(0)
 	case "child-helper":
+		if slices.Contains(os.Args, "host") {
+			stopping := make(chan os.Signal, 1)
+			signal.Notify(stopping, syscall.SIGINT, syscall.SIGTERM)
+			<-stopping
+			os.Exit(0)
+		}
 		port := ""
 		for i, arg := range os.Args {
 			if arg == "--port" && i+1 < len(os.Args) {
@@ -227,6 +252,15 @@ func runOmnigentCompositionHelper(mode string) {
 			os.Exit(73)
 		}
 		server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/v1/hosts" {
+				w.Header().Set("Content-Type", "application/json")
+				if _, err := os.Stat(filepath.Join(os.Getenv("GC_SERVICE_STATE_ROOT"), "run", "host-child.pid")); err != nil {
+					_, _ = io.WriteString(w, `{"hosts":[]}`)
+					return
+				}
+				_, _ = io.WriteString(w, `{"hosts":[{"host_id":"host_composition","owner":"local","status":"online"}]}`)
+				return
+			}
 			if r.URL.Path != "/health" {
 				http.NotFound(w, r)
 				return

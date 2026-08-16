@@ -23,7 +23,6 @@ import (
 )
 
 const (
-	proxyProcessReadyTimeout   = 5 * time.Second
 	proxyProcessRestartBackoff = 1 * time.Second
 	proxyProcessShutdownWait   = 2 * time.Second
 )
@@ -43,6 +42,7 @@ type proxyProcessInstance struct {
 	absStateRoot string
 	socketPath   string
 	healthPath   string
+	readyTimeout time.Duration
 	transport    *http.Transport
 
 	mu          sync.Mutex
@@ -75,6 +75,7 @@ func newProxyProcessInstance(rt RuntimeContext, svc config.Service, publication 
 		absStateRoot: absRoot,
 		socketPath:   socketPath,
 		healthPath:   svc.Process.HealthPath,
+		readyTimeout: svc.Process.StartupTimeoutDuration(),
 		transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				var d net.Dialer
@@ -261,7 +262,7 @@ func (p *proxyProcessInstance) start(now time.Time) error {
 		p.nextRestart = time.Now().UTC().Add(proxyProcessRestartBackoff)
 	}(cmd, logFile, doneCh)
 
-	if err := p.waitReady(now.Add(proxyProcessReadyTimeout)); err != nil {
+	if err := p.waitReady(now.Add(p.readyTimeout)); err != nil {
 		if !errors.Is(err, errProxyProcessExitedEarly) {
 			_ = stopProcessGroup(cmd)
 		}

@@ -96,6 +96,13 @@ profiles:
 			t.Fatalf("args contain forbidden %q: %v", forbidden, args)
 		}
 	}
+	hostJoined := strings.Join(prepared.Plan.HostArgs, " ")
+	if hostJoined != "host --server http://127.0.0.1:43123 --non-interactive" {
+		t.Fatalf("host args = %q", hostJoined)
+	}
+	if strings.Contains(hostJoined, "--background") {
+		t.Fatalf("host must remain foreground-supervised: %v", prepared.Plan.HostArgs)
+	}
 	env := envListMap(prepared.Plan.Env)
 	if env["HOME"] != "/operator/home" || env["CLAUDE_PRIMARY_TOKEN"] != "fixture-secret-value" {
 		t.Fatalf("explicit environment missing: keys=%v", sortedMapKeys(env))
@@ -402,7 +409,20 @@ func TestServeSidecarLifecycleRestartAndNoStateFiles(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() { done <- ServeSidecar(ctx, cfg) }()
+		finished := false
+		t.Cleanup(func() {
+			if finished {
+				return
+			}
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Errorf("timed out cleaning up sidecar fixture")
+			}
+		})
 		waitSidecarSocket(t, cfg.SocketPath)
+		waitForTestFile(t, filepath.Join(cfg.StateRoot, "host.started"))
 		client, err := NewUnixAPIClient(cfg.SocketPath)
 		if err != nil {
 			t.Fatal(err)
@@ -413,6 +433,7 @@ func TestServeSidecarLifecycleRestartAndNoStateFiles(t *testing.T) {
 		cancel()
 		select {
 		case err := <-done:
+			finished = true
 			if err != nil {
 				t.Fatalf("ServeSidecar cancellation: %v", err)
 			}
@@ -468,10 +489,23 @@ func TestServeSidecarLifecycleFailureMatrix(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() { done <- ServeSidecar(ctx, cfg) }()
+		finished := false
+		t.Cleanup(func() {
+			if finished {
+				return
+			}
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Errorf("timed out cleaning up canceled-start sidecar fixture")
+			}
+		})
 		waitForTestFile(t, filepath.Join(cfg.StateRoot, "child.started"))
 		cancel()
 		select {
 		case err := <-done:
+			finished = true
 			if err != nil {
 				t.Fatalf("canceled startup = %v, want clean stop", err)
 			}
@@ -491,9 +525,23 @@ func TestServeSidecarLifecycleFailureMatrix(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() { done <- ServeSidecar(ctx, cfg) }()
+		finished := false
+		t.Cleanup(func() {
+			if finished {
+				return
+			}
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(3 * time.Second):
+				t.Errorf("timed out cleaning up stale-socket sidecar fixture")
+			}
+		})
 		waitSidecarSocket(t, cfg.SocketPath)
 		cancel()
-		if err := <-done; err != nil {
+		err = <-done
+		finished = true
+		if err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -598,9 +646,22 @@ func TestSidecarChildHelper(_ *testing.T) {
 	if behavior == "exit" {
 		os.Exit(17)
 	}
+	isHost := slices.Contains(os.Args, "host")
 	startedFile := os.Getenv("GC_OMNIGENT_TEST_STARTED_FILE")
-	if startedFile == "" || os.WriteFile(startedFile, []byte("started"), 0o600) != nil {
+	if startedFile == "" {
 		os.Exit(22)
+	}
+	if isHost {
+		startedFile = filepath.Join(filepath.Dir(startedFile), "host.started")
+	}
+	if os.WriteFile(startedFile, []byte("started"), 0o600) != nil {
+		os.Exit(22)
+	}
+	if isHost {
+		stopping := make(chan os.Signal, 1)
+		signal.Notify(stopping, syscall.SIGINT, syscall.SIGTERM)
+		<-stopping
+		os.Exit(0)
 	}
 	if behavior == "slow" {
 		stopping := make(chan os.Signal, 1)
@@ -632,6 +693,11 @@ func TestSidecarChildHelper(_ *testing.T) {
 			case crashRequested <- struct{}{}:
 			default:
 			}
+			return
+		}
+		if r.URL.Path == "/v1/hosts" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"hosts":[{"host_id":"host_fixture","owner":"local","status":"online"}]}`)
 			return
 		}
 		if r.URL.Path != "/health" {
@@ -714,13 +780,13 @@ profiles:
 	t.Cleanup(func() { _ = os.Remove(socketPath) })
 	return SidecarConfig{
 		StateRoot: root, CatalogPath: catalogPath, SocketPath: socketPath,
-		StartupTimeout: time.Second, ShutdownTimeout: 250 * time.Millisecond,
+		StartupTimeout: 5 * time.Second, ShutdownTimeout: 250 * time.Millisecond,
 	}
 }
 
 func waitSidecarSocket(t *testing.T, socketPath string) {
 	t.Helper()
-	deadline := time.NewTimer(2 * time.Second)
+	deadline := time.NewTimer(6 * time.Second)
 	defer deadline.Stop()
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
@@ -740,7 +806,7 @@ func waitSidecarSocket(t *testing.T, socketPath string) {
 
 func waitForTestFile(t *testing.T, path string) {
 	t.Helper()
-	deadline := time.NewTimer(2 * time.Second)
+	deadline := time.NewTimer(6 * time.Second)
 	defer deadline.Stop()
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()

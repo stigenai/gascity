@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	pathpkg "path"
 	"path/filepath"
 	"regexp"
@@ -31,8 +32,9 @@ var opaqueIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$`)
 
 // APIClient is a typed client for the pinned Omnigent local session API.
 type APIClient struct {
-	baseURL string
-	http    *http.Client
+	baseURL     string
+	http        *http.Client
+	localHostID string
 }
 
 // EventStream is one established Omnigent session SSE subscription. Opening
@@ -206,6 +208,22 @@ func NewUnixAPIClient(socketPath string) (*APIClient, error) {
 	}, nil
 }
 
+// withLocalHost returns a client whose new sessions are bound to the one
+// foreground host supervised beside the local Omnigent server. The host is
+// transport placement only; Gas City still supplies the exact workspace.
+func (c *APIClient) withLocalHost(hostID string) (*APIClient, error) {
+	if c == nil {
+		return nil, errors.New("omnigent API client is required")
+	}
+	hostID = strings.TrimSpace(hostID)
+	if err := validateOpaqueID("host", hostID); err != nil {
+		return nil, err
+	}
+	bound := *c
+	bound.localHostID = hostID
+	return &bound, nil
+}
+
 func isLoopbackHost(host string) bool {
 	if strings.EqualFold(host, "localhost") {
 		return true
@@ -357,9 +375,9 @@ func (c *APIClient) CreateSession(ctx context.Context, input CreateSessionInput)
 	if !opaqueIDPattern.MatchString(input.AgentID) {
 		return Session{}, fmt.Errorf("invalid omnigent agent id %q", input.AgentID)
 	}
-	workspace := filepath.Clean(strings.TrimSpace(input.Workspace))
-	if !filepath.IsAbs(workspace) {
-		return Session{}, errors.New("omnigent session workspace must be absolute")
+	workspace, err := normalizeWorkspace(input.Workspace)
+	if err != nil {
+		return Session{}, err
 	}
 	request := createSessionRequest{
 		AgentID:      input.AgentID,
@@ -367,6 +385,7 @@ func (c *APIClient) CreateSession(ctx context.Context, input CreateSessionInput)
 		Title:        strings.TrimSpace(input.Title),
 		Labels:       cloneStringMap(input.Labels),
 		HostType:     "external",
+		HostID:       c.localHostID,
 		Workspace:    workspace,
 	}
 	var session Session
@@ -692,10 +711,29 @@ func validateSessionSnapshot(session Session, workspace string) error {
 	if err := validateOpaqueID("session response", session.ID); err != nil {
 		return err
 	}
-	if filepath.Clean(session.Workspace) != workspace {
+	snapshotWorkspace, err := normalizeWorkspace(session.Workspace)
+	if err != nil {
+		return err
+	}
+	if snapshotWorkspace != workspace {
 		return fmt.Errorf("omnigent session workspace %q does not match Gas City assignment %q", session.Workspace, workspace)
 	}
 	return nil
+}
+
+func normalizeWorkspace(value string) (string, error) {
+	workspace := filepath.Clean(strings.TrimSpace(value))
+	if !filepath.IsAbs(workspace) {
+		return "", errors.New("omnigent session workspace must be absolute")
+	}
+	resolved, err := filepath.EvalSymlinks(workspace)
+	if err == nil {
+		return resolved, nil
+	}
+	if os.IsNotExist(err) {
+		return workspace, nil
+	}
+	return "", fmt.Errorf("resolve omnigent session workspace: %w", err)
 }
 
 func validateOpaqueID(kind, id string) error {

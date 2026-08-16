@@ -5,8 +5,10 @@ description: Pin a local Omnigent service, select Codex or Claude-compatible pro
 
 Omnigent lets one Gas City workflow use different coding harnesses and
 authentication profiles without changing its formula or beads. The integration
-is opt-in and local: Gas City supervises one pinned Omnigent process for the
-City, while external model traffic follows the profile you select.
+is opt-in and local: Gas City supervises one pinned Omnigent service for the
+City, while external model traffic follows the profile you select. That service
+runs Omnigent's loopback API and foreground local host together so sessions can
+launch without giving Omnigent remote placement authority.
 
 This guide assumes you know the [six Gas City primitives](/getting-started/how-gas-city-works).
 The City is the local (root) pack; importing the Omnigent pack adds an Agent
@@ -139,8 +141,9 @@ method in your pack's formula or order.
 
 ## Stop, disable, or roll back
 
-Use `gc stop` for a clean stop. Gas City stops its panes and supervised process,
-but preserves the City-scoped Omnigent database and opaque conversation IDs.
+Use `gc stop` for a clean stop. Gas City stops its panes, the supervised API,
+the local host, and their exact child process groups, but preserves the
+City-scoped Omnigent database and opaque conversation IDs.
 
 To disable the integration, remove the import/provider selection and reload or
 restart the City. To uninstall, stop first, remove the separately installed

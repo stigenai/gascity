@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/citylayout"
 )
@@ -153,6 +154,24 @@ type ServiceProcessConfig struct {
 	// HealthPath, when set, is probed on the local listener before the
 	// service is marked ready.
 	HealthPath string `toml:"health_path,omitempty"`
+	// StartupTimeout bounds how long the supervisor waits for the process
+	// listener and health endpoint. Defaults to 5s.
+	StartupTimeout string `toml:"startup_timeout,omitempty" jsonschema:"default=5s"`
+}
+
+const defaultServiceProcessStartupTimeout = 5 * time.Second
+
+// StartupTimeoutDuration returns the configured positive startup timeout or
+// the default. ValidateServices rejects invalid configured values.
+func (p ServiceProcessConfig) StartupTimeoutDuration() time.Duration {
+	if strings.TrimSpace(p.StartupTimeout) == "" {
+		return defaultServiceProcessStartupTimeout
+	}
+	duration, err := time.ParseDuration(p.StartupTimeout)
+	if err != nil || duration <= 0 {
+		return defaultServiceProcessStartupTimeout
+	}
+	return duration
 }
 
 // ValidateServices checks workspace service declarations for configuration
@@ -229,6 +248,12 @@ func ValidateServices(services []Service) error {
 		case "proxy_process":
 			if len(svc.Process.Command) == 0 || strings.TrimSpace(svc.Process.Command[0]) == "" {
 				return fmt.Errorf("service %q: process.command is required for proxy_process services", svc.Name)
+			}
+			if value := strings.TrimSpace(svc.Process.StartupTimeout); value != "" {
+				duration, err := time.ParseDuration(value)
+				if err != nil || duration <= 0 {
+					return fmt.Errorf("service %q: process.startup_timeout must be a positive duration, got %q", svc.Name, svc.Process.StartupTimeout)
+				}
 			}
 		}
 	}

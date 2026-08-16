@@ -55,38 +55,50 @@ func TestPinnedOmnigentLiveProfiles(t *testing.T) {
 				defer stopCancel()
 				_ = client.PostControl(stopCtx, descriptor.ConversationID, "stop_session")
 			}()
-			attachment, err := client.OpenResolvedAttachment(ctx, descriptor, input)
+			runTurn := func(descriptor AttachmentDescriptor, prompt string) {
+				attachment, err := client.OpenResolvedAttachment(ctx, descriptor, input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				output := make(chan struct{}, 1)
+				streamDone := make(chan error, 1)
+				go func() {
+					streamDone <- attachment.Stream.Consume(ctx, func(event StreamEvent) error {
+						if strings.TrimSpace(event.Delta) != "" || event.Item != nil {
+							select {
+							case output <- struct{}{}:
+							default:
+							}
+						}
+						return nil
+					})
+				}()
+				if queued, err := client.PostMessage(ctx, descriptor.ConversationID, prompt); err != nil || !queued {
+					_ = attachment.Close()
+					t.Fatalf("PostMessage queued=%t error=%v", queued, err)
+				}
+				select {
+				case <-output:
+				case err := <-streamDone:
+					t.Fatalf("stream ended before output: %v", err)
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+				if err := attachment.Close(); err != nil {
+					t.Fatalf("close attachment: %v", err)
+				}
+			}
+			runTurn(descriptor, "Reply with one short sentence confirming the live harness is responsive.")
+
+			input.ConversationID = descriptor.ConversationID
+			resumed, err := client.ResolveAttachment(ctx, input)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer func() {
-				if err := attachment.Close(); err != nil {
-					t.Errorf("close attachment: %v", err)
-				}
-			}()
-			output := make(chan struct{}, 1)
-			streamDone := make(chan error, 1)
-			go func() {
-				streamDone <- attachment.Stream.Consume(ctx, func(event StreamEvent) error {
-					if strings.TrimSpace(event.Delta) != "" || event.Item != nil {
-						select {
-						case output <- struct{}{}:
-						default:
-						}
-					}
-					return nil
-				})
-			}()
-			if queued, err := client.PostMessage(ctx, descriptor.ConversationID, "Reply with one short sentence confirming the live harness is responsive."); err != nil || !queued {
-				t.Fatalf("PostMessage queued=%t error=%v", queued, err)
+			if resumed.Fresh || resumed.ConversationID != descriptor.ConversationID {
+				t.Fatalf("resume changed conversation: original=%#v resumed=%#v", descriptor, resumed)
 			}
-			select {
-			case <-output:
-			case err := <-streamDone:
-				t.Fatalf("stream ended before output: %v", err)
-			case <-ctx.Done():
-				t.Fatal(ctx.Err())
-			}
+			runTurn(resumed, "Reply with one short sentence confirming the same conversation resumed.")
 		})
 	}
 }

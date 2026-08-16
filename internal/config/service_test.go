@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/fsys"
 )
@@ -181,6 +182,7 @@ kind = "proxy_process"
 [service.process]
 command = ["./scripts/start-bridge.sh"]
 health_path = "/healthz"
+startup_timeout = "30s"
 `))
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
@@ -197,6 +199,21 @@ health_path = "/healthz"
 	}
 	if svc.Process.HealthPath != "/healthz" {
 		t.Fatalf("process.health_path = %q, want /healthz", svc.Process.HealthPath)
+	}
+	if got := svc.Process.StartupTimeoutDuration(); got != 30*time.Second {
+		t.Fatalf("process.startup_timeout = %s, want 30s", got)
+	}
+}
+
+func TestValidateServicesRejectsInvalidProcessStartupTimeout(t *testing.T) {
+	for _, value := range []string{"nope", "0s", "-1s"} {
+		err := ValidateServices([]Service{{
+			Name: "bridge", Kind: "proxy_process",
+			Process: ServiceProcessConfig{Command: []string{"bridge"}, StartupTimeout: value},
+		}})
+		if err == nil || !strings.Contains(err.Error(), "process.startup_timeout") {
+			t.Fatalf("startup_timeout %q: error = %v", value, err)
+		}
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/gastownhall/gascity/internal/formula"
@@ -36,6 +37,9 @@ func TestOmnigentExamplePackDeclaresPrivateSupervisedSidecar(t *testing.T) {
 	service := pack.Services[0]
 	if service.Name != "omnigent" || service.KindOrDefault() != "proxy_process" || service.PublicationVisibilityOrDefault() != "private" {
 		t.Fatalf("service = %#v", service)
+	}
+	if got := service.Process.StartupTimeoutDuration(); got != 30*time.Second {
+		t.Fatalf("Omnigent process startup timeout = %s, want 30s", got)
 	}
 	wantCommand := []string{"gc", "omnigent", "serve"}
 	if len(service.Process.Command) != len(wantCommand) {

@@ -58,6 +58,7 @@ type SidecarPaths struct {
 type SidecarLaunchPlan struct {
 	Executable string
 	Args       []string
+	HostArgs   []string
 	Env        []string
 	Endpoint   string
 }
@@ -110,8 +111,11 @@ func PrepareSidecar(ctx context.Context, cfg SidecarConfig, port int) (*Prepared
 		Plan: SidecarLaunchPlan{
 			Executable: verified.Path,
 			Args:       args,
-			Env:        sidecarChildEnvironment(catalog, paths, os.LookupEnv),
-			Endpoint:   "http://127.0.0.1:" + strconv.Itoa(port),
+			HostArgs: []string{
+				"host", "--server", "http://127.0.0.1:" + strconv.Itoa(port), "--non-interactive",
+			},
+			Env:      sidecarChildEnvironment(catalog, paths, os.LookupEnv),
+			Endpoint: "http://127.0.0.1:" + strconv.Itoa(port),
 		},
 	}, nil
 }
@@ -259,10 +263,10 @@ func sidecarChildEnvironment(catalog *Catalog, paths SidecarPaths, lookup func(s
 // discovery is handled locally; all Omnigent API paths proxy to one loopback
 // child without exposing upstream transport errors.
 func NewSidecarHandler(catalog *Catalog, endpoint string, client *http.Client) (http.Handler, error) {
-	return newSidecarHandler(catalog, VerifiedExecutable{}, endpoint, client, os.LookupEnv)
+	return newSidecarHandler(catalog, VerifiedExecutable{}, endpoint, client, os.LookupEnv, "")
 }
 
-func newSidecarHandler(catalog *Catalog, verified VerifiedExecutable, endpoint string, client *http.Client, lookup func(string) (string, bool)) (http.Handler, error) {
+func newSidecarHandler(catalog *Catalog, verified VerifiedExecutable, endpoint string, client *http.Client, lookup func(string) (string, bool), localHostID string) (http.Handler, error) {
 	if catalog == nil {
 		return nil, errors.New("omnigent catalog is required for sidecar handler")
 	}
@@ -276,6 +280,12 @@ func newSidecarHandler(catalog *Catalog, verified VerifiedExecutable, endpoint s
 	child, err := NewAPIClient(endpoint, client)
 	if err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(localHostID) != "" {
+		child, err = child.withLocalHost(localHostID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	failover, err := NewFailoverController(child, catalog, time.Now)
 	if err != nil {
@@ -509,9 +519,10 @@ func writeSidecarAPIError(w http.ResponseWriter, status int, code, message strin
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-// ServeSidecar runs one verified foreground Omnigent child and exposes it on
-// the assigned Unix socket until cancellation or child exit. Existing Gas City
-// proxy_process supervision owns retries and convergence around this process.
+// ServeSidecar runs verified foreground Omnigent server and local-host children
+// and exposes the server on the assigned Unix socket until cancellation or
+// child exit. Existing Gas City proxy_process supervision owns retries and
+// convergence around this process group.
 func ServeSidecar(ctx context.Context, cfg SidecarConfig) error {
 	if ctx == nil {
 		return errors.New("omnigent sidecar context is required")
@@ -535,9 +546,6 @@ func ServeSidecar(ctx context.Context, cfg SidecarConfig) error {
 		}
 		return err
 	}
-	cmd := exec.Command(prepared.Plan.Executable, prepared.Plan.Args...)
-	cmd.Dir = prepared.Paths.Root
-	cmd.Env = prepared.Plan.Env
 	stdoutTarget := cfg.Stdout
 	if stdoutTarget == nil {
 		stdoutTarget = os.Stdout
@@ -546,16 +554,10 @@ func ServeSidecar(ctx context.Context, cfg SidecarConfig) error {
 	if stderrTarget == nil {
 		stderrTarget = os.Stderr
 	}
-	stdout := newRedactingWriter(stdoutTarget)
-	stderr := newRedactingWriter(stderrTarget)
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
+	serverCmd, serverDone, err := startSidecarProcess(prepared, prepared.Plan.Args, stdoutTarget, stderrTarget)
+	if err != nil {
 		return fmt.Errorf("start verified omnigent child: %w", err)
 	}
-	childDone := make(chan error, 1)
-	go func() { childDone <- errors.Join(cmd.Wait(), stdout.Flush(), stderr.Flush()) }()
 	startupTimeout := cfg.StartupTimeout
 	if startupTimeout <= 0 {
 		startupTimeout = defaultSidecarStartupTimeout
@@ -565,35 +567,59 @@ func ServeSidecar(ctx context.Context, cfg SidecarConfig) error {
 		shutdownTimeout = defaultSidecarShutdownTimeout
 	}
 	healthClient := localHTTPClient(250 * time.Millisecond)
-	if err := waitSidecarReady(ctx, healthClient, prepared.Plan.Endpoint, childDone, startupTimeout); err != nil {
-		stopSidecarChild(cmd, childDone, shutdownTimeout)
+	if err := waitSidecarReady(ctx, healthClient, prepared.Plan.Endpoint, serverDone, startupTimeout); err != nil {
+		stopSidecarChild(serverCmd, serverDone, shutdownTimeout)
+		if ctx.Err() != nil {
+			return nil
+		}
+		return err
+	}
+	hostCmd, hostDone, err := startSidecarProcess(prepared, prepared.Plan.HostArgs, stdoutTarget, stderrTarget)
+	if err != nil {
+		stopSidecarChild(serverCmd, serverDone, shutdownTimeout)
+		return fmt.Errorf("start verified omnigent local host: %w", err)
+	}
+	childClient, err := NewAPIClient(prepared.Plan.Endpoint, healthClient)
+	if err != nil {
+		stopSidecarChild(hostCmd, hostDone, shutdownTimeout)
+		stopSidecarChild(serverCmd, serverDone, shutdownTimeout)
+		return err
+	}
+	localHostID, err := waitSidecarHostReady(ctx, childClient, hostDone, startupTimeout)
+	if err != nil {
+		stopSidecarChild(hostCmd, hostDone, shutdownTimeout)
+		stopSidecarChild(serverCmd, serverDone, shutdownTimeout)
 		if ctx.Err() != nil {
 			return nil
 		}
 		return err
 	}
 	if err := prepareSidecarSocket(socketPath); err != nil {
-		stopSidecarChild(cmd, childDone, shutdownTimeout)
+		stopSidecarChild(hostCmd, hostDone, shutdownTimeout)
+		stopSidecarChild(serverCmd, serverDone, shutdownTimeout)
 		return err
 	}
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
-		stopSidecarChild(cmd, childDone, shutdownTimeout)
+		stopSidecarChild(hostCmd, hostDone, shutdownTimeout)
+		stopSidecarChild(serverCmd, serverDone, shutdownTimeout)
 		return fmt.Errorf("listen on omnigent sidecar socket: %w", err)
 	}
 	if err := os.Chmod(socketPath, 0o600); err != nil {
 		_ = listener.Close()
 		_ = os.Remove(socketPath)
-		stopSidecarChild(cmd, childDone, shutdownTimeout)
+		stopSidecarChild(hostCmd, hostDone, shutdownTimeout)
+		stopSidecarChild(serverCmd, serverDone, shutdownTimeout)
 		return fmt.Errorf("secure omnigent sidecar socket: %w", err)
 	}
 	defer func() {
 		_ = listener.Close()
 		_ = os.Remove(socketPath)
 	}()
-	handler, err := newSidecarHandler(prepared.Catalog, prepared.Executable, prepared.Plan.Endpoint, localStreamingHTTPClient(), os.LookupEnv)
+	handler, err := newSidecarHandler(prepared.Catalog, prepared.Executable, prepared.Plan.Endpoint, localStreamingHTTPClient(), os.LookupEnv, localHostID)
 	if err != nil {
-		stopSidecarChild(cmd, childDone, shutdownTimeout)
+		stopSidecarChild(hostCmd, hostDone, shutdownTimeout)
+		stopSidecarChild(serverCmd, serverDone, shutdownTimeout)
 		return err
 	}
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second}
@@ -608,20 +634,102 @@ func ServeSidecar(ctx context.Context, cfg SidecarConfig) error {
 	select {
 	case <-ctx.Done():
 		shutdownServer()
-		stopSidecarChild(cmd, childDone, shutdownTimeout)
+		stopSidecarChild(hostCmd, hostDone, shutdownTimeout)
+		stopSidecarChild(serverCmd, serverDone, shutdownTimeout)
 		return nil
-	case childErr := <-childDone:
+	case childErr := <-serverDone:
 		shutdownServer()
+		stopSidecarChild(hostCmd, hostDone, shutdownTimeout)
 		if childErr == nil {
-			return errors.New("omnigent child exited unexpectedly")
+			return errors.New("omnigent server exited unexpectedly")
 		}
-		return fmt.Errorf("omnigent child exited unexpectedly: %w", childErr)
+		return fmt.Errorf("omnigent server exited unexpectedly: %w", childErr)
+	case hostErr := <-hostDone:
+		shutdownServer()
+		stopSidecarChild(serverCmd, serverDone, shutdownTimeout)
+		if hostErr == nil {
+			return errors.New("omnigent local host exited unexpectedly")
+		}
+		return fmt.Errorf("omnigent local host exited unexpectedly: %w", hostErr)
 	case serveErr := <-serveDone:
-		stopSidecarChild(cmd, childDone, shutdownTimeout)
+		stopSidecarChild(hostCmd, hostDone, shutdownTimeout)
+		stopSidecarChild(serverCmd, serverDone, shutdownTimeout)
 		if errors.Is(serveErr, http.ErrServerClosed) {
 			return nil
 		}
 		return fmt.Errorf("serve omnigent sidecar socket: %w", serveErr)
+	}
+}
+
+func startSidecarProcess(prepared *PreparedSidecar, args []string, stdoutTarget, stderrTarget io.Writer) (*exec.Cmd, <-chan error, error) {
+	cmd := exec.Command(prepared.Plan.Executable, args...)
+	cmd.Dir = prepared.Paths.Root
+	cmd.Env = prepared.Plan.Env
+	stdout := newRedactingWriter(stdoutTarget)
+	stderr := newRedactingWriter(stderrTarget)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		return nil, nil, err
+	}
+	done := make(chan error, 1)
+	go func() { done <- errors.Join(cmd.Wait(), stdout.Flush(), stderr.Flush()) }()
+	return cmd, done, nil
+}
+
+type sidecarHost struct {
+	ID     string `json:"host_id"`
+	Owner  string `json:"owner"`
+	Status string `json:"status"`
+}
+
+func waitSidecarHostReady(ctx context.Context, client *APIClient, hostDone <-chan error, timeout time.Duration) (string, error) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(sidecarHealthInterval)
+	defer ticker.Stop()
+	check := func() (string, error) {
+		var response struct {
+			Hosts []sidecarHost `json:"hosts"`
+		}
+		if err := client.doJSON(ctx, http.MethodGet, "/v1/hosts", nil, &response); err != nil {
+			return "", nil
+		}
+		var online []sidecarHost
+		for _, host := range response.Hosts {
+			if host.Owner == "local" && host.Status == "online" {
+				online = append(online, host)
+			}
+		}
+		if len(online) > 1 {
+			return "", fmt.Errorf("omnigent local server reported %d online local hosts; expected exactly one supervised host", len(online))
+		}
+		if len(online) == 0 {
+			return "", nil
+		}
+		if err := validateOpaqueID("host", online[0].ID); err != nil {
+			return "", err
+		}
+		return online[0].ID, nil
+	}
+	for {
+		hostID, err := check()
+		if err != nil || hostID != "" {
+			return hostID, err
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case err := <-hostDone:
+			if err == nil {
+				return "", errors.New("omnigent local host exited before readiness")
+			}
+			return "", fmt.Errorf("omnigent local host exited before readiness: %w", err)
+		case <-deadline.C:
+			return "", fmt.Errorf("omnigent local host did not become ready within %s", timeout)
+		case <-ticker.C:
+		}
 	}
 }
 

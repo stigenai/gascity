@@ -11,9 +11,10 @@ Gas City composes a city-scoped `proxy_process` service with an ordinary Gas
 City provider command. It does not add a runtime provider or a new primitive.
 
 The service command is `gc omnigent serve`. It verifies an externally installed
-Omnigent executable, launches a foreground loopback-only Omnigent server,
-exposes it through the service's existing Unix socket, and supplies the narrow
-Gas City compatibility API for opaque execution profiles. The provider command
+Omnigent executable, launches its foreground loopback-only server and foreground
+local host under separate exact process groups, exposes the server through the
+service's existing Unix socket, and supplies the narrow Gas City compatibility
+API for opaque execution profiles. The provider command
 is `gc omnigent attach --profile <id>`. Herdr or tmux starts that command in the
 same way it starts any other interactive agent. The command creates or resumes
 one Omnigent conversation, posts operator input, renders the typed session
@@ -26,6 +27,7 @@ controller
   +-- [[service]] proxy_process: gc omnigent serve
   |       |
   |       +-- verified external omnigent server (foreground, loopback)
+  |       +-- verified external omnigent host (foreground, local runner dispatch)
   |       +-- profile catalog + failover adapter (Unix socket)
   |               |
   |               +-- Omnigent sessions, agents, auth, policies, transcript
@@ -45,7 +47,7 @@ Omnigent.
 
 | Capability | Atomicity | Improves with models | Transport only | Verdict |
 |---|---|---|---|---|
-| supervise a pinned local sidecar | one process owner and exact-child teardown are required | models still need it | process transport | existing `[[service]]` primitive |
+| supervise a pinned local sidecar | one service owner and exact-process-group teardown are required | models still need it | process transport | existing `[[service]]` primitive |
 | host an interactive pane | provider/runtime attachment must retain identity | models still need it | terminal transport | existing Session/runtime primitive |
 | persist an opaque conversation ID | concurrent restarts must not fork identity | models still need it | metadata transport | existing Session/bead projection |
 | select a configured profile ID | config validation must reject ambiguity | models still need it | config transport | provider-specific adapter config |
@@ -64,8 +66,8 @@ session interfaces.
 | desired worker, pool, formula, retry | Gas City | beads, formulas, controller |
 | sidecar desired lifecycle | Gas City | city-scoped `[[service]]` |
 | exact Omnigent executable | operator installs; Gas City verifies | profile catalog pin and executable digest |
-| foreground process start/stop | Gas City service adapter | exact child process and process group |
-| readiness/liveness | adapter | child state plus Omnigent `GET /health`; uncertainty is unavailable, never absent |
+| foreground process start/stop | Gas City service adapter | exact server and host process groups |
+| readiness/liveness | adapter | server `GET /health` plus exactly one online local host; uncertainty is unavailable, never absent |
 | agent identity | Gas City | session bead and `GC_SESSION_ID` |
 | runtime placement | Gas City | worker boundary plus herdr/tmux selection |
 | workspace/worktree | Gas City | `session.Info.WorkDir`; sent once as absolute `workspace` |
@@ -286,6 +288,8 @@ environment values, provider prose, and credential-bearing URLs.
 |---|---|---|
 | controller | `gc omnigent serve` child | service supervision |
 | adapter | exact verified `omnigent server` child | local harness service |
+| adapter | exact verified `omnigent host --server <loopback>` child | foreground local runner dispatch |
+| local host | exact harness runner child | execute the selected harness in Gas City's assigned workspace |
 | adapter | Omnigent loopback port | readiness and API proxy |
 | worker pane | city service Unix socket | profile/session API |
 | Omnigent harness | explicit profile backend | model traffic only |
@@ -299,7 +303,7 @@ URLs fail validation.
 
 ### Forbidden behavior
 
-- Omnigent `host_type:"managed"`, host/runner tunnels, managed-host APIs,
+- Omnigent `host_type:"managed"`, remote host/runner tunnels, managed-host APIs,
   Kubernetes, Daytona, collaboration links, and hosted control planes;
 - session `git` configuration, repo clone, worktree creation, or a workspace
   different from the absolute Gas City assignment;

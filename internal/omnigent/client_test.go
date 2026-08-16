@@ -39,8 +39,8 @@ func TestAPIClientSessionLifecycleUsesExternalWorkspaceAndTypedEvents(t *testing
 			if body.AgentID != "ag_primary" || body.HostType != "external" {
 				t.Errorf("create body = %#v, want external ag_primary", body)
 			}
-			if body.Workspace != "/work/assigned" || body.Git != nil || body.HostID != "" {
-				t.Errorf("create placement = %#v, want assigned workspace only", body)
+			if body.Workspace != "/work/assigned" || body.Git != nil || body.HostID != "host_local_123" {
+				t.Errorf("create placement = %#v, want assigned workspace on supervised local host", body)
 			}
 			writeClientTestJSON(t, w, http.StatusCreated, map[string]any{
 				"id": "conv_abc123", "agent_id": "ag_primary", "agent_name": "claude-primary",
@@ -81,6 +81,10 @@ func TestAPIClientSessionLifecycleUsesExternalWorkspaceAndTypedEvents(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	client, err = client.withLocalHost("host_local_123")
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx := context.Background()
 	if err := client.Health(ctx); err != nil {
 		t.Fatalf("Health: %v", err)
@@ -114,6 +118,25 @@ func TestAPIClientSessionLifecycleUsesExternalWorkspaceAndTypedEvents(t *testing
 	defer mu.Unlock()
 	if len(requests) != 7 {
 		t.Fatalf("requests = %v, want 7 operations", requests)
+	}
+}
+
+func TestNormalizeWorkspaceResolvesExistingSymlink(t *testing.T) {
+	realRoot := t.TempDir()
+	linkRoot := filepath.Join(t.TempDir(), "workspace-link")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Fatal(err)
+	}
+	got, err := normalizeWorkspace(linkRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(realRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("normalizeWorkspace = %q, want %q", got, want)
 	}
 }
 
