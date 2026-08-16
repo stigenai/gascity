@@ -241,7 +241,18 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 
 	// Check for existing pod (any phase).
 	existing, err := p.ops.listPods(ctx, "gc-session="+label, "")
-	if err == nil && len(existing) > 0 {
+	if err != nil {
+		return fmt.Errorf("listing existing pods for session %q: %w", name, err)
+	}
+	if cfg.Capsule != nil {
+		for i := range existing {
+			if existing[i].Name == podName && (existing[i].Labels["gc-capsule"] != "true" || !p.podBelongsToCapsuleCity(&existing[i])) {
+				return fmt.Errorf("%w: pod %q for session %q belongs to another capsule city", runtime.ErrCapsuleStateConflict, podName, name)
+			}
+		}
+		existing = p.capsulePodsForCity(existing)
+	}
+	if len(existing) > 0 {
 		pod := &existing[0]
 		if pod.Status.Phase == corev1.PodRunning {
 			// Check if tmux is alive — stale pod detection.
@@ -278,39 +289,65 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 	if err != nil {
 		return fmt.Errorf("applying capsule network isolation for session %q: %w", name, err)
 	}
-	cleanupNetworkPolicy := func() {
+	cleanupNetworkPolicy := func(reason string) error {
 		if !networkPolicyCreated {
-			return
+			return nil
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = p.networkOps.deleteNetworkPolicy(cleanupCtx, networkPolicy.Name, networkPolicy.UID)
+		err := p.networkOps.deleteNetworkPolicy(cleanupCtx, networkPolicy.Name, networkPolicy.UID)
+		if err == nil || apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
+			return nil
+		}
+		return fmt.Errorf("cleaning up NetworkPolicy %q for session %q after %s: %w", networkPolicy.Name, name, reason, err)
 	}
 	p.invalidateRunningPodSnapshot()
 	createdPod, err := p.ops.createPod(ctx, pod)
 	p.invalidateRunningPodSnapshot()
 	if err != nil {
-		cleanupNetworkPolicy()
-		return fmt.Errorf("creating pod for session %q: %w", name, err)
+		createErr := fmt.Errorf("creating pod for session %q: %w", name, err)
+		if cfg.Capsule != nil {
+			recoveryCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			current, getErr := p.ops.getPod(recoveryCtx, podName)
+			cancel()
+			if getErr == nil {
+				if validateErr := validateCommittedCapsulePod(current, pod); validateErr != nil {
+					return errors.Join(createErr, validateErr, cleanupNetworkPolicy("pod create identity conflict"))
+				}
+				createdPod = current
+				err = nil
+			}
+		}
+		if err != nil {
+			return errors.Join(createErr, cleanupNetworkPolicy("pod creation failed"))
+		}
 	}
 	if createdPod == nil || createdPod.UID == "" {
-		cleanupNetworkPolicy()
-		return fmt.Errorf("creating pod for session %q returned no immutable UID", name)
+		return errors.Join(
+			fmt.Errorf("creating pod for session %q returned no immutable UID", name),
+			cleanupNetworkPolicy("pod create returned no UID"),
+		)
 	}
 	podUID := createdPod.UID
 
 	// cleanup deletes the pod on any startup failure after creation.
 	// Uses a fresh background context so cleanup succeeds even if the
 	// original ctx was canceled (which is the common failure path).
-	cleanup := func(_ string) {
+	cleanup := func(reason string) error {
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		var cleanupErrs []error
 		p.invalidateRunningPodSnapshot()
-		_ = p.ops.deletePod(cleanupCtx, podName, podUID, 5)
+		if err := p.ops.deletePod(cleanupCtx, podName, podUID, 5); err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("cleaning up pod %q for session %q after %s: %w", podName, name, reason, err))
+		}
 		p.invalidateRunningPodSnapshot()
 		if networkPolicyCreated {
-			_ = p.networkOps.deleteNetworkPolicy(cleanupCtx, networkPolicy.Name, networkPolicy.UID)
+			if err := p.networkOps.deleteNetworkPolicy(cleanupCtx, networkPolicy.Name, networkPolicy.UID); err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
+				cleanupErrs = append(cleanupErrs, fmt.Errorf("cleaning up NetworkPolicy %q for session %q after %s: %w", networkPolicy.Name, name, reason, err))
+			}
 		}
+		return errors.Join(cleanupErrs...)
 	}
 
 	ctrlCity := cfg.Env["GC_CITY"]
@@ -319,24 +356,21 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 		// Stage files via init container if needed.
 		if needsStaging(cfg, ctrlCity) {
 			if err := stageFiles(ctx, p.ops, podName, cfg, ctrlCity, p.stderr); err != nil {
-				cleanup("staging failed")
-				return fmt.Errorf("staging files for session %q: %w", name, err)
+				return errors.Join(fmt.Errorf("staging files for session %q: %w", name, err), cleanup("staging failed"))
 			}
 		}
 	}
 
 	// Wait for main container to be running.
 	if err := waitForPodRunning(ctx, p.ops, podName, 120*time.Second); err != nil {
-		cleanup("pod not running")
-		return fmt.Errorf("waiting for pod %q: %w", podName, err)
+		return errors.Join(fmt.Errorf("waiting for pod %q: %w", podName, err), cleanup("pod not running"))
 	}
 
 	if !p.prebaked {
 		// Initialize the city inside the pod.
 		if ctrlCity != "" {
 			if err := initCityInPod(ctx, p.ops, podName, ctrlCity); err != nil {
-				cleanup("city initialization failed")
-				return fmt.Errorf("initializing city for session %q: %w", name, err)
+				return errors.Join(fmt.Errorf("initializing city for session %q: %w", name, err), cleanup("city initialization failed"))
 			}
 		}
 
@@ -356,8 +390,7 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 
 	// Wait for tmux session.
 	if err := waitForTmux(ctx, p.ops, podName, 60*time.Second); err != nil {
-		cleanup("tmux not ready")
-		return fmt.Errorf("waiting for tmux in pod %q: %w", podName, err)
+		return errors.Join(fmt.Errorf("waiting for tmux in pod %q: %w", podName, err), cleanup("tmux not ready"))
 	}
 
 	// Enable pane logging + run session setup (shared with the relaunch tail).
@@ -380,8 +413,7 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 		defer timer.Stop()
 		select {
 		case <-ctx.Done():
-			cleanup("post-start settle canceled")
-			return fmt.Errorf("waiting for post-start settle for session %q: %w", name, ctx.Err())
+			return errors.Join(fmt.Errorf("waiting for post-start settle for session %q: %w", name, ctx.Err()), cleanup("post-start settle canceled"))
 		case <-timer.C:
 		}
 	}
@@ -389,9 +421,10 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 		_, tmuxErr := p.ops.execInPod(ctx, podName, "agent",
 			[]string{"tmux", "has-session", "-t", tmuxSession}, nil)
 		if tmuxErr != nil {
-			cleanup("session died immediately after startup")
-			return fmt.Errorf("%w: session %q died immediately after startup: %w",
-				runtime.ErrSessionDiedDuringStartup, name, tmuxErr)
+			return errors.Join(
+				fmt.Errorf("%w: session %q died immediately after startup: %w", runtime.ErrSessionDiedDuringStartup, name, tmuxErr),
+				cleanup("session died immediately after startup"),
+			)
 		}
 	}
 
@@ -543,6 +576,9 @@ func (p *Provider) Stop(name string) error {
 	p.invalidateRunningPodSnapshot()
 	var errs []error
 	for i := range pods {
+		if !p.podBelongsToCapsuleCity(&pods[i]) {
+			continue
+		}
 		p.invalidateRunningPodSnapshot()
 		delErr := p.ops.deletePod(ctx, pods[i].Name, pods[i].UID, 5)
 		p.invalidateRunningPodSnapshot()
@@ -584,6 +620,9 @@ func (p *Provider) StopIfInstanceToken(name, expectedToken string) error {
 	definiteMismatch := false
 	identityUncertain := false
 	for i := range pods {
+		if !p.podBelongsToCapsuleCity(&pods[i]) {
+			continue
+		}
 		token, ok := immutablePodInstanceToken(&pods[i])
 		if !ok {
 			identityUncertain = true

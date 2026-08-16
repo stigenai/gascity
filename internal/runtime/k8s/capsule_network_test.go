@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/gastownhall/gascity/internal/runtime"
@@ -172,6 +173,66 @@ func TestProviderCapsulePodCreateFailureRemovesNewNetworkPolicy(t *testing.T) {
 	}
 	if len(ops.networkPolicies) != 0 {
 		t.Fatalf("failed pod left NetworkPolicy: %#v", ops.networkPolicies)
+	}
+}
+
+func TestProviderCapsuleStopPreservesAnotherCityResources(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	ops := newFakeK8sOps()
+	provider := newProviderWithOps(ops)
+	provider.prebaked = true
+	provider.postStartSettle = 0
+	capsule := testK8sCapsuleLaunch(t)
+	capsule.Network = runtime.CapsuleNetworkOffline
+	ref, _, err := provider.EnsureCapsuleState(ctx, capsule.Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capsule.State = ref
+	name := "ga-shared-session"
+	ops.setExecResult(name, []string{"tmux", "has-session", "-t", tmuxSession}, "", nil)
+	if err := provider.Start(ctx, name, runtime.Config{Capsule: capsule}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	foreignScope := "cluster/test-ns/another-city"
+	foreignScopeDigest := capsuleStateAnnotations(runtime.CapsuleKey{CityScope: foreignScope})[capsuleCityScopeAnnotation]
+	foreignPod := ops.pods[name].DeepCopy()
+	foreignPod.Name = "foreign-city-pod"
+	foreignPod.UID = "foreign-city-pod-uid"
+	foreignPod.Annotations[capsuleCityScopeAnnotation] = foreignScopeDigest
+	ops.pods[foreignPod.Name] = foreignPod
+	var ownPolicy *networkingv1.NetworkPolicy
+	for _, policy := range ops.networkPolicies {
+		ownPolicy = policy
+	}
+	foreignPolicy := ownPolicy.DeepCopy()
+	foreignPolicy.Name = "foreign-city-policy"
+	foreignPolicy.UID = "foreign-city-policy-uid"
+	foreignPolicy.Annotations[capsuleCityScopeAnnotation] = foreignScopeDigest
+	ops.networkPolicies[foreignPolicy.Name] = foreignPolicy
+
+	if err := provider.Stop(name); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if _, ok := ops.pods[foreignPod.Name]; !ok {
+		t.Fatal("Stop deleted another city's pod")
+	}
+	if _, ok := ops.networkPolicies[foreignPolicy.Name]; !ok {
+		t.Fatal("Stop deleted another city's NetworkPolicy")
+	}
+	if len(ops.pods) != 1 || len(ops.networkPolicies) != 1 {
+		t.Fatalf("Stop retained unexpected resources: pods=%d policies=%d", len(ops.pods), len(ops.networkPolicies))
+	}
+	if err := provider.StopIfInstanceToken(name, "foreign-token"); !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+		t.Fatalf("fenced Stop with only foreign resources = %v, want unavailable", err)
+	}
+	if _, ok := ops.pods[foreignPod.Name]; !ok {
+		t.Fatal("fenced Stop deleted another city's pod")
+	}
+	if _, ok := ops.networkPolicies[foreignPolicy.Name]; !ok {
+		t.Fatal("fenced Stop deleted another city's NetworkPolicy")
 	}
 }
 

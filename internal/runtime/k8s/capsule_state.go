@@ -69,11 +69,13 @@ func (p *Provider) EnsureCapsuleState(ctx context.Context, key runtime.CapsuleKe
 		ref, validateErr := p.capsuleStateReference(key, created)
 		return ref, true, validateErr
 	}
-	if !apierrors.IsAlreadyExists(err) {
-		return runtime.CapsuleStateReference{}, false, fmt.Errorf("create capsule PVC %q: %w", name, err)
-	}
+	// A create can commit and still lose its response. Re-read the deterministic
+	// name after every create error and adopt only an exact ownership match.
 	current, getErr := p.pvcOps.getPVC(ctx, name)
 	if getErr != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return runtime.CapsuleStateReference{}, false, fmt.Errorf("create capsule PVC %q: %w", name, err)
+		}
 		return runtime.CapsuleStateReference{}, false, fmt.Errorf("reopen concurrently created capsule PVC %q: %w", name, getErr)
 	}
 	ref, validateErr := p.capsuleStateReference(key, current)
@@ -112,7 +114,18 @@ func (p *Provider) ListCapsuleStates(ctx context.Context) ([]runtime.CapsuleStat
 	}
 	sort.Slice(pvcs, func(i, j int) bool { return pvcs[i].Name < pvcs[j].Name })
 	refs := make([]runtime.CapsuleStateReference, 0, len(pvcs))
+	wantCityScope := capsuleCityScopeFingerprint(p.capsuleCityScope)
+	if wantCityScope == "" {
+		return nil, fmt.Errorf("%w: GC_K8S_CAPSULE_CITY_SCOPE is required", runtime.ErrCapsuleStateConflict)
+	}
 	for i := range pvcs {
+		gotCityScope := strings.TrimSpace(pvcs[i].Annotations[capsuleCityScopeAnnotation])
+		if gotCityScope == "" {
+			return nil, fmt.Errorf("%w: capsule PVC %q has no city-scope identity", runtime.ErrCapsuleStateConflict, pvcs[i].Name)
+		}
+		if gotCityScope != wantCityScope {
+			continue
+		}
 		key, err := p.capsuleKeyFromPVC(&pvcs[i])
 		if err != nil {
 			return nil, err
@@ -232,13 +245,20 @@ func (p *Provider) capsuleStateReference(key runtime.CapsuleKey, pvc *corev1.Per
 }
 
 func capsuleStateAnnotations(key runtime.CapsuleKey) map[string]string {
-	scope := sha256.Sum256([]byte(key.CityScope))
 	return map[string]string{
 		capsuleDigestAnnotation:    key.Digest,
 		capsuleSessionAnnotation:   key.SessionID,
 		capsuleVersionAnnotation:   strconv.Itoa(key.Version),
-		capsuleCityScopeAnnotation: hex.EncodeToString(scope[:]),
+		capsuleCityScopeAnnotation: capsuleCityScopeFingerprint(key.CityScope),
 	}
+}
+
+func capsuleCityScopeFingerprint(scope string) string {
+	if strings.TrimSpace(scope) == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(scope))
+	return hex.EncodeToString(digest[:])
 }
 
 func (p *Provider) capsuleKeyFromPVC(pvc *corev1.PersistentVolumeClaim) (runtime.CapsuleKey, error) {
@@ -297,6 +317,50 @@ func podCapsuleClaim(pod *corev1.Pod) string {
 		}
 	}
 	return ""
+}
+
+func (p *Provider) capsulePodsForCity(pods []corev1.Pod) []corev1.Pod {
+	wantScope := capsuleCityScopeFingerprint(p.capsuleCityScope)
+	owned := make([]corev1.Pod, 0, len(pods))
+	for i := range pods {
+		if pods[i].Labels["gc-capsule"] == "true" && pods[i].Annotations[capsuleCityScopeAnnotation] == wantScope {
+			owned = append(owned, pods[i])
+		}
+	}
+	return owned
+}
+
+func (p *Provider) podBelongsToCapsuleCity(pod *corev1.Pod) bool {
+	if pod == nil || pod.Labels["gc-capsule"] != "true" {
+		return true
+	}
+	return pod.Annotations[capsuleCityScopeAnnotation] == capsuleCityScopeFingerprint(p.capsuleCityScope)
+}
+
+func validateCommittedCapsulePod(got, want *corev1.Pod) error {
+	if got == nil || want == nil || got.UID == "" || got.Name != want.Name || got.Namespace != want.Namespace {
+		return fmt.Errorf("%w: committed capsule pod identity is incomplete", runtime.ErrCapsuleStateConflict)
+	}
+	for name, value := range want.Labels {
+		if got.Labels[name] != value {
+			return fmt.Errorf("%w: committed capsule pod %q label %q does not match launch plan", runtime.ErrCapsuleStateConflict, want.Name, name)
+		}
+	}
+	for _, name := range []string{"gc-capsule-digest", capsuleCityScopeAnnotation} {
+		if got.Annotations[name] != want.Annotations[name] {
+			return fmt.Errorf("%w: committed capsule pod %q annotation %q does not match launch plan", runtime.ErrCapsuleStateConflict, want.Name, name)
+		}
+	}
+	if podCapsuleClaim(got) != podCapsuleClaim(want) {
+		return fmt.Errorf("%w: committed capsule pod %q PVC does not match launch plan", runtime.ErrCapsuleStateConflict, want.Name)
+	}
+	if wantToken, ok := immutablePodInstanceToken(want); ok {
+		gotToken, gotOK := immutablePodInstanceToken(got)
+		if !gotOK || gotToken != wantToken {
+			return fmt.Errorf("%w: committed capsule pod %q instance token does not match launch plan", runtime.ErrCapsuleStateConflict, want.Name)
+		}
+	}
+	return nil
 }
 
 // typesUID isolates the Kubernetes UID conversion at the API edge.

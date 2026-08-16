@@ -472,6 +472,7 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 		pod.Labels["gc-capsule"] = "true"
 		pod.Annotations["gc-capsule-digest"] = capsule.Key.Digest
 		pod.Annotations["gc-capsule-catalog-sha256"] = capsule.CatalogSHA256
+		pod.Annotations[capsuleCityScopeAnnotation] = capsuleCityScopeFingerprint(capsule.Key.CityScope)
 		var securityExceptions []string
 		if linuxUsername != "" {
 			securityExceptions = append(securityExceptions, "dynamic-user-bootstrap")

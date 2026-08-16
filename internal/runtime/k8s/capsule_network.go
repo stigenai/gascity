@@ -60,17 +60,20 @@ func (p *Provider) ensureCapsuleNetworkPolicy(ctx context.Context, name string, 
 		return capsuleNetworkPolicyReference{}, false, fmt.Errorf("get capsule NetworkPolicy %q: %w", want.Name, err)
 	}
 	created, err := p.networkOps.createNetworkPolicy(ctx, want)
-	if apierrors.IsAlreadyExists(err) {
+	if err != nil {
+		// Recover a committed create whose API response was lost. The full
+		// desired manifest is the ownership proof; a same-name mismatch fails
+		// closed and is never adopted or deleted.
 		existing, getErr := p.networkOps.getNetworkPolicy(ctx, want.Name)
-		if getErr != nil {
+		if getErr == nil {
+			if validateErr := validateCapsuleNetworkPolicy(existing, want); validateErr != nil {
+				return capsuleNetworkPolicyReference{}, false, validateErr
+			}
+			return capsuleNetworkPolicyReference{Name: existing.Name, UID: existing.UID}, false, nil
+		}
+		if apierrors.IsAlreadyExists(err) {
 			return capsuleNetworkPolicyReference{}, false, fmt.Errorf("reopen concurrently created capsule NetworkPolicy %q: %w", want.Name, getErr)
 		}
-		if validateErr := validateCapsuleNetworkPolicy(existing, want); validateErr != nil {
-			return capsuleNetworkPolicyReference{}, false, validateErr
-		}
-		return capsuleNetworkPolicyReference{Name: existing.Name, UID: existing.UID}, false, nil
-	}
-	if err != nil {
 		return capsuleNetworkPolicyReference{}, false, fmt.Errorf("create capsule NetworkPolicy %q: %w", want.Name, err)
 	}
 	if created == nil || created.UID == "" {
@@ -130,7 +133,10 @@ func (p *Provider) buildCapsuleNetworkPolicy(name string, cfg runtime.Config) (*
 			Labels: map[string]string{
 				capsuleNetworkPolicyLabel: "true", capsuleNetworkModeLabel: string(mode), "gc-session": SanitizeLabel(name),
 			},
-			Annotations: map[string]string{capsuleInstanceAnnotation: instanceFingerprint},
+			Annotations: map[string]string{
+				capsuleInstanceAnnotation:  instanceFingerprint,
+				capsuleCityScopeAnnotation: capsuleCityScopeFingerprint(cfg.Capsule.Key.CityScope),
+			},
 		},
 		Spec: networkingv1.NetworkPolicySpec{
 			PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"gc-session": SanitizeLabel(name), "gc-capsule": "true"}},
@@ -159,6 +165,9 @@ func (p *Provider) deleteCapsuleNetworkPolicies(ctx context.Context, sessionLabe
 	var errs []error
 	for i := range policies {
 		policy := &policies[i]
+		if policy.Annotations[capsuleCityScopeAnnotation] != capsuleCityScopeFingerprint(p.capsuleCityScope) {
+			continue
+		}
 		if instanceFingerprint != "" && policy.Annotations[capsuleInstanceAnnotation] != instanceFingerprint {
 			continue
 		}

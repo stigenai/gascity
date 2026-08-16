@@ -137,6 +137,43 @@ func TestProviderCapsuleStateConcurrentEnsureConvergesAndInventoryRejectsConflic
 	}
 }
 
+func TestProviderCapsuleStateInventoryIgnoresAnotherCityScope(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	ops := newFakeK8sOps()
+	provider := newProviderWithOps(ops)
+	ownKey, _ := runtime.NewCapsuleKey(provider.capsuleCityScope, "ga-shared-session")
+	ownRef, _, err := provider.EnsureCapsuleState(ctx, ownKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreignKey, _ := runtime.NewCapsuleKey("cluster/test-ns/another-city", "ga-shared-session")
+	foreign := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        foreignKey.ResourceStem(),
+			UID:         types.UID("foreign-city-pvc-uid"),
+			Labels:      map[string]string{capsuleStateLabel: "true", capsuleTokenLabel: foreignKey.Token},
+			Annotations: capsuleStateAnnotations(foreignKey),
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}},
+	}
+	ops.pvcs[foreign.Name] = foreign
+
+	refs, err := provider.ListCapsuleStates(ctx)
+	if err != nil {
+		t.Fatalf("ListCapsuleStates: %v", err)
+	}
+	if len(refs) != 1 || refs[0] != ownRef {
+		t.Fatalf("ListCapsuleStates = %#v, want only %#v", refs, ownRef)
+	}
+	if err := provider.PurgeCapsuleState(ctx, ownKey); err != nil {
+		t.Fatalf("purge own state: %v", err)
+	}
+	if _, ok := ops.pvcs[foreign.Name]; !ok {
+		t.Fatal("purging own state deleted another city's PVC")
+	}
+}
+
 func TestProviderCapsuleStartValidationFailsBeforePodMutation(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
