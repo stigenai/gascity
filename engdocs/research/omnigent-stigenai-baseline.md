@@ -4,6 +4,7 @@
 
 **Bead:** `ga-ou2.1.7`
 **Captured:** 2026-08-15
+**Release refresh:** 2026-08-15
 
 This note fixes the repository baseline and ownership assumptions for the
 Omnigent integration. It is evidence for the architecture work, not a promise
@@ -14,15 +15,45 @@ that every current seam is the final implementation seam.
 | Name | Repository | Role | Captured revision |
 |---|---|---|---|
 | `origin` | `github.com/stigenai/gascity` | Integration and delivery target | `b0f06c135f3aa52f747178e3f6a269054b7bd7a6` |
-| `upstream` | `github.com/gastownhall/gascity` | Upstream mergeability reference | `b4ef85b8f42530fbe49e18a0a077d0a9f00c3ca1` |
+| `upstream` | `github.com/gastownhall/gascity` | Upstream mergeability reference | `126029e5a3a7c4f71a29e3aa9691c272955d64c1` |
 | merge base | both repositories | Last shared mainline revision | `dcee9b82ff0c3f12a8b3540e13a09ed92a209b0d` |
-| integration branch | `codex/omniagent-integration` | Omnigent work branch after baseline rebase | `cee3d85c49eecb01749c1dca7ea90d79fdedb815` |
+| integration branch | `codex/omniagent-integration` | Published Omnigent work branch | `8908589c81964ba5c161571f0425cec75efd8112` |
+| reviewed Omnigent pin | `github.com/omnigent-ai/omnigent` | Executable and local API contract implemented by this branch | `2aba5079d4d3a2a84d8c9927884fc4b8ce0eeecc` |
+| current Omnigent `main` | `github.com/omnigent-ai/omnigent` | Upgrade-audit reference only | `901aa8d12a2c7e51764d6d14269fc4576ec77c07` |
 
-At capture time, `origin/main...upstream/main` reported 115 commits only on the
-StigenAI side and 298 commits only on the upstream side. The integration branch
-was rebased onto `origin/main` and reported one branch commit ahead and zero
-behind. That pre-existing branch commit records the managed-checkout
-`.gitignore` entries and is unrelated to Omnigent; it must remain intact.
+At the release refresh, `origin/main...upstream/main` reported 115 commits only
+on the StigenAI side and 310 commits only on the upstream side. The integration
+branch reported two commits ahead of `origin/main` and zero behind: the
+pre-existing managed-checkout `.gitignore` commit plus the Omnigent integration
+checkpoint. The pre-existing commit is unrelated to Omnigent and must remain
+intact.
+
+The Omnigent revision in the contract is deliberately still `2aba5079...`.
+Although Omnigent `main` has advanced to `901aa8d...`, that newer revision has
+not passed the compatibility, locality, and live-profile audit required to
+change the pin. A release refresh must not turn an observed upstream head into
+an executable upgrade.
+
+## Release-time upstream overlap
+
+Since the original upstream capture at `b4ef85b8...`, upstream added 12 commits
+touching 110 files. The integration branch touches 104 files relative to
+`origin/main`. The exact path intersection is four files:
+
+| Path | Upstream change | Integration change | Landing treatment |
+|---|---|---|---|
+| `TESTING.md` | Test inventory and resource-count maintenance | Omnigent test lanes and resource expectations | Preserve both descriptions; rerun the routed test and resource manifests after a real upstream merge. |
+| `cmd/gc/city_runtime.go` | Event-fed route-recovery and graph-completion lanes, plus detached-handoff recovery | Managed-Dolt preflight ordering and durable async-start journal sweep ordering | Semantically separate edits in one lifecycle file; resolve structurally and rerun startup, tick, order-dispatch, and async-cleanup tests. |
+| `internal/testpolicy/resourcecensus/census.go` | Upstream subprocess baseline changes | Omnigent listener/process baselines and cleanup coverage | Regenerate from the merged executable tree; do not hand-add numeric baselines. |
+| `test/test-resources.toml` | Upstream subprocess ledger changes | Omnigent listener/process ledger changes | Regenerate with the census and verify the manifest as one unit. |
+
+The newest upstream commit, `126029e5a`, only raises the hook work-query timeout
+and does not add another exact overlap with the integration branch. The four
+overlaps above are therefore the complete release-time collision set, not a
+sample. `origin/main` remains at the revision used to build the branch, so no
+StigenAI rebase is required before the remaining release scorecard. A future
+upstream merge still requires the explicit treatment above; path-count evidence
+alone is not proof that the branches merge safely.
 
 ## Relevant fork history
 
