@@ -581,6 +581,13 @@ func TestServeSidecarRetainsExactConversationAndTranscriptAcrossRestart(t *testi
 		t.Fatalf("resumed descriptor = %#v, want exact non-fresh conversation", resumed)
 	}
 	assertPersistentSidecarTranscript(t, client, descriptor.ConversationID, "retained transcript item")
+	status, err := client.LocalStatus(context.Background(), descriptor.ConversationID)
+	if err != nil {
+		t.Fatalf("LocalStatus after restart: %v", err)
+	}
+	if status.Conversation == nil || status.Conversation.ID != descriptor.ConversationID || status.Conversation.Outcome != OutcomeExists {
+		t.Fatalf("typed conversation status after restart = %#v", status.Conversation)
+	}
 
 	changedWorkspace := resume
 	changedWorkspace.Workspace = filepath.Join(cfg.StateRoot, "other-workspace")
@@ -595,6 +602,9 @@ func TestServeSidecarRetainsExactConversationAndTranscriptAcrossRestart(t *testi
 	missingConversation.ConversationID = "conv_absent"
 	assertSidecarAttachmentError(t, client, missingConversation, http.StatusNotFound, "does not exist")
 	assertPersistentSidecarTranscript(t, client, descriptor.ConversationID, "retained transcript item")
+	if err := client.Health(context.Background()); err != nil {
+		t.Fatalf("sidecar lost liveness after attachment detach/failures: %v", err)
+	}
 	stop()
 
 	if err := os.Remove(filepath.Join(cfg.StateRoot, "data", "chat.db")); err != nil {

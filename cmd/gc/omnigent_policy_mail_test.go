@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -143,6 +144,74 @@ func TestOmnigentPolicyMailBridgeMissingRecipientFailsWithoutMail(t *testing.T) 
 	messages, listErr := provider.All("reviewer")
 	if listErr != nil || len(messages) != 0 {
 		t.Fatalf("messages=%v error=%v", messages, listErr)
+	}
+}
+
+func TestOmnigentPolicyMailBridgeSurfacesMailStoreOutageAndKeepsRequestPending(t *testing.T) {
+	client, upstream := newPolicyMailSidecar(t, "reviewer")
+	bridge, err := newOmnigentPolicyMailBridge(context.Background(), client, "worker", func() (mail.Provider, error) {
+		return nil, errors.New("mail store unavailable")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridge.Close()
+	if err := bridge.Observe(context.Background(), "conv_failover", omnigent.StreamEvent{
+		Type: "policy.request", Policy: &omnigent.PolicyRequest{
+			RequestID: "policy-store-outage", Kind: "approval", Prompt: "Approve?", Options: []string{"yes", "no"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	select {
+	case err := <-bridge.Errors():
+		if err == nil || !strings.Contains(err.Error(), "mail store unavailable") {
+			t.Fatalf("bridge error = %v", err)
+		}
+	case <-timer.C:
+		t.Fatal("mail-store outage was not surfaced")
+	}
+	if status := upstream.status(); status != "pending" {
+		t.Fatalf("durable policy status = %q, want pending", status)
+	}
+	if got := policyResponseCount(upstream); got != 0 {
+		t.Fatalf("mail-store outage delivered %d responses", got)
+	}
+}
+
+func TestOmnigentPolicyMailBridgeCancellationStopsPendingDelivery(t *testing.T) {
+	client, upstream := newPolicyMailSidecar(t, "reviewer")
+	provider := beadmail.New(beads.NewMemStore())
+	bridge, err := newOmnigentPolicyMailBridge(context.Background(), client, "worker", func() (mail.Provider, error) {
+		return provider, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge.pollInterval = 10 * time.Millisecond
+	event := omnigent.StreamEvent{Type: "policy.request", Policy: &omnigent.PolicyRequest{
+		RequestID: "policy-canceled", Kind: "approval", Prompt: "Approve?", Options: []string{"yes", "no"},
+	}}
+	if err := bridge.Observe(context.Background(), "conv_failover", event); err != nil {
+		t.Fatal(err)
+	}
+	request := waitPolicyMail(t, provider, upstream, "reviewer")
+	if err := bridge.Observe(context.Background(), "conv_failover", omnigent.StreamEvent{
+		Type: "policy.cancelled", Policy: &omnigent.PolicyRequest{RequestID: event.Policy.RequestID},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bridge.Close()
+	if _, err := provider.Reply(request.ID, "reviewer", "RE", `{"request_id":"policy-canceled","action":"yes"}`); err != nil {
+		t.Fatal(err)
+	}
+	if status := upstream.status(); status != "canceled" {
+		t.Fatalf("durable policy status = %q, want canceled", status)
+	}
+	if got := policyResponseCount(upstream); got != 0 {
+		t.Fatalf("canceled request delivered %d responses", got)
 	}
 }
 
