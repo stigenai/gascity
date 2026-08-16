@@ -126,6 +126,13 @@
           "type": "object",
           "description": "Env sets additional environment variables for the agent process."
         },
+        "secret": {
+          "items": {
+            "$ref": "#/$defs/SecretReference"
+          },
+          "type": "array",
+          "description": "SecretReferences declares provider-owned credential references. Values\nare resolved only by the selected runtime provider and never enter Env."
+        },
         "option_defaults": {
           "additionalProperties": {
             "type": "string"
@@ -397,6 +404,13 @@
           "type": "object",
           "description": "Env adds or overrides environment variables."
         },
+        "secret": {
+          "items": {
+            "$ref": "#/$defs/SecretReference"
+          },
+          "type": "array",
+          "description": "SecretReferences replaces the agent's provider-owned secret references."
+        },
         "env_remove": {
           "items": {
             "type": "string"
@@ -659,6 +673,23 @@
         "source"
       ],
       "description": "Import defines a named import of another pack."
+    },
+    "KubernetesSecretKeyReference": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name",
+        "key"
+      ],
+      "description": "KubernetesSecretKeyReference identifies one Kubernetes Secret key."
     },
     "ModelPricing": {
       "properties": {
@@ -1268,6 +1299,44 @@
       "additionalProperties": false,
       "type": "object",
       "description": "ProviderSpec defines a named provider's startup parameters."
+    },
+    "SSHSecretPathReference": {
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "path"
+      ],
+      "description": "SSHSecretPathReference identifies an owner-only credential file or directory already provisioned on the SSH host."
+    },
+    "SecretReference": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "environment": {
+          "type": "string"
+        },
+        "mount_path": {
+          "type": "string"
+        },
+        "kubernetes": {
+          "$ref": "#/$defs/KubernetesSecretKeyReference"
+        },
+        "ssh": {
+          "$ref": "#/$defs/SSHSecretPathReference"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "description": "SecretReference maps a logical credential to one environment or mount destination."
     },
     "Service": {
       "properties": {
