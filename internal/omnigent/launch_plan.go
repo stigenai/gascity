@@ -69,6 +69,7 @@ type AttachmentLaunchPlan struct {
 	CapsuleKey         runtime.CapsuleKey
 	Pin                Pin
 	SecretProvider     runtime.SecretProvider
+	Network            runtime.CapsuleNetworkMode
 	SecretReferences   []runtime.SecretReference
 	ProfileCredentials []ProfileCredentialProjection
 }
@@ -171,6 +172,7 @@ func ResolveAttachmentLaunchPlan(input AttachmentLaunchInput) (AttachmentLaunchP
 	plan.CapsuleKey = key
 	plan.Pin = input.Pin
 	plan.ProfileID = profileID
+	plan.Network = runtime.CapsuleNetworkMode(profileCredentials[0].Network)
 	plan.SecretProvider = provider
 	plan.SecretReferences = selected
 	plan.ProfileCredentials = profileCredentials
@@ -241,6 +243,7 @@ func (p AttachmentLaunchPlan) RuntimeCapsuleConfig(state runtime.CapsuleStateRef
 		RunRoot: filepath.Dir(p.SocketPath), SocketPath: p.SocketPath,
 		CatalogResourceID: strings.TrimSpace(catalogResourceID),
 		CatalogMountPath:  filepath.Dir(p.CatalogPath), CatalogSHA256: p.CatalogSHA256,
+		Network: p.Network,
 	}
 	if err := capsule.Validate(); err != nil {
 		return nil, err
@@ -254,7 +257,7 @@ func (p AttachmentLaunchPlan) Fingerprint() string {
 	for _, value := range []string{
 		string(p.Location), p.Runtime, p.ProfileID, p.Workspace, p.StateRoot, p.SocketPath, p.CatalogPath,
 		p.CapsuleKey.Digest, p.CatalogSHA256, p.Pin.Commit, p.Pin.PackageVersion, p.Pin.Executable, p.Pin.SHA256,
-		string(p.SecretProvider), runtime.ProvisionFingerprint(runtime.Config{SecretReferences: p.SecretReferences}),
+		string(p.SecretProvider), string(p.Network), runtime.ProvisionFingerprint(runtime.Config{SecretReferences: p.SecretReferences}),
 	} {
 		_, _ = h.Write([]byte(value))
 		_, _ = h.Write([]byte{0})

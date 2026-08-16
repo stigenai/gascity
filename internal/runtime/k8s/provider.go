@@ -47,6 +47,7 @@ var (
 type Provider struct {
 	ops                     k8sOps
 	pvcOps                  k8sPVCOps
+	networkOps              k8sNetworkOps
 	namespace               string
 	image                   string
 	k8sContext              string
@@ -138,6 +139,7 @@ func NewProvider() (*Provider, error) {
 	return &Provider{
 		ops:                     realOps,
 		pvcOps:                  realOps,
+		networkOps:              realOps,
 		namespace:               namespace,
 		image:                   image,
 		k8sContext:              k8sContext,
@@ -189,9 +191,11 @@ func parseSchedulingEnv() (schedulingFields, error) {
 // newProviderWithOps creates a provider with a custom k8sOps (for testing).
 func newProviderWithOps(ops k8sOps) *Provider {
 	pvcOps, _ := ops.(k8sPVCOps)
+	networkOps, _ := ops.(k8sNetworkOps)
 	return &Provider{
 		ops:                   ops,
 		pvcOps:                pvcOps,
+		networkOps:            networkOps,
 		namespace:             "test-ns",
 		image:                 "test-image:latest",
 		managedServiceHost:    podManagedDoltHost,
@@ -218,6 +222,9 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 		if err := p.AttachCapsuleState(ctx, name, cfg.Capsule.State); err != nil {
 			return fmt.Errorf("attaching capsule state for session %q: %w", name, err)
 		}
+	}
+	if err := p.preflightCapsuleNetwork(ctx, cfg); err != nil {
+		return fmt.Errorf("validating capsule network for session %q: %w", name, err)
 	}
 	podName := SanitizeName(name)
 	label := SanitizeLabel(name)
@@ -257,13 +264,27 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 	if err != nil {
 		return fmt.Errorf("building pod for session %q: %w", name, err)
 	}
+	networkPolicy, networkPolicyCreated, err := p.ensureCapsuleNetworkPolicy(ctx, name, cfg)
+	if err != nil {
+		return fmt.Errorf("applying capsule network isolation for session %q: %w", name, err)
+	}
+	cleanupNetworkPolicy := func() {
+		if !networkPolicyCreated {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = p.networkOps.deleteNetworkPolicy(cleanupCtx, networkPolicy.Name, networkPolicy.UID)
+	}
 	p.invalidateRunningPodSnapshot()
 	createdPod, err := p.ops.createPod(ctx, pod)
 	p.invalidateRunningPodSnapshot()
 	if err != nil {
+		cleanupNetworkPolicy()
 		return fmt.Errorf("creating pod for session %q: %w", name, err)
 	}
 	if createdPod == nil || createdPod.UID == "" {
+		cleanupNetworkPolicy()
 		return fmt.Errorf("creating pod for session %q returned no immutable UID", name)
 	}
 	podUID := createdPod.UID
@@ -277,6 +298,9 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 		p.invalidateRunningPodSnapshot()
 		_ = p.ops.deletePod(cleanupCtx, podName, podUID, 5)
 		p.invalidateRunningPodSnapshot()
+		if networkPolicyCreated {
+			_ = p.networkOps.deleteNetworkPolicy(cleanupCtx, networkPolicy.Name, networkPolicy.UID)
+		}
 	}
 
 	ctrlCity := cfg.Env["GC_CITY"]
@@ -519,6 +543,9 @@ func (p *Provider) Stop(name string) error {
 	if len(errs) > 0 {
 		return fmt.Errorf("k8s stop %q: %w", name, errors.Join(errs...))
 	}
+	if err := p.deleteCapsuleNetworkPolicies(ctx, label, ""); err != nil {
+		return fmt.Errorf("k8s stop %q: %w", name, err)
+	}
 	return nil
 }
 
@@ -581,7 +608,11 @@ func (p *Provider) StopIfInstanceToken(name, expectedToken string) error {
 		}
 		errs = append(errs, fmt.Errorf("deleting token-matched pod %q (%s): %w", pod.Name, pod.UID, deleteErr))
 	}
-	return errors.Join(errs...)
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	fingerprint := capsuleTokenFingerprint(expectedToken)
+	return p.deleteCapsuleNetworkPolicies(ctx, label, fingerprint)
 }
 
 // Interrupt sends Ctrl-C to the tmux session inside the pod.

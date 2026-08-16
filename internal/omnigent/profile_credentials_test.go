@@ -22,7 +22,7 @@ func TestProjectProfileCredentialsIsolatesSelectedChainAndProvider(t *testing.T)
 	if len(claude) != 2 || claude[0].ProfileID != "claude-primary" || claude[1].ProfileID != "claude-secondary" {
 		t.Fatalf("Claude projection = %#v", claude)
 	}
-	if claude[0].Backend != "compatible-primary" || claude[0].Blurb != "Primary compatible backend." || claude[1].Backend != "compatible-secondary" {
+	if claude[0].Backend != "compatible-primary" || claude[0].Network != "external-model" || claude[0].Blurb != "Primary compatible backend." || claude[1].Backend != "compatible-secondary" {
 		t.Fatalf("Claude backend metadata = %#v", claude)
 	}
 	for i, wantID := range []string{"claude-primary-home", "claude-secondary-home"} {

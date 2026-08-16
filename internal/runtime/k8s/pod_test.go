@@ -35,6 +35,7 @@ func TestBuildPod_CapsuleLaunchUsesOneAgentContainerAndIsolatedMounts(t *testing
 		CatalogResourceID: "gco-catalog-a1b2c3",
 		CatalogMountPath:  "/etc/gascity/omnigent",
 		CatalogSHA256:     "sha256:" + strings.Repeat("a", 64),
+		Network:           runtime.CapsuleNetworkExternalModel,
 	}
 
 	for _, prebaked := range []bool{false, true} {
@@ -58,6 +59,10 @@ func TestBuildPod_CapsuleLaunchUsesOneAgentContainerAndIsolatedMounts(t *testing
 				t.Fatal("capsule pod enabled service-account token automount")
 			}
 			assertRestrictedAgentContext(t, agent.SecurityContext)
+			wantReadOnlyRoot := !prebaked
+			if agent.SecurityContext.ReadOnlyRootFilesystem == nil || *agent.SecurityContext.ReadOnlyRootFilesystem != wantReadOnlyRoot {
+				t.Fatalf("ReadOnlyRootFilesystem = %v, want %t", agent.SecurityContext.ReadOnlyRootFilesystem, wantReadOnlyRoot)
+			}
 			encodedCommand := base64.StdEncoding.EncodeToString([]byte(shellquote.Join(command)))
 			if !strings.Contains(strings.Join(agent.Args, " "), encodedCommand) || strings.Contains(strings.Join(agent.Args, " "), "controller-command-must-not-run") {
 				t.Fatalf("agent args do not contain exact capsule command: %q", agent.Args)
@@ -68,6 +73,12 @@ func TestBuildPod_CapsuleLaunchUsesOneAgentContainerAndIsolatedMounts(t *testing
 			assertPodMount(t, mounts, "capsule-run", "/run/gascity/omnigent", false)
 			assertPodMount(t, mounts, "capsule-catalog", "/etc/gascity/omnigent", true)
 			volumes := podVolumesByName(pod.Spec.Volumes)
+			if wantReadOnlyRoot && (volumes["capsule-tmp"].EmptyDir == nil || volumes["capsule-home"].EmptyDir == nil) {
+				t.Fatalf("read-only capsule lacks writable tmp/home: %#v", volumes)
+			}
+			if prebaked && pod.Annotations["gascity.dev/security-exception"] != "prebaked-image-workspace" {
+				t.Fatalf("prebaked security exception = %q", pod.Annotations["gascity.dev/security-exception"])
+			}
 			if volumes["capsule-state"].PersistentVolumeClaim == nil || volumes["capsule-state"].PersistentVolumeClaim.ClaimName != key.ResourceStem() {
 				t.Fatalf("state volume = %#v", volumes["capsule-state"])
 			}
@@ -142,6 +153,7 @@ func TestBuildPod_RejectsInvalidCapsulePlanBeforeManifest(t *testing.T) {
 		"socket outside run root": func(c *runtime.CapsuleLaunchConfig) { c.SocketPath = "/tmp/service.sock" },
 		"missing command":         func(c *runtime.CapsuleLaunchConfig) { c.Command = nil },
 		"catalog digest mismatch": func(c *runtime.CapsuleLaunchConfig) { c.CatalogSHA256 = "sha256:bad" },
+		"missing network policy":  func(c *runtime.CapsuleLaunchConfig) { c.Network = "" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -169,6 +181,7 @@ func testK8sCapsuleLaunch(t *testing.T) *runtime.CapsuleLaunchConfig {
 		RunRoot: "/run/gascity/omnigent", SocketPath: "/run/gascity/omnigent/sidecar.sock",
 		CatalogResourceID: "gco-catalog-a1b2c3", CatalogMountPath: "/etc/gascity/omnigent",
 		CatalogSHA256: "sha256:" + strings.Repeat("a", 64),
+		Network:       runtime.CapsuleNetworkExternalModel,
 	}
 }
 

@@ -286,20 +286,16 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 	linuxUsername := cfg.Env["LINUX_USERNAME"]
 	var userSetup string
 	if linuxUsername != "" {
-		userSetup = fmt.Sprintf(
-			`id "%s" >/dev/null 2>&1 || useradd -m -s /bin/bash "%s"; `+
-				`echo "%s ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/"%s" && chmod 0440 /etc/sudoers.d/"%s"; `+
-				`mkdir -p "%s" && chown -R "%s" "%s"; `+
-				`export HOME="/home/%s"; `,
-			linuxUsername, linuxUsername,
-			linuxUsername, linuxUsername, linuxUsername,
-			podWorkDir, linuxUsername, podWorkDir,
-			linuxUsername,
-		)
+		userSetup = fmt.Sprintf(`id %q >/dev/null 2>&1 || useradd -m -s /bin/bash %q; `, linuxUsername, linuxUsername)
+		if cfg.Capsule == nil {
+			userSetup += fmt.Sprintf(`echo %q > /etc/sudoers.d/%q && chmod 0440 /etc/sudoers.d/%q; `,
+				linuxUsername+" ALL=(ALL) NOPASSWD:ALL", linuxUsername, linuxUsername)
+		}
+		userSetup += fmt.Sprintf(`mkdir -p %q && chown -R %q %q; export HOME=%q; `,
+			podWorkDir, linuxUsername, podWorkDir, "/home/"+linuxUsername)
 		if cfg.Capsule != nil {
-			for _, writablePath := range []string{cfg.Capsule.State.MountPath, cfg.Capsule.RunRoot} {
-				userSetup += fmt.Sprintf(`mkdir -p %q && chown -R %q %q; `, writablePath, linuxUsername, writablePath)
-			}
+			userSetup += fmt.Sprintf(`mkdir -p %q && chown -R %q %q; `, cfg.Capsule.State.MountPath, linuxUsername, cfg.Capsule.State.MountPath)
+			userSetup += fmt.Sprintf(`mkdir -p %q && chown %q %q; `, cfg.Capsule.RunRoot, linuxUsername, cfg.Capsule.RunRoot)
 		}
 		if secretProjection.hasFileMount {
 			userSetup += fmt.Sprintf(`usermod -a -G %d %q; `, agentUserGroupID, linuxUsername)
@@ -380,6 +376,17 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 			}},
 		)
 	}
+	readOnlyCapsuleRoot := cfg.Capsule != nil && linuxUsername == "" && !p.prebaked
+	if readOnlyCapsuleRoot {
+		mainVolMounts = append(mainVolMounts,
+			corev1.VolumeMount{Name: "capsule-tmp", MountPath: "/tmp"},
+			corev1.VolumeMount{Name: "capsule-home", MountPath: "/home/gcagent"},
+		)
+		volumes = append(volumes,
+			corev1.Volume{Name: "capsule-tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}},
+			corev1.Volume{Name: "capsule-home", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		)
+	}
 	mainVolMounts = append(mainVolMounts, secretProjection.mounts...)
 	volumes = append(volumes, secretProjection.volumes...)
 
@@ -443,7 +450,7 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 				TTY:             true,
 				Resources:       resources,
 				VolumeMounts:    mainVolMounts,
-				SecurityContext: agentSecurityContext(linuxUsername),
+				SecurityContext: agentSecurityContext(linuxUsername, cfg.Capsule != nil, readOnlyCapsuleRoot),
 			}},
 			Volumes: volumes,
 		},
@@ -458,6 +465,16 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 		pod.Labels["gc-capsule"] = "true"
 		pod.Annotations["gc-capsule-digest"] = capsule.Key.Digest
 		pod.Annotations["gc-capsule-catalog-sha256"] = capsule.CatalogSHA256
+		var securityExceptions []string
+		if linuxUsername != "" {
+			securityExceptions = append(securityExceptions, "dynamic-user-bootstrap")
+		}
+		if p.prebaked {
+			securityExceptions = append(securityExceptions, "prebaked-image-workspace")
+		}
+		if len(securityExceptions) != 0 {
+			pod.Annotations["gascity.dev/security-exception"] = strings.Join(securityExceptions, ",")
+		}
 		agent := &pod.Spec.Containers[0]
 		agent.ReadinessProbe = &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{
@@ -497,7 +514,7 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 			ImagePullPolicy: corev1.PullIfNotPresent,
 			Command:         []string{"sh", "-c", "while [ ! -f /workspace/.gc-ready ]; do sleep 0.5; done"},
 			VolumeMounts:    initVolMounts,
-			SecurityContext: agentSecurityContext(""),
+			SecurityContext: agentSecurityContext("", false, false),
 		}}
 	}
 
@@ -561,9 +578,23 @@ func cloneTolerations(in []corev1.Toleration) []corev1.Toleration {
 // (UID 0) so it can create the user at runtime before dropping privileges.
 // Otherwise it locks the official agent image to its numeric gcagent UID/GID
 // and the Kubernetes Restricted Pod Security profile.
-func agentSecurityContext(linuxUsername string) *corev1.SecurityContext {
+func agentSecurityContext(linuxUsername string, capsule, readOnlyRoot bool) *corev1.SecurityContext {
 	if linuxUsername != "" {
 		var rootUID int64
+		if capsule {
+			runAsNonRoot := false
+			allowPrivilegeEscalation := false
+			return &corev1.SecurityContext{
+				RunAsNonRoot:             &runAsNonRoot,
+				RunAsUser:                &rootUID,
+				AllowPrivilegeEscalation: &allowPrivilegeEscalation,
+				Capabilities: &corev1.Capabilities{
+					Drop: []corev1.Capability{"ALL"},
+					Add:  []corev1.Capability{"CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"},
+				},
+				SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+			}
+		}
 		return &corev1.SecurityContext{
 			RunAsUser: &rootUID,
 		}
@@ -578,6 +609,7 @@ func agentSecurityContext(linuxUsername string) *corev1.SecurityContext {
 		RunAsUser:                &agentUID,
 		RunAsGroup:               &agentGID,
 		AllowPrivilegeEscalation: &allowPrivilegeEscalation,
+		ReadOnlyRootFilesystem:   boolPtr(readOnlyRoot),
 		Capabilities: &corev1.Capabilities{
 			Drop: []corev1.Capability{"ALL"},
 		},

@@ -35,6 +35,19 @@ const (
 	SecretProviderSSH SecretProvider = "ssh"
 )
 
+// CapsuleNetworkMode is the provider-neutral egress class for a remote
+// capsule. Providers translate it into their native isolation mechanism.
+type CapsuleNetworkMode string
+
+const (
+	// CapsuleNetworkOffline permits only explicitly required local
+	// infrastructure such as the task ledger and cluster DNS.
+	CapsuleNetworkOffline CapsuleNetworkMode = "offline"
+	// CapsuleNetworkExternalModel additionally permits the deployment's
+	// designated model-egress gateway; it never means unrestricted Internet.
+	CapsuleNetworkExternalModel CapsuleNetworkMode = "external-model"
+)
+
 var (
 	// ErrUnsupportedSecretProvider reports that a runtime has no typed secret
 	// projection contract. Callers must reject the launch rather than copy
@@ -309,6 +322,7 @@ type CapsuleLaunchConfig struct {
 	CatalogResourceID string
 	CatalogMountPath  string
 	CatalogSHA256     string
+	Network           CapsuleNetworkMode
 }
 
 // Validate checks provider-neutral identity, path, command, and catalog
@@ -356,6 +370,9 @@ func (c CapsuleLaunchConfig) Validate() error {
 	}
 	if !capsuleDigestPattern.MatchString(c.CatalogSHA256) {
 		return errors.New("capsule catalog digest must use sha256:<64 lowercase hex> form")
+	}
+	if c.Network != CapsuleNetworkOffline && c.Network != CapsuleNetworkExternalModel {
+		return fmt.Errorf("capsule network must be %q or %q", CapsuleNetworkOffline, CapsuleNetworkExternalModel)
 	}
 	return nil
 }

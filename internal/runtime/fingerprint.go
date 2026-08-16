@@ -408,6 +408,7 @@ func hashCapsuleLaunchConfig(h hash.Hash, capsule *CapsuleLaunchConfig) {
 		capsule.CatalogResourceID,
 		capsule.CatalogMountPath,
 		capsule.CatalogSHA256,
+		string(capsule.Network),
 	}
 	values = append(values, capsule.Command...)
 	for _, value := range values {

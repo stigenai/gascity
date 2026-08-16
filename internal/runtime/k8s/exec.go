@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -35,6 +36,13 @@ type k8sPVCOps interface {
 	getPVC(ctx context.Context, name string) (*corev1.PersistentVolumeClaim, error)
 	listPVCs(ctx context.Context, selector string) ([]corev1.PersistentVolumeClaim, error)
 	deletePVC(ctx context.Context, name string, uid types.UID) error
+}
+
+type k8sNetworkOps interface {
+	createNetworkPolicy(ctx context.Context, policy *networkingv1.NetworkPolicy) (*networkingv1.NetworkPolicy, error)
+	getNetworkPolicy(ctx context.Context, name string) (*networkingv1.NetworkPolicy, error)
+	listNetworkPolicies(ctx context.Context, selector string) ([]networkingv1.NetworkPolicy, error)
+	deleteNetworkPolicy(ctx context.Context, name string, uid types.UID) error
 }
 
 // realK8sOps wraps a Kubernetes clientset and REST config for real API calls.
@@ -99,6 +107,31 @@ func (r *realK8sOps) deletePVC(ctx context.Context, name string, uid types.UID) 
 	})
 }
 
+func (r *realK8sOps) createNetworkPolicy(ctx context.Context, policy *networkingv1.NetworkPolicy) (*networkingv1.NetworkPolicy, error) {
+	return r.clientset.NetworkingV1().NetworkPolicies(r.namespace).Create(ctx, policy, metav1.CreateOptions{})
+}
+
+func (r *realK8sOps) getNetworkPolicy(ctx context.Context, name string) (*networkingv1.NetworkPolicy, error) {
+	return r.clientset.NetworkingV1().NetworkPolicies(r.namespace).Get(ctx, name, metav1.GetOptions{})
+}
+
+func (r *realK8sOps) listNetworkPolicies(ctx context.Context, selector string) ([]networkingv1.NetworkPolicy, error) {
+	list, err := r.clientset.NetworkingV1().NetworkPolicies(r.namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+func (r *realK8sOps) deleteNetworkPolicy(ctx context.Context, name string, uid types.UID) error {
+	if uid == "" {
+		return fmt.Errorf("refusing to delete NetworkPolicy %q without an immutable UID", name)
+	}
+	return r.clientset.NetworkingV1().NetworkPolicies(r.namespace).Delete(ctx, name, metav1.DeleteOptions{
+		Preconditions: &metav1.Preconditions{UID: &uid},
+	})
+}
+
 func (r *realK8sOps) execInPod(ctx context.Context, pod, container string, cmd []string, stdin io.Reader) (string, error) {
 	req := r.clientset.CoreV1().RESTClient().
 		Post().
@@ -141,24 +174,29 @@ func (r *realK8sOps) execInPod(ctx context.Context, pod, container string, cmd [
 // fakeK8sOps is an in-memory test double with spy capabilities.
 // Records all calls for assertions and returns configurable results.
 type fakeK8sOps struct {
-	pods  map[string]*corev1.Pod
-	pvcs  map[string]*corev1.PersistentVolumeClaim
-	calls []fakeCall
-	pvcMu sync.Mutex
+	pods            map[string]*corev1.Pod
+	pvcs            map[string]*corev1.PersistentVolumeClaim
+	networkPolicies map[string]*networkingv1.NetworkPolicy
+	calls           []fakeCall
+	pvcMu           sync.Mutex
 
 	// Configurable behaviors.
-	execOutput   map[string]string                              // pod+cmd key → stdout
-	execErr      map[string]error                               // pod+cmd key → error
-	execFunc     func(pod string, cmd []string) (string, error) // dynamic override, checked first
-	createErr    error
-	deleteErr    error
-	getErr       error
-	listErr      error
-	pvcCreateErr error
-	pvcGetErr    error
-	pvcListErr   error
-	pvcDeleteErr error
-	beforeDelete func(name string)
+	execOutput       map[string]string                              // pod+cmd key → stdout
+	execErr          map[string]error                               // pod+cmd key → error
+	execFunc         func(pod string, cmd []string) (string, error) // dynamic override, checked first
+	createErr        error
+	deleteErr        error
+	getErr           error
+	listErr          error
+	pvcCreateErr     error
+	pvcGetErr        error
+	pvcListErr       error
+	pvcDeleteErr     error
+	networkCreateErr error
+	networkGetErr    error
+	networkListErr   error
+	networkDeleteErr error
+	beforeDelete     func(name string)
 }
 
 type fakeCall struct {
@@ -172,11 +210,77 @@ type fakeCall struct {
 
 func newFakeK8sOps() *fakeK8sOps {
 	return &fakeK8sOps{
-		pods:       make(map[string]*corev1.Pod),
-		pvcs:       make(map[string]*corev1.PersistentVolumeClaim),
-		execOutput: make(map[string]string),
-		execErr:    make(map[string]error),
+		pods:            make(map[string]*corev1.Pod),
+		pvcs:            make(map[string]*corev1.PersistentVolumeClaim),
+		networkPolicies: make(map[string]*networkingv1.NetworkPolicy),
+		execOutput:      make(map[string]string),
+		execErr:         make(map[string]error),
 	}
+}
+
+func (f *fakeK8sOps) createNetworkPolicy(_ context.Context, policy *networkingv1.NetworkPolicy) (*networkingv1.NetworkPolicy, error) {
+	f.pvcMu.Lock()
+	defer f.pvcMu.Unlock()
+	f.calls = append(f.calls, fakeCall{method: "createNetworkPolicy", pod: policy.Name})
+	if f.networkCreateErr != nil {
+		return nil, f.networkCreateErr
+	}
+	if _, exists := f.networkPolicies[policy.Name]; exists {
+		return nil, apierrors.NewAlreadyExists(schema.GroupResource{Resource: "networkpolicies"}, policy.Name)
+	}
+	created := policy.DeepCopy()
+	created.UID = types.UID("fake-network-policy-uid-" + policy.Name)
+	created.ResourceVersion = "1"
+	f.networkPolicies[policy.Name] = created
+	return created.DeepCopy(), nil
+}
+
+func (f *fakeK8sOps) getNetworkPolicy(_ context.Context, name string) (*networkingv1.NetworkPolicy, error) {
+	f.pvcMu.Lock()
+	defer f.pvcMu.Unlock()
+	f.calls = append(f.calls, fakeCall{method: "getNetworkPolicy", pod: name})
+	if f.networkGetErr != nil {
+		return nil, f.networkGetErr
+	}
+	policy, ok := f.networkPolicies[name]
+	if !ok {
+		return nil, apierrors.NewNotFound(schema.GroupResource{Resource: "networkpolicies"}, name)
+	}
+	return policy.DeepCopy(), nil
+}
+
+func (f *fakeK8sOps) listNetworkPolicies(_ context.Context, selector string) ([]networkingv1.NetworkPolicy, error) {
+	f.pvcMu.Lock()
+	defer f.pvcMu.Unlock()
+	f.calls = append(f.calls, fakeCall{method: "listNetworkPolicies", selector: selector})
+	if f.networkListErr != nil {
+		return nil, f.networkListErr
+	}
+	var result []networkingv1.NetworkPolicy
+	for _, policy := range f.networkPolicies {
+		if matchesLabels(policy.Labels, selector) {
+			result = append(result, *policy.DeepCopy())
+		}
+	}
+	return result, nil
+}
+
+func (f *fakeK8sOps) deleteNetworkPolicy(_ context.Context, name string, uid types.UID) error {
+	f.pvcMu.Lock()
+	defer f.pvcMu.Unlock()
+	f.calls = append(f.calls, fakeCall{method: "deleteNetworkPolicy", pod: name, uid: uid})
+	if f.networkDeleteErr != nil {
+		return f.networkDeleteErr
+	}
+	policy, ok := f.networkPolicies[name]
+	if !ok {
+		return apierrors.NewNotFound(schema.GroupResource{Resource: "networkpolicies"}, name)
+	}
+	if uid == "" || policy.UID != uid {
+		return apierrors.NewConflict(schema.GroupResource{Resource: "networkpolicies"}, name, fmt.Errorf("UID precondition failed"))
+	}
+	delete(f.networkPolicies, name)
+	return nil
 }
 
 func (f *fakeK8sOps) createPVC(_ context.Context, pvc *corev1.PersistentVolumeClaim) (*corev1.PersistentVolumeClaim, error) {

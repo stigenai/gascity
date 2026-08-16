@@ -143,6 +143,7 @@ func TestProviderCapsuleStartValidationFailsBeforePodMutation(t *testing.T) {
 	ops := newFakeK8sOps()
 	provider := newProviderWithOps(ops)
 	capsule := testK8sCapsuleLaunch(t)
+	capsule.Network = runtime.CapsuleNetworkOffline
 
 	cfg := runtime.Config{Capsule: capsule}
 	if err := provider.Start(ctx, "ga-target", cfg); !errors.Is(err, runtime.ErrCapsuleStateConflict) {
@@ -189,6 +190,7 @@ func TestProviderCapsuleStartMountsSameStateAcrossPodReplacement(t *testing.T) {
 	provider.prebaked = true
 	provider.postStartSettle = 0
 	capsule := testK8sCapsuleLaunch(t)
+	capsule.Network = runtime.CapsuleNetworkOffline
 	ref, _, err := provider.EnsureCapsuleState(ctx, capsule.Key)
 	if err != nil {
 		t.Fatal(err)

@@ -34,6 +34,7 @@ type ProfileCredentialProjection struct {
 	ProfileID  string
 	Harness    string
 	Backend    string
+	Network    string
 	Blurb      string
 	References []runtime.SecretReference
 }
@@ -73,7 +74,7 @@ func (c *Catalog) ProjectProfileCredentials(profileID string, provider runtime.S
 			return nil, &ProfileSecretReferenceError{ProfileID: profile.ID, ReferenceID: secretProviderErrorReferenceID(err), Err: err}
 		}
 		projections = append(projections, ProfileCredentialProjection{
-			ProfileID: profile.ID, Harness: profile.Harness, Backend: profile.Backend,
+			ProfileID: profile.ID, Harness: profile.Harness, Backend: profile.Backend, Network: profile.Network,
 			Blurb: profile.Blurb, References: selected,
 		})
 	}

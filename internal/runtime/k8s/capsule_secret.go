@@ -87,6 +87,7 @@ func rejectCapsuleCredentialLiterals(cfg runtime.Config) error {
 	allowedNativeProjection := map[string]bool{
 		"GITHUB_TOKEN": true, "LITELLM_MASTER_KEY": true,
 		"GC_DOLT_PASSWORD": true, "BEADS_DOLT_PASSWORD": true,
+		"GC_INSTANCE_TOKEN": true,
 	}
 	for key, value := range cfg.Env {
 		if strings.TrimSpace(value) != "" && execenv.IsSensitiveKey(key) && !allowedNativeProjection[key] && !strings.HasPrefix(key, "GC_K8S_") {

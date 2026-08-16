@@ -206,6 +206,7 @@ func TestCapsuleLaunchConfigValidationAndProvisionFingerprint(t *testing.T) {
 		RunRoot: "/run/gascity/omnigent", SocketPath: "/run/gascity/omnigent/sidecar.sock",
 		CatalogResourceID: "catalog", CatalogMountPath: "/etc/gascity/omnigent",
 		CatalogSHA256: "sha256:" + strings.Repeat("a", 64),
+		Network:       CapsuleNetworkExternalModel,
 	}
 	if err := capsule.Validate(); err != nil {
 		t.Fatal(err)
