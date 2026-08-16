@@ -41,6 +41,8 @@ type AttachmentLaunchInput struct {
 	Runtime          string
 	HybridRouteSet   bool
 	HybridRemote     bool
+	ProfileID        string
+	Catalog          *Catalog
 	Workspace        string
 	CityScope        string
 	SessionID        string
@@ -56,17 +58,19 @@ type AttachmentLaunchInput struct {
 // command resolver and capsule supervisor. SecretReferences contain identities
 // only; selected provider source values are never represented.
 type AttachmentLaunchPlan struct {
-	Location         AttachmentLocation
-	Runtime          string
-	Workspace        string
-	StateRoot        string
-	SocketPath       string
-	CatalogPath      string
-	CatalogSHA256    string
-	CapsuleKey       runtime.CapsuleKey
-	Pin              Pin
-	SecretProvider   runtime.SecretProvider
-	SecretReferences []runtime.SecretReference
+	Location           AttachmentLocation
+	Runtime            string
+	ProfileID          string
+	Workspace          string
+	StateRoot          string
+	SocketPath         string
+	CatalogPath        string
+	CatalogSHA256      string
+	CapsuleKey         runtime.CapsuleKey
+	Pin                Pin
+	SecretProvider     runtime.SecretProvider
+	SecretReferences   []runtime.SecretReference
+	ProfileCredentials []ProfileCredentialProjection
 }
 
 // ResolveAttachmentLaunchPlan maps an already selected Gas City runtime onto
@@ -101,19 +105,37 @@ func ResolveAttachmentLaunchPlan(input AttachmentLaunchInput) (AttachmentLaunchP
 	if err != nil {
 		return AttachmentLaunchPlan{}, err
 	}
-	selected, err := runtime.SelectSecretReferences(provider, input.SecretReferences)
+	if input.Catalog == nil {
+		return AttachmentLaunchPlan{}, errors.New("remote Omnigent attachment requires a validated profile catalog")
+	}
+	profileID := strings.TrimSpace(input.ProfileID)
+	if !profileIDPattern.MatchString(profileID) {
+		return AttachmentLaunchPlan{}, fmt.Errorf("invalid omnigent profile id %q", input.ProfileID)
+	}
+	profileCredentials, err := input.Catalog.ProjectProfileCredentials(profileID, provider, input.SecretReferences)
 	if err != nil {
 		return AttachmentLaunchPlan{}, err
 	}
+	selected := flattenProfileCredentialReferences(profileCredentials)
 	plan.StateRoot = CapsuleStateRoot
 	plan.SocketPath = CapsuleSocketPath
 	plan.CatalogPath = CapsuleCatalogPath
 	plan.CatalogSHA256 = input.CatalogSHA256
 	plan.CapsuleKey = key
 	plan.Pin = input.Pin
+	plan.ProfileID = profileID
 	plan.SecretProvider = provider
 	plan.SecretReferences = selected
+	plan.ProfileCredentials = profileCredentials
 	return plan, nil
+}
+
+func flattenProfileCredentialReferences(projections []ProfileCredentialProjection) []runtime.SecretReference {
+	var refs []runtime.SecretReference
+	for _, projection := range projections {
+		refs = append(refs, projection.References...)
+	}
+	return refs
 }
 
 func attachmentPlacement(runtimeName string, hybridRouteSet, hybridRemote bool) (AttachmentLocation, runtime.SecretProvider, error) {
@@ -159,12 +181,20 @@ func (p AttachmentLaunchPlan) CommandArgs() []string {
 func (p AttachmentLaunchPlan) Fingerprint() string {
 	h := sha256.New()
 	for _, value := range []string{
-		string(p.Location), p.Runtime, p.Workspace, p.StateRoot, p.SocketPath, p.CatalogPath,
+		string(p.Location), p.Runtime, p.ProfileID, p.Workspace, p.StateRoot, p.SocketPath, p.CatalogPath,
 		p.CapsuleKey.Digest, p.CatalogSHA256, p.Pin.Commit, p.Pin.PackageVersion, p.Pin.Executable, p.Pin.SHA256,
 		string(p.SecretProvider), runtime.ProvisionFingerprint(runtime.Config{SecretReferences: p.SecretReferences}),
 	} {
 		_, _ = h.Write([]byte(value))
 		_, _ = h.Write([]byte{0})
+	}
+	for _, projection := range p.ProfileCredentials {
+		_, _ = h.Write([]byte(projection.ProfileID))
+		_, _ = h.Write([]byte{0})
+		for _, ref := range projection.References {
+			_, _ = h.Write([]byte(ref.ID))
+			_, _ = h.Write([]byte{0})
+		}
 	}
 	return "v1:" + hex.EncodeToString(h.Sum(nil))
 }

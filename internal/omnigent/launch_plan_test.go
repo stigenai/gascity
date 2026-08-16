@@ -44,7 +44,7 @@ func TestResolveAttachmentLaunchPlanLocalAndRemotePlacement(t *testing.T) {
 				t.Fatalf("plan location/provider = %q/%q, want %q/%q", plan.Location, plan.SecretProvider, tt.wantMode, tt.wantProvider)
 			}
 			if tt.wantCapsule {
-				if err := plan.CapsuleKey.Validate(); err != nil || len(plan.SecretReferences) != 1 {
+				if err := plan.CapsuleKey.Validate(); err != nil || len(plan.SecretReferences) != 1 || len(plan.ProfileCredentials) != 1 || plan.ProfileID != "profile" {
 					t.Fatalf("capsule plan identity/secrets = %+v / %v", plan, err)
 				}
 				if strings.Contains(strings.Join(plan.CommandArgs(), " "), "controller") || strings.Contains(strings.Join(plan.CommandArgs(), " "), "managed") {
@@ -116,6 +116,7 @@ func TestAttachmentLaunchPlanFingerprintIsDeterministicAndSensitiveToInputs(t *t
 func testCapsuleLaunchInput(t *testing.T) AttachmentLaunchInput {
 	t.Helper()
 	return AttachmentLaunchInput{
+		ProfileID: "profile", Catalog: testCapsuleCredentialCatalog(t),
 		Workspace: "/workspace/rig", CityScope: "cluster-a/namespace-a/city-a", SessionID: "ga-session",
 		StateRoot: CapsuleStateRoot, SocketPath: CapsuleSocketPath, CatalogPath: CapsuleCatalogPath,
 		CatalogSHA256: "sha256:" + strings.Repeat("c", 64),
@@ -126,4 +127,25 @@ func testCapsuleLaunchInput(t *testing.T) AttachmentLaunchInput {
 			SSH:        &runtime.SSHSecretPathReference{Path: "/srv/gc-secrets/claude-primary-token"},
 		}},
 	}
+}
+
+func testCapsuleCredentialCatalog(t *testing.T) *Catalog {
+	t.Helper()
+	root := t.TempDir()
+	writeCatalogTestFile(t, root, "agent.yaml", "name: fixture-agent\nprompt: work\n")
+	path := writeCatalogTestFile(t, root, "catalog.yaml", validCatalogHeader()+`profiles:
+  profile:
+    display_name: Profile
+    blurb: Compatible backend profile.
+    harness: claude-sdk
+    backend: compatible
+    network: external-model
+    agent: agent.yaml
+    secret_references: [profile]
+`)
+	catalog, err := LoadCatalog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return catalog
 }

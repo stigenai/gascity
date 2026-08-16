@@ -24,6 +24,7 @@ profiles:
     network: external-model
     agent: agents/codex.yaml
     environment: [CODEX_HOME]
+    secret_references: [codex-home]
 
   claude-primary:
     display_name: Claude primary
@@ -34,6 +35,7 @@ profiles:
     agent: agents/claude-primary.yaml
     fallbacks: [claude-secondary]
     environment: [CLAUDE_PRIMARY_TOKEN]
+    secret_references: [claude-primary-home]
 
   claude-secondary:
     display_name: Claude secondary
@@ -43,3 +45,4 @@ profiles:
     network: external-model
     agent: agents/claude-secondary.yaml
     environment: [CLAUDE_SECONDARY_TOKEN]
+    secret_references: [claude-secondary-home]

@@ -115,6 +115,7 @@ type ResolvedProfile struct {
 	AgentPath           string
 	Fallbacks           []string
 	Environment         []string
+	SecretReferences    []string
 	PolicyMailRecipient string
 }
 
@@ -146,6 +147,7 @@ type profileDocument struct {
 	Agent               string   `yaml:"agent"`
 	Fallbacks           []string `yaml:"fallbacks"`
 	Environment         []string `yaml:"environment"`
+	SecretReferences    []string `yaml:"secret_references"`
 	PolicyMailRecipient string   `yaml:"policy_mail_recipient"`
 }
 
@@ -230,6 +232,9 @@ func LoadCatalog(path string) (*Catalog, error) {
 	if err := validateFallbacks(profiles); err != nil {
 		return nil, err
 	}
+	if err := validateProfileSecretReferenceOwnership(profiles); err != nil {
+		return nil, err
+	}
 	return &Catalog{Version: doc.Version, Pin: doc.Omnigent, profiles: profiles}, nil
 }
 
@@ -262,6 +267,7 @@ func resolveProfile(root, resolvedRoot, id string, raw profileDocument) (Resolve
 		Network:             strings.TrimSpace(raw.Network),
 		Fallbacks:           append([]string(nil), raw.Fallbacks...),
 		Environment:         append([]string(nil), raw.Environment...),
+		SecretReferences:    append([]string(nil), raw.SecretReferences...),
 		PolicyMailRecipient: strings.TrimSpace(raw.PolicyMailRecipient),
 	}
 	if profile.DisplayName == "" {
@@ -314,6 +320,18 @@ func resolveProfile(root, resolvedRoot, id string, raw profileDocument) (Resolve
 		}
 		seenEnvironment[name] = true
 		profile.Environment[i] = name
+	}
+	seenSecretReferences := make(map[string]bool, len(profile.SecretReferences))
+	for i, id := range profile.SecretReferences {
+		id = strings.TrimSpace(id)
+		if !profileIDPattern.MatchString(id) {
+			return ResolvedProfile{}, fmt.Errorf("omnigent profile %q: secret_references[%d] is invalid", profile.ID, i)
+		}
+		if seenSecretReferences[id] {
+			return ResolvedProfile{}, fmt.Errorf("omnigent profile %q: duplicate secret reference %q", profile.ID, id)
+		}
+		seenSecretReferences[id] = true
+		profile.SecretReferences[i] = id
 	}
 
 	agentRef := strings.TrimSpace(raw.Agent)
@@ -446,6 +464,19 @@ func validateFallbacks(profiles map[string]ResolvedProfile) error {
 	return nil
 }
 
+func validateProfileSecretReferenceOwnership(profiles map[string]ResolvedProfile) error {
+	owners := make(map[string]string)
+	for _, profileID := range sortedProfileIDs(profiles) {
+		for _, referenceID := range profiles[profileID].SecretReferences {
+			if owner := owners[referenceID]; owner != "" {
+				return fmt.Errorf("omnigent secret reference %q is shared by profiles %q and %q", referenceID, owner, profileID)
+			}
+			owners[referenceID] = profileID
+		}
+	}
+	return nil
+}
+
 // Profile returns one validated profile. The returned value owns its fallback
 // slice and may be mutated by the caller.
 func (c *Catalog) Profile(id string) (ResolvedProfile, bool) {
@@ -455,6 +486,7 @@ func (c *Catalog) Profile(id string) (ResolvedProfile, bool) {
 	profile, ok := c.profiles[id]
 	profile.Fallbacks = append([]string(nil), profile.Fallbacks...)
 	profile.Environment = append([]string(nil), profile.Environment...)
+	profile.SecretReferences = append([]string(nil), profile.SecretReferences...)
 	return profile, ok
 }
 
