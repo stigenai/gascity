@@ -137,6 +137,12 @@ func TestAttachmentLaunchPlanProjectsProviderNeutralRuntimeCapsule(t *testing.T)
 	if capsule.RunRoot != "/run/gascity/omnigent" || capsule.CatalogMountPath != "/etc/gascity/omnigent" || capsule.CatalogSHA256 != plan.CatalogSHA256 {
 		t.Fatalf("capsule paths/digest = %#v", capsule)
 	}
+	if capsule.ExecutablePin != (runtime.CapsuleExecutablePin{
+		Executable: plan.Pin.Executable, PackageVersion: plan.Pin.PackageVersion,
+		Commit: plan.Pin.Commit, SHA256: plan.Pin.SHA256,
+	}) {
+		t.Fatalf("capsule executable pin = %#v, want plan pin %#v", capsule.ExecutablePin, plan.Pin)
+	}
 
 	badState := state
 	badState.MountPath = "/tmp/wrong"

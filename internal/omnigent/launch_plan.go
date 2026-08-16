@@ -243,6 +243,10 @@ func (p AttachmentLaunchPlan) RuntimeCapsuleConfig(state runtime.CapsuleStateRef
 		RunRoot: filepath.Dir(p.SocketPath), SocketPath: p.SocketPath,
 		CatalogResourceID: strings.TrimSpace(catalogResourceID),
 		CatalogMountPath:  filepath.Dir(p.CatalogPath), CatalogSHA256: p.CatalogSHA256,
+		ExecutablePin: runtime.CapsuleExecutablePin{
+			Executable: p.Pin.Executable, PackageVersion: p.Pin.PackageVersion,
+			Commit: p.Pin.Commit, SHA256: p.Pin.SHA256,
+		},
 		Network: p.Network,
 	}
 	if err := capsule.Validate(); err != nil {

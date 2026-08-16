@@ -408,6 +408,10 @@ func hashCapsuleLaunchConfig(h hash.Hash, capsule *CapsuleLaunchConfig) {
 		capsule.CatalogResourceID,
 		capsule.CatalogMountPath,
 		capsule.CatalogSHA256,
+		capsule.ExecutablePin.Executable,
+		capsule.ExecutablePin.PackageVersion,
+		capsule.ExecutablePin.Commit,
+		capsule.ExecutablePin.SHA256,
 		string(capsule.Network),
 	}
 	values = append(values, capsule.Command...)

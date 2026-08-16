@@ -206,7 +206,11 @@ func TestCapsuleLaunchConfigValidationAndProvisionFingerprint(t *testing.T) {
 		RunRoot: "/run/gascity/omnigent", SocketPath: "/run/gascity/omnigent/sidecar.sock",
 		CatalogResourceID: "catalog", CatalogMountPath: "/etc/gascity/omnigent",
 		CatalogSHA256: "sha256:" + strings.Repeat("a", 64),
-		Network:       CapsuleNetworkExternalModel,
+		ExecutablePin: CapsuleExecutablePin{
+			Executable: "omnigent", PackageVersion: "0.10.0.dev0",
+			Commit: strings.Repeat("c", 40), SHA256: "sha256:" + strings.Repeat("d", 64),
+		},
+		Network: CapsuleNetworkExternalModel,
 	}
 	if err := capsule.Validate(); err != nil {
 		t.Fatal(err)
@@ -220,6 +224,11 @@ func TestCapsuleLaunchConfigValidationAndProvisionFingerprint(t *testing.T) {
 	}
 	if LaunchFingerprint(base) != LaunchFingerprint(changed) {
 		t.Fatal("capsule catalog generation changed launch-only fingerprint")
+	}
+	changedPin := *capsule
+	changedPin.ExecutablePin.SHA256 = "sha256:" + strings.Repeat("e", 64)
+	if ProvisionFingerprint(base) == ProvisionFingerprint(Config{Capsule: &changedPin}) {
+		t.Fatal("capsule executable pin did not change provision identity")
 	}
 
 	overlap := *capsule

@@ -107,6 +107,9 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 	if !validTmuxName.MatchString(name) {
 		return fmt.Errorf("%w %q: must match %s", ErrInvalidSessionName, name, validTmuxName.String())
 	}
+	if err := p.preflightCapsule(ctx, cfg); err != nil {
+		return fmt.Errorf("ssh start %q: %w", name, err)
+	}
 	if p.hasSession(ctx, name) {
 		return fmt.Errorf("%w: ssh session %q", runtime.ErrSessionExists, name)
 	}

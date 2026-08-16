@@ -22,6 +22,7 @@ var (
 	kubernetesNamePattern  = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 	kubernetesKeyPattern   = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 	capsuleDigestPattern   = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	capsuleCommitPattern   = regexp.MustCompile(`^[0-9a-f]{40}$`)
 )
 
 // SecretProvider identifies the runtime edge allowed to resolve a secret
@@ -310,6 +311,15 @@ type CapsuleStateReference struct {
 	MountPath   string
 }
 
+// CapsuleExecutablePin is the exact non-secret executable identity that a
+// concrete remote provider must verify before starting capsule processes.
+type CapsuleExecutablePin struct {
+	Executable     string
+	PackageVersion string
+	Commit         string
+	SHA256         string
+}
+
 // CapsuleLaunchConfig is the provider-neutral, non-secret plan for starting a
 // capsule-local service and its interactive client inside one runtime Place.
 // ResourceID fields are opaque provider-owned names, not operator paths.
@@ -322,6 +332,7 @@ type CapsuleLaunchConfig struct {
 	CatalogResourceID string
 	CatalogMountPath  string
 	CatalogSHA256     string
+	ExecutablePin     CapsuleExecutablePin
 	Network           CapsuleNetworkMode
 }
 
@@ -370,6 +381,18 @@ func (c CapsuleLaunchConfig) Validate() error {
 	}
 	if !capsuleDigestPattern.MatchString(c.CatalogSHA256) {
 		return errors.New("capsule catalog digest must use sha256:<64 lowercase hex> form")
+	}
+	if strings.TrimSpace(c.ExecutablePin.Executable) == "" {
+		return errors.New("capsule executable pin requires an executable")
+	}
+	if strings.TrimSpace(c.ExecutablePin.PackageVersion) == "" {
+		return errors.New("capsule executable pin requires a package version")
+	}
+	if !capsuleCommitPattern.MatchString(c.ExecutablePin.Commit) {
+		return errors.New("capsule executable pin commit must be lowercase 40-hex")
+	}
+	if !capsuleDigestPattern.MatchString(c.ExecutablePin.SHA256) {
+		return errors.New("capsule executable pin digest must use sha256:<64 lowercase hex> form")
 	}
 	if c.Network != CapsuleNetworkOffline && c.Network != CapsuleNetworkExternalModel {
 		return fmt.Errorf("capsule network must be %q or %q", CapsuleNetworkOffline, CapsuleNetworkExternalModel)

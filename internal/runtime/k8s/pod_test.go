@@ -35,7 +35,11 @@ func TestBuildPod_CapsuleLaunchUsesOneAgentContainerAndIsolatedMounts(t *testing
 		CatalogResourceID: "gco-catalog-a1b2c3",
 		CatalogMountPath:  "/etc/gascity/omnigent",
 		CatalogSHA256:     "sha256:" + strings.Repeat("a", 64),
-		Network:           runtime.CapsuleNetworkExternalModel,
+		ExecutablePin: runtime.CapsuleExecutablePin{
+			Executable: "omnigent", PackageVersion: "0.10.0.dev0",
+			Commit: strings.Repeat("b", 40), SHA256: "sha256:" + strings.Repeat("c", 64),
+		},
+		Network: runtime.CapsuleNetworkExternalModel,
 	}
 
 	for _, prebaked := range []bool{false, true} {
@@ -181,7 +185,11 @@ func testK8sCapsuleLaunch(t *testing.T) *runtime.CapsuleLaunchConfig {
 		RunRoot: "/run/gascity/omnigent", SocketPath: "/run/gascity/omnigent/sidecar.sock",
 		CatalogResourceID: "gco-catalog-a1b2c3", CatalogMountPath: "/etc/gascity/omnigent",
 		CatalogSHA256: "sha256:" + strings.Repeat("a", 64),
-		Network:       runtime.CapsuleNetworkExternalModel,
+		ExecutablePin: runtime.CapsuleExecutablePin{
+			Executable: "omnigent", PackageVersion: "0.10.0.dev0",
+			Commit: strings.Repeat("b", 40), SHA256: "sha256:" + strings.Repeat("c", 64),
+		},
+		Network: runtime.CapsuleNetworkExternalModel,
 	}
 }
 
