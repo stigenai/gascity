@@ -10,13 +10,13 @@ version = 2
 [[audit_baseline]]
 scope = "all"
 resource = "subprocess"
-baseline_calls = 539
-baseline_files = 167
+baseline_calls = 541
+baseline_files = 168
 reported_calls = 495
 reported_files = 135
-owner_bead = "ga-dfk"
+owner_bead = "ga-xgv.4.5"
 invariant = "tracked test source totals remain visible as audit evidence"
-resource_owner = "ga-dfk owns the Omnigent process-fixture increment; ga-80po0c.2 owns the remaining source census"
+resource_owner = "ga-xgv.4.5 owns the isolated live Kubernetes attach fixture; ga-dfk and ga-80po0c.2 own the remaining source census"
 migration_target = "P0.4a"
 expires = "2026-10-01"
 

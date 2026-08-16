@@ -68,6 +68,10 @@ type Provider struct {
 	capsuleStorageClassName string              // GC_K8S_CAPSULE_STORAGE_CLASS
 	postStartSettle         time.Duration       // settle time before post-start liveness check
 	stderr                  io.Writer           // warning output (default os.Stderr)
+	attachStdin             io.Reader
+	attachStdout            io.Writer
+	attachStderr            io.Writer
+	runAttachCommand        attachCommandRunner
 	runningPodCacheMu       sync.RWMutex
 	runningPodCache         *runningPodState
 	runningPodCacheAt       time.Time
@@ -153,6 +157,9 @@ func NewProvider() (*Provider, error) {
 		prebaked:                os.Getenv("GC_K8S_PREBAKED") == "true",
 		postStartSettle:         3 * time.Second,
 		stderr:                  os.Stderr,
+		attachStdin:             os.Stdin,
+		attachStdout:            os.Stdout,
+		attachStderr:            os.Stderr,
 		nodeSelector:            scheduling.nodeSelector,
 		tolerations:             scheduling.tolerations,
 		affinity:                scheduling.affinity,
@@ -207,6 +214,9 @@ func newProviderWithOps(ops k8sOps) *Provider {
 		capsuleCityScope:      "cluster/test-ns/city",
 		capsuleStorageRequest: "10Gi",
 		stderr:                io.Discard,
+		attachStdin:           strings.NewReader(""),
+		attachStdout:          io.Discard,
+		attachStderr:          io.Discard,
 	}
 }
 
@@ -693,29 +703,70 @@ func (p *Provider) IsAttachedChecked(name string) (bool, error) {
 	return strings.TrimSpace(output) == "1", nil
 }
 
-// Attach shells out to kubectl exec -it for full TTY passthrough.
+type attachCommandRunner func(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error
+
+func runKubectlAttach(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	cmd := exec.CommandContext(ctx, "kubectl", args...)
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
+}
+
+// Attach shells out to kubectl exec -it for full TTY passthrough. The remote
+// command checks the pod UID projected by the downward API, so a same-name
+// replacement between discovery and exec cannot receive terminal input.
 func (p *Provider) Attach(name string) error {
 	findCtx, cancel := context.WithTimeout(context.Background(), runningPodSnapshotTimeout)
 	defer cancel()
-	podName, err := p.findRunningPod(findCtx, name)
+	pods, err := p.ops.listPods(findCtx, "gc-session="+SanitizeLabel(name), "status.phase=Running")
 	if err != nil {
-		return fmt.Errorf("attach: no running pod for session %q", name)
+		return interactionError("attach", name, err)
 	}
+	var candidates []*corev1.Pod
+	for i := range pods {
+		pod := &pods[i]
+		if pod.Status.Phase != corev1.PodRunning || pod.UID == "" {
+			continue
+		}
+		storedName := pod.Annotations["gc-session-name"]
+		if storedName == name || (storedName == "" && pod.Name == SanitizeName(name)) {
+			candidates = append(candidates, pod)
+		}
+	}
+	if len(candidates) == 0 {
+		return fmt.Errorf("attach session %q: %w", name, runtime.ErrSessionNotFound)
+	}
+	if len(candidates) != 1 {
+		return fmt.Errorf("attach session %q: %w: pod incarnation is ambiguous", name, runtime.ErrRuntimeUnavailable)
+	}
+	pod := candidates[0]
+	podName := pod.Name
 
 	args := []string{}
 	if p.k8sContext != "" {
 		args = append(args, "--context", p.k8sContext)
 	}
 	args = append(args, "-n", p.namespace, "exec", "-it", podName, "--",
-		"tmux", "attach", "-t", tmuxSession)
+		"sh", "-c",
+		`test "$GC_POD_UID" = "$1" || { echo "stale pod incarnation" >&2; exit 75; }; exec tmux attach -t "$2"`,
+		"gc-attach", string(pod.UID), tmuxSession)
 
 	// Interactive attach has no natural deadline: it must run for as long as
 	// the user stays attached, not the pod-discovery bound above.
-	cmd := exec.CommandContext(context.Background(), "kubectl", args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	runner := p.runAttachCommand
+	if runner == nil {
+		runner = runKubectlAttach
+	}
+	err = runner(context.Background(), args, p.attachStdin, p.attachStdout, p.attachStderr)
+	var exitErr interface{ ExitCode() int }
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 75 {
+		return fmt.Errorf("attach session %q: %w", name, runtime.ErrInstanceTokenMismatch)
+	}
+	if err != nil {
+		return interactionError("attach", name, err)
+	}
+	return nil
 }
 
 // ProcessAlive checks if the named processes are running inside the pod. A

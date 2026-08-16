@@ -338,6 +338,13 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 		env = removePodEnv(env, projected.Name)
 		env = append(env, projected)
 	}
+	env = removePodEnv(env, "GC_POD_UID")
+	env = append(env, corev1.EnvVar{
+		Name: "GC_POD_UID",
+		ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{
+			APIVersion: "v1", FieldPath: "metadata.uid",
+		}},
+	})
 
 	// Build volume mounts for the main container.
 	// When prebaked, skip the ws EmptyDir — it would shadow baked image content.
