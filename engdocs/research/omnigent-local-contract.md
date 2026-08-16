@@ -125,7 +125,7 @@ The canonical wire schema is the pinned repository's `openapi.json`; prose in
 |---|---|
 | readiness | `GET /health` on the configured loopback endpoint |
 | discover harnesses | `GET /v1/harnesses` |
-| register agents at startup | repeated `omnigent server --agent <contained-agent-path>`; writes are deliberately absent from the public agent API |
+| register agents at startup | repeated `omnigent server --agent <contained-agent-file>` using the pinned single-file format (`name` plus `prompt` or `instructions`, without `spec_version`); Gas City rejects directory-bundle/native-file ambiguity before startup, and writes are deliberately absent from the public agent API |
 | discover bindable agents | `GET /v1/agents`, cursor-paginated; returns only built-in/operator-registered agents (`session_id IS NULL`) with opaque `ag_*` IDs |
 | create session | `POST /v1/sessions` JSON with `agent_id`, `host_type:"external"`, explicit absolute `workspace`, optional initial items; returns a session snapshot with opaque `conv_*` ID |
 | snapshot/resume | `GET /v1/sessions/{id}`; `404` means missing and must fail visibly |

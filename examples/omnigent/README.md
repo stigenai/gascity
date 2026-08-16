@@ -15,6 +15,8 @@ configuration.
 
 1. Copy `catalog.example.yaml` and `agents/` into
    `<city>/.gc/services/omnigent/config/`, preserving owner-only permissions.
+   Each catalog `agent` is a regular Omnigent single-file YAML definition: keep
+   `name` plus `prompt` or `instructions`, and do not add `spec_version`.
 2. Verify that `executable`, commit, package version, and SHA-256 identify the
    exact installed binary. A different platform build needs its own reviewed
    digest; do not weaken the pin.

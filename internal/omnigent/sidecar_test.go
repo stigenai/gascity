@@ -35,7 +35,8 @@ func TestPrepareSidecarBuildsPinnedLocalPlanWithMinimalEnvironment(t *testing.T)
 	if err := os.WriteFile(executable, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(configDir, "agents", "primary.yaml"), []byte("name: claude-primary\n"), 0o600); err != nil {
+	primaryAgent := filepath.Join(configDir, "agents", "primary.yaml")
+	if err := os.WriteFile(primaryAgent, []byte("name: claude-primary\nprompt: work\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256([]byte(body))
@@ -76,11 +77,15 @@ profiles:
 	if prepared.Plan.Executable != resolvedExecutable {
 		t.Fatalf("executable = %q, want %q", prepared.Plan.Executable, resolvedExecutable)
 	}
+	resolvedPrimaryAgent, err := filepath.EvalSymlinks(primaryAgent)
+	if err != nil {
+		t.Fatal(err)
+	}
 	args := prepared.Plan.Args
 	joined := strings.Join(args, " ")
 	for _, want := range []string{
 		"server", "--host 127.0.0.1", "--port 43123", "--database-uri sqlite:///",
-		"--conversation-database-uri sqlite:///", "--artifact-location", "--config", "--no-open", "--agent",
+		"--conversation-database-uri sqlite:///", "--artifact-location", "--config", "--no-open", "--agent " + resolvedPrimaryAgent,
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("args missing %q: %v", want, args)
@@ -676,7 +681,7 @@ func sidecarFixture(t *testing.T, behavior string) SidecarConfig {
 		t.Fatal(err)
 	}
 	agent := filepath.Join(configDir, "agent.yaml")
-	if err := os.WriteFile(agent, []byte("name: fixture-agent\n"), 0o600); err != nil {
+	if err := os.WriteFile(agent, []byte("name: fixture-agent\nprompt: work\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256([]byte(body))

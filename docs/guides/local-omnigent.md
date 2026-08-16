@@ -39,9 +39,12 @@ Gas City verifies on every start:
 - the SHA-256 of the exact executable.
 
 Start from `examples/omnigent/catalog.example.yaml` in the Gas City repository.
-Copy its `agents/` directory with it, keep the files owner-readable only, and
-replace a digest only after reviewing the build for that platform. A mismatch
-fails closed with an installation diagnostic.
+Copy its `agents/` directory with it. Each catalog `agent` points to a regular
+Omnigent single-file YAML definition. Keep `name` plus `prompt` or
+`instructions`, and omit `spec_version`; that key identifies the different
+directory-bundle format and is rejected before startup. Keep the files
+owner-readable only. Replace a digest only after reviewing the build for that
+platform. A mismatch fails closed with an installation diagnostic.
 
 The catalog contains profile IDs and display metadata, never credentials. An
 environment list names only the variables Omnigent needs for that profile; Gas

@@ -10,9 +10,9 @@ import (
 
 func TestLoadCatalogResolvesOrderedProfilesWithoutAgentContents(t *testing.T) {
 	root := t.TempDir()
-	writeCatalogTestFile(t, root, "agents/codex.yaml", "name: codex-local\nsecret: $CODEX_TOKEN\n")
-	writeCatalogTestFile(t, root, "agents/claude-a.yaml", "name: claude-primary\nsecret: $CLAUDE_A_TOKEN\n")
-	writeCatalogTestFile(t, root, "agents/claude-b.yaml", "name: claude-secondary\nsecret: $CLAUDE_B_TOKEN\n")
+	writeCatalogTestFile(t, root, "agents/codex.yaml", "name: codex-local\nprompt: work\nsecret: $CODEX_TOKEN\n")
+	writeCatalogTestFile(t, root, "agents/claude-a.yaml", "name: claude-primary\nprompt: work\nsecret: $CLAUDE_A_TOKEN\n")
+	writeCatalogTestFile(t, root, "agents/claude-b.yaml", "name: claude-secondary\nprompt: work\nsecret: $CLAUDE_B_TOKEN\n")
 	catalogPath := writeCatalogTestFile(t, root, "catalog.yaml", `version: 1
 omnigent:
   commit: 2aba5079d4d3a2a84d8c9927884fc4b8ce0eeecc
@@ -77,6 +77,25 @@ profiles:
 		if strings.Contains(profile.Blurb, "TOKEN") {
 			t.Fatalf("public profile leaked agent contents: %#v", profile)
 		}
+	}
+}
+
+func TestLoadCatalogRejectsNativeSpecAsStandaloneAgentFile(t *testing.T) {
+	root := t.TempDir()
+	writeCatalogTestFile(t, root, "agents/codex.yaml", "spec_version: 1\nname: codex-bundle\nprompt: work\n")
+	catalogPath := writeCatalogTestFile(t, root, "catalog.yaml", validCatalogHeader()+`profiles:
+  codex-bundle:
+    display_name: Codex
+    blurb: Omnigent single-file agent.
+    harness: codex
+    backend: local
+    network: offline
+    agent: agents/codex.yaml
+`)
+
+	_, err := LoadCatalog(catalogPath)
+	if err == nil || !strings.Contains(err.Error(), "must omit spec_version") {
+		t.Fatalf("LoadCatalog error = %v, want standalone spec_version diagnostic", err)
 	}
 }
 
@@ -200,7 +219,7 @@ func TestLoadCatalogRejectsInvalidContracts(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
-			writeCatalogTestFile(t, root, "agent.yaml", "name: fixture\n")
+			writeCatalogTestFile(t, root, "agent.yaml", "name: fixture\nprompt: work\n")
 			path := writeCatalogTestFile(t, root, "catalog.yaml", tt.catalog)
 			_, err := LoadCatalog(path)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
@@ -213,7 +232,7 @@ func TestLoadCatalogRejectsInvalidContracts(t *testing.T) {
 func TestLoadCatalogRejectsSymlinkEscape(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "agent.yaml")
-	if err := os.WriteFile(outside, []byte("name: outside\n"), 0o600); err != nil {
+	if err := os.WriteFile(outside, []byte("name: outside\nprompt: work\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(outside, filepath.Join(root, "agent.yaml")); err != nil {
@@ -236,7 +255,7 @@ func TestLoadCatalogRejectsSymlinkEscape(t *testing.T) {
 
 func TestCatalogEnvironmentAllowlistControlsAvailabilityWithoutPublicNamesOrValues(t *testing.T) {
 	root := t.TempDir()
-	writeCatalogTestFile(t, root, "agents/agent.yaml", "name: claude-profile\n")
+	writeCatalogTestFile(t, root, "agents/agent.yaml", "name: claude-profile\nprompt: work\n")
 	path := writeCatalogTestFile(t, root, "catalog.yaml", validCatalogHeader()+`profiles:
   claude-profile:
     display_name: Claude profile
@@ -296,7 +315,7 @@ func TestLoadCatalogRejectsUnsafeEnvironmentAllowlist(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
-			writeCatalogTestFile(t, root, "agent.yaml", "name: fixture\n")
+			writeCatalogTestFile(t, root, "agent.yaml", "name: fixture\nprompt: work\n")
 			path := writeCatalogTestFile(t, root, "catalog.yaml", validCatalogHeader()+`profiles:
   p:
     display_name: P

@@ -329,8 +329,8 @@ func errorStreamEvent(sequence *int64, code string, statusCode int) StreamEvent 
 func loadFailoverCatalog(t *testing.T) *Catalog {
 	t.Helper()
 	root := t.TempDir()
-	writeCatalogTestFile(t, root, "agents/primary.yaml", "name: claude-primary\n")
-	writeCatalogTestFile(t, root, "agents/secondary.yaml", "name: claude-secondary\n")
+	writeCatalogTestFile(t, root, "agents/primary.yaml", "name: claude-primary\nprompt: work\n")
+	writeCatalogTestFile(t, root, "agents/secondary.yaml", "name: claude-secondary\nprompt: work\n")
 	path := writeCatalogTestFile(t, root, "catalog.yaml", validCatalogHeader()+`profiles:
   claude-primary:
     display_name: Claude primary

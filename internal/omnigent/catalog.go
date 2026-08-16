@@ -301,7 +301,7 @@ func resolveProfile(root, resolvedRoot, id string, raw profileDocument) (Resolve
 		return ResolvedProfile{}, fmt.Errorf("omnigent profile %q: stat agent: %w", id, err)
 	}
 	if !info.Mode().IsRegular() {
-		return ResolvedProfile{}, fmt.Errorf("omnigent profile %q: agent must be a regular file", id)
+		return ResolvedProfile{}, fmt.Errorf("omnigent profile %q: agent must be a regular standalone YAML file", id)
 	}
 	if err := validateLocalModeYAML(resolvedAgent, "agent"); err != nil {
 		return ResolvedProfile{}, fmt.Errorf("omnigent profile %q: %w", id, err)
@@ -332,7 +332,10 @@ func readAgentName(path string) (string, error) {
 	}
 	defer func() { _ = f.Close() }()
 	var header struct {
-		Name string `yaml:"name"`
+		Name         string    `yaml:"name"`
+		Prompt       yaml.Node `yaml:"prompt"`
+		Instructions yaml.Node `yaml:"instructions"`
+		SpecVersion  yaml.Node `yaml:"spec_version"`
 	}
 	if err := yaml.NewDecoder(f).Decode(&header); err != nil {
 		return "", fmt.Errorf("decode agent name: %w", err)
@@ -340,6 +343,12 @@ func readAgentName(path string) (string, error) {
 	name := strings.TrimSpace(header.Name)
 	if !profileIDPattern.MatchString(name) {
 		return "", fmt.Errorf("agent name %q must match %s", name, profileIDPattern)
+	}
+	if header.SpecVersion.Kind != 0 {
+		return "", errors.New("standalone agent YAML must omit spec_version so the pinned Omnigent single-file loader accepts it")
+	}
+	if header.Prompt.Kind == 0 && header.Instructions.Kind == 0 {
+		return "", errors.New("standalone agent YAML requires prompt or instructions")
 	}
 	return name, nil
 }
