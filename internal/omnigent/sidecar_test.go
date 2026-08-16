@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -541,6 +542,127 @@ func TestServeSidecarLifecycleRestartAndNoStateFiles(t *testing.T) {
 	}
 }
 
+func TestServeSidecarRetainsExactConversationAndTranscriptAcrossRestart(t *testing.T) {
+	cfg := sidecarFixture(t, "persistent")
+	workspace := filepath.Join(cfg.StateRoot, "workspace")
+	if err := os.Mkdir(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	identity := GasCityIdentity{
+		SessionID: "session-persisted", Agent: "rig/worker", Rig: "rig", City: "city",
+	}
+	input := AttachmentOpenInput{
+		ProfileID: "fixture", Workspace: workspace, Title: "durable transcript", Identity: identity,
+	}
+
+	client, stop := startSidecarFixture(t, cfg)
+	descriptor, err := client.ResolveAttachment(context.Background(), input)
+	if err != nil {
+		t.Fatalf("create attachment: %v", err)
+	}
+	if descriptor.ConversationID != "conv_persisted" || !descriptor.Fresh {
+		t.Fatalf("fresh descriptor = %#v", descriptor)
+	}
+	queued, err := client.PostMessage(context.Background(), descriptor.ConversationID, "retained transcript item")
+	if err != nil || !queued {
+		t.Fatalf("PostMessage queued=%v error=%v", queued, err)
+	}
+	assertPersistentSidecarTranscript(t, client, descriptor.ConversationID, "retained transcript item")
+	stop()
+
+	client, stop = startSidecarFixture(t, cfg)
+	resume := input
+	resume.ConversationID = descriptor.ConversationID
+	resumed, err := client.ResolveAttachment(context.Background(), resume)
+	if err != nil {
+		t.Fatalf("resume attachment after complete restart: %v", err)
+	}
+	if resumed.ConversationID != descriptor.ConversationID || resumed.Fresh {
+		t.Fatalf("resumed descriptor = %#v, want exact non-fresh conversation", resumed)
+	}
+	assertPersistentSidecarTranscript(t, client, descriptor.ConversationID, "retained transcript item")
+
+	changedWorkspace := resume
+	changedWorkspace.Workspace = filepath.Join(cfg.StateRoot, "other-workspace")
+	if err := os.Mkdir(changedWorkspace.Workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	assertSidecarAttachmentError(t, client, changedWorkspace, http.StatusBadGateway, "workspace")
+	changedIdentity := resume
+	changedIdentity.Identity.Agent = "rig/other-worker"
+	assertSidecarAttachmentError(t, client, changedIdentity, http.StatusBadGateway, "identity label")
+	missingConversation := resume
+	missingConversation.ConversationID = "conv_absent"
+	assertSidecarAttachmentError(t, client, missingConversation, http.StatusNotFound, "does not exist")
+	assertPersistentSidecarTranscript(t, client, descriptor.ConversationID, "retained transcript item")
+	stop()
+
+	if err := os.Remove(filepath.Join(cfg.StateRoot, "data", "chat.db")); err != nil {
+		t.Fatalf("remove retained conversation database: %v", err)
+	}
+	client, stop = startSidecarFixture(t, cfg)
+	defer stop()
+	assertSidecarAttachmentError(t, client, resume, http.StatusNotFound, "does not exist")
+}
+
+func startSidecarFixture(t *testing.T, cfg SidecarConfig) (*APIClient, func()) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- ServeSidecar(ctx, cfg) }()
+	stopped := false
+	stop := func() {
+		t.Helper()
+		if stopped {
+			return
+		}
+		stopped = true
+		cancel()
+		timer := time.NewTimer(3 * time.Second)
+		defer timer.Stop()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("ServeSidecar cancellation: %v", err)
+			}
+		case <-timer.C:
+			t.Fatal("ServeSidecar did not stop after cancellation")
+		}
+	}
+	t.Cleanup(stop)
+	waitSidecarSocket(t, cfg.SocketPath)
+	client, err := NewUnixAPIClient(cfg.SocketPath)
+	if err != nil {
+		stop()
+		t.Fatal(err)
+	}
+	if err := client.Health(context.Background()); err != nil {
+		stop()
+		t.Fatalf("sidecar health: %v", err)
+	}
+	return client, stop
+}
+
+func assertPersistentSidecarTranscript(t *testing.T, client *APIClient, conversationID, text string) {
+	t.Helper()
+	snapshot, err := client.GetSession(context.Background(), conversationID)
+	if err != nil {
+		t.Fatalf("GetSession(%q): %v", conversationID, err)
+	}
+	if snapshot.ID != conversationID || len(snapshot.Items) != 1 || len(snapshot.Items[0].Content) != 1 || snapshot.Items[0].Content[0].Text != text {
+		t.Fatalf("retained session = %#v", snapshot)
+	}
+}
+
+func assertSidecarAttachmentError(t *testing.T, client *APIClient, input AttachmentOpenInput, status int, contains string) {
+	t.Helper()
+	_, err := client.ResolveAttachment(context.Background(), input)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != status || !strings.Contains(apiErr.Message, contains) {
+		t.Fatalf("ResolveAttachment error = %T %v, want HTTP %d containing %q", err, err, status, contains)
+	}
+}
+
 func TestServeSidecarLifecycleFailureMatrix(t *testing.T) {
 	t.Run("early exit", func(t *testing.T) {
 		cfg := sidecarFixture(t, "exit")
@@ -763,6 +885,12 @@ func TestSidecarChildHelper(_ *testing.T) {
 	if err != nil {
 		os.Exit(19)
 	}
+	if behavior == "persistent" {
+		if err := runPersistentSidecarChild(listener, os.Args); err != nil {
+			os.Exit(23)
+		}
+		os.Exit(0)
+	}
 	crashRequested := make(chan struct{}, 1)
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if behavior == "crash" && r.URL.Path == "/crash" {
@@ -802,6 +930,172 @@ func TestSidecarChildHelper(_ *testing.T) {
 		os.Exit(21)
 	}
 	os.Exit(0)
+}
+
+type persistentSidecarDatabase struct {
+	Session *Session `json:"session,omitempty"`
+}
+
+type persistentSidecarChild struct {
+	mu       sync.Mutex
+	path     string
+	database persistentSidecarDatabase
+}
+
+func runPersistentSidecarChild(listener net.Listener, args []string) error {
+	databasePath, err := persistentSidecarDatabasePath(args)
+	if err != nil {
+		return err
+	}
+	child := &persistentSidecarChild{path: databasePath}
+	data, err := os.ReadFile(databasePath)
+	if err == nil {
+		if err := json.Unmarshal(data, &child.database); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	server := &http.Server{Handler: http.HandlerFunc(child.serveHTTP)}
+	if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+	return nil
+}
+
+func persistentSidecarDatabasePath(args []string) (string, error) {
+	for i, arg := range args {
+		if arg != "--conversation-database-uri" || i+1 >= len(args) {
+			continue
+		}
+		const prefix = "sqlite:///"
+		uri := args[i+1]
+		if !strings.HasPrefix(uri, prefix) {
+			return "", fmt.Errorf("unsupported conversation database URI %q", uri)
+		}
+		path := strings.TrimPrefix(uri, prefix)
+		if !filepath.IsAbs(path) {
+			return "", fmt.Errorf("conversation database path %q is not absolute", path)
+		}
+		return path, nil
+	}
+	return "", errors.New("conversation database URI is required")
+}
+
+func (c *persistentSidecarChild) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/health":
+		writePersistentSidecarJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/hosts":
+		writePersistentSidecarJSON(w, http.StatusOK, map[string]any{"hosts": []map[string]string{{"host_id": "host_persisted", "owner": "local", "status": "online"}}})
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/agents":
+		writePersistentSidecarJSON(w, http.StatusOK, map[string]any{
+			"data": []Agent{{ID: "ag_fixture", Name: "fixture-agent", Harness: "codex"}}, "has_more": false,
+		})
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/sessions":
+		var input createSessionRequest
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			writePersistentSidecarJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]string{"code": "invalid_request", "message": "invalid request"}})
+			return
+		}
+		c.mu.Lock()
+		if c.database.Session != nil {
+			c.mu.Unlock()
+			writePersistentSidecarJSON(w, http.StatusConflict, map[string]any{"error": map[string]string{"code": "already_exists", "message": "fixture conversation already exists"}})
+			return
+		}
+		c.database.Session = &Session{
+			ID: "conv_persisted", AgentID: input.AgentID, AgentName: "fixture-agent", Status: "idle",
+			Workspace: input.Workspace, Labels: cloneStringMap(input.Labels), Items: []SessionItem{},
+		}
+		session := clonePersistentSession(c.database.Session)
+		err := c.saveLocked()
+		c.mu.Unlock()
+		if err != nil {
+			writePersistentSidecarJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]string{"code": "write_failed", "message": "database write failed"}})
+			return
+		}
+		writePersistentSidecarJSON(w, http.StatusOK, session)
+	case strings.HasPrefix(r.URL.Path, "/v1/sessions/"):
+		c.serveSessionHTTP(w, r)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (c *persistentSidecarChild) serveSessionHTTP(w http.ResponseWriter, r *http.Request) {
+	remainder := strings.TrimPrefix(r.URL.Path, "/v1/sessions/")
+	conversationID, suffix, _ := strings.Cut(remainder, "/")
+	c.mu.Lock()
+	exists := c.database.Session != nil && c.database.Session.ID == conversationID
+	c.mu.Unlock()
+	if !exists {
+		writePersistentSidecarJSON(w, http.StatusNotFound, map[string]any{"error": map[string]string{"code": "conversation_not_found", "message": "missing"}})
+		return
+	}
+	if r.Method == http.MethodGet && suffix == "stream" {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+		return
+	}
+	if r.Method == http.MethodGet && suffix == "" {
+		c.mu.Lock()
+		session := clonePersistentSession(c.database.Session)
+		c.mu.Unlock()
+		writePersistentSidecarJSON(w, http.StatusOK, session)
+		return
+	}
+	if r.Method == http.MethodPost && suffix == "events" {
+		var input sessionEventRequest
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil || input.Type != "message" || len(input.Data.Content) == 0 {
+			writePersistentSidecarJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]string{"code": "invalid_event", "message": "invalid event"}})
+			return
+		}
+		c.mu.Lock()
+		c.database.Session.Items = append(c.database.Session.Items, SessionItem{
+			ID: fmt.Sprintf("item_%d", len(c.database.Session.Items)+1), Type: "message",
+			Role: input.Data.Role, Content: append([]ContentBlock(nil), input.Data.Content...),
+		})
+		err := c.saveLocked()
+		c.mu.Unlock()
+		if err != nil {
+			writePersistentSidecarJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]string{"code": "write_failed", "message": "database write failed"}})
+			return
+		}
+		writePersistentSidecarJSON(w, http.StatusOK, map[string]bool{"queued": true})
+		return
+	}
+	http.NotFound(w, r)
+}
+
+func (c *persistentSidecarChild) saveLocked() error {
+	data, err := json.Marshal(c.database)
+	if err != nil {
+		return err
+	}
+	temporary := c.path + ".tmp"
+	if err := os.WriteFile(temporary, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(temporary, c.path)
+}
+
+func clonePersistentSession(session *Session) Session {
+	clone := *session
+	clone.Labels = cloneStringMap(session.Labels)
+	clone.Items = append([]SessionItem(nil), session.Items...)
+	for i := range clone.Items {
+		clone.Items[i].Content = append([]ContentBlock(nil), session.Items[i].Content...)
+	}
+	return clone
+}
+
+func writePersistentSidecarJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
 }
 
 func sidecarFixture(t *testing.T, behavior string) SidecarConfig {
