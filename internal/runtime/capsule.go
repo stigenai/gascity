@@ -296,6 +296,7 @@ type CapsuleStateReference struct {
 type CapsuleStateRuntime interface {
 	EnsureCapsuleState(ctx context.Context, key CapsuleKey) (ref CapsuleStateReference, created bool, err error)
 	OpenCapsuleState(ctx context.Context, key CapsuleKey) (ref CapsuleStateReference, ok bool, err error)
+	ListCapsuleStates(ctx context.Context) ([]CapsuleStateReference, error)
 	PurgeCapsuleState(ctx context.Context, key CapsuleKey) error
 }
 

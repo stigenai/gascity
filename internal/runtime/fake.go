@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -65,6 +66,7 @@ type Fake struct {
 	CapsuleStates       map[string]CapsuleStateReference // full digest → allocation
 	CapsuleAttachments  map[string]string                // place name → full digest
 	CapsuleStateErrors  map[string]error                 // full digest → provider error
+	CapsuleListError    error                            // provider inventory failure
 	CapsuleDetachErrors map[string]error                 // place name → detach error
 }
 
@@ -234,6 +236,26 @@ func (f *Fake) OpenCapsuleState(_ context.Context, key CapsuleKey) (CapsuleState
 		return CapsuleStateReference{}, false, fmt.Errorf("%w: fake allocation identity mismatch", ErrCapsuleStateConflict)
 	}
 	return ref, ok, nil
+}
+
+// ListCapsuleStates returns a deterministic provider-ground-truth inventory.
+func (f *Fake) ListCapsuleStates(_ context.Context) ([]CapsuleStateReference, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, Call{Method: "ListCapsuleStates"})
+	if f.CapsuleListError != nil {
+		return nil, f.CapsuleListError
+	}
+	digests := make([]string, 0, len(f.CapsuleStates))
+	for digest := range f.CapsuleStates {
+		digests = append(digests, digest)
+	}
+	sort.Strings(digests)
+	refs := make([]CapsuleStateReference, 0, len(digests))
+	for _, digest := range digests {
+		refs = append(refs, f.CapsuleStates[digest])
+	}
+	return refs, nil
 }
 
 // PurgeCapsuleState deletes one unattached fake allocation. Missing state is

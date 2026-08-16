@@ -252,6 +252,29 @@ func TestFakeCapsuleStateRejectsForgedCrossBoundaryKey(t *testing.T) {
 	}
 }
 
+func TestFakeCapsuleStateInventoryIsDeterministicAndReportsProviderFailure(t *testing.T) {
+	t.Parallel()
+	fake := NewFake()
+	for _, sessionID := range []string{"zeta", "alpha"} {
+		key, err := NewCapsuleKey("city", sessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := fake.EnsureCapsuleState(context.Background(), key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refs, err := fake.ListCapsuleStates(context.Background())
+	if err != nil || len(refs) != 2 || refs[0].Key.Digest > refs[1].Key.Digest {
+		t.Fatalf("ListCapsuleStates = %#v, %v", refs, err)
+	}
+	want := errors.New("provider unavailable")
+	fake.CapsuleListError = want
+	if _, err := fake.ListCapsuleStates(context.Background()); !errors.Is(err, want) {
+		t.Fatalf("ListCapsuleStates error = %v, want %v", err, want)
+	}
+}
+
 func TestFakeCapsuleStateConflictsAndFailuresFailClosed(t *testing.T) {
 	t.Parallel()
 	fake := NewFake()
