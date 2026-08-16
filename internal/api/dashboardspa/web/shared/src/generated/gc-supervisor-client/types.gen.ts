@@ -97,6 +97,7 @@ export type AgentPatch = {
     ResumeCommand: string | null;
     ScaleCheck: string | null;
     Scope: string | null;
+    SecretReferences: Array<SecretReference> | null;
     Session: string | null;
     SessionLive: Array<string> | null;
     SessionLiveAppend: Array<string> | null;
@@ -1371,6 +1372,11 @@ export type InboundResult = {
     TargetAgentName: string;
     TargetSessionID: string;
     TranscriptEntry: ConversationTranscriptRecord;
+};
+
+export type KubernetesSecretKeyReference = {
+    Key: string;
+    Name: string;
 };
 
 export type ListBodyAgentPatch = {
@@ -2974,8 +2980,20 @@ export type RunsListOutputBody = {
     status_counts: RunStatusCounts;
 };
 
+export type SshSecretPathReference = {
+    Path: string;
+};
+
 export type ScopeGroup = {
     [key: string]: never;
+};
+
+export type SecretReference = {
+    Environment: string;
+    ID: string;
+    Kubernetes: KubernetesSecretKeyReference;
+    MountPath: string;
+    SSH: SshSecretPathReference;
 };
 
 export type ServiceRestartOutputBody = {

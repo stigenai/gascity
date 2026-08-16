@@ -2791,6 +2791,7 @@ func (ov *AgentOverride) toAgentPatch() *AgentPatch {
 		Suspended:               ov.Suspended,
 		Pool:                    ov.Pool,
 		Env:                     ov.Env,
+		SecretReferences:        ov.SecretReferences,
 		EnvRemove:               ov.EnvRemove,
 		PreStart:                ov.PreStart,
 		PromptTemplate:          ov.PromptTemplate,

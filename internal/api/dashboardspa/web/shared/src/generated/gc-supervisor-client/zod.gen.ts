@@ -683,6 +683,11 @@ export const zInboundEventPayload = z.object({
     target_session: z.string()
 });
 
+export const zKubernetesSecretKeyReference = z.object({
+    Key: z.string(),
+    Name: z.string()
+});
+
 export const zListBodyBead = z.object({
     items: z.array(zBead).nullable(),
     next_cursor: z.string().optional(),
@@ -1019,67 +1024,6 @@ export const zPoolOverride = z.object({
     Min: z.coerce.bigint().min(BigInt('-9223372036854775808'), { error: 'Invalid value: Expected int64 to be >= -9223372036854775808' }).max(BigInt('9223372036854775807'), { error: 'Invalid value: Expected int64 to be <= 9223372036854775807' }).nullable(),
     OnBoot: z.string().nullable(),
     OnDeath: z.string().nullable()
-});
-
-export const zAgentPatch = z.object({
-    AppendFragments: z.array(z.string()).nullable(),
-    Args: z.array(z.string()).nullable(),
-    Attach: z.boolean().nullable(),
-    DefaultSlingFormula: z.string().nullable(),
-    DependsOn: z.array(z.string()).nullable(),
-    Dir: z.string(),
-    Env: z.record(z.string(), z.string()),
-    EnvRemove: z.array(z.string()).nullable(),
-    HooksInstalled: z.boolean().nullable(),
-    IdleTimeout: z.string().nullable(),
-    InjectAssignedSkills: z.boolean().nullable(),
-    InjectFragments: z.array(z.string()).nullable(),
-    InjectFragmentsAppend: z.array(z.string()).nullable(),
-    InstallAgentHooks: z.array(z.string()).nullable(),
-    InstallAgentHooksAppend: z.array(z.string()).nullable(),
-    Lifecycle: z.string().nullable(),
-    MCP: z.array(z.string()).nullable(),
-    MCPAppend: z.array(z.string()).nullable(),
-    MaxActiveSessions: z.coerce.bigint().min(BigInt('-9223372036854775808'), { error: 'Invalid value: Expected int64 to be >= -9223372036854775808' }).max(BigInt('9223372036854775807'), { error: 'Invalid value: Expected int64 to be <= 9223372036854775807' }).nullable(),
-    MaxSessionAge: z.string().nullable(),
-    MaxSessionAgeJitter: z.string().nullable(),
-    MinActiveSessions: z.coerce.bigint().min(BigInt('-9223372036854775808'), { error: 'Invalid value: Expected int64 to be >= -9223372036854775808' }).max(BigInt('9223372036854775807'), { error: 'Invalid value: Expected int64 to be <= 9223372036854775807' }).nullable(),
-    MouseMode: z.string().nullable(),
-    Name: z.string(),
-    Nudge: z.string().nullable(),
-    OptionDefaults: z.record(z.string(), z.string()),
-    OverlayDir: z.string().nullable(),
-    Pool: zPoolOverride,
-    PreStart: z.array(z.string()).nullable(),
-    PreStartAppend: z.array(z.string()).nullable(),
-    PromptTemplate: z.string().nullable(),
-    Provider: z.string().nullable(),
-    ResumeCommand: z.string().nullable(),
-    ScaleCheck: z.string().nullable(),
-    Scope: z.string().nullable(),
-    Session: z.string().nullable(),
-    SessionLive: z.array(z.string()).nullable(),
-    SessionLiveAppend: z.array(z.string()).nullable(),
-    SessionSetup: z.array(z.string()).nullable(),
-    SessionSetupAppend: z.array(z.string()).nullable(),
-    SessionSetupScript: z.string().nullable(),
-    Skills: z.array(z.string()).nullable(),
-    SkillsAppend: z.array(z.string()).nullable(),
-    SleepAfterIdle: z.string().nullable(),
-    StartCommand: z.string().nullable(),
-    Suspended: z.boolean().nullable(),
-    TmuxAlias: z.string().nullable(),
-    Upstream: z.string().nullable(),
-    WakeMode: z.string().nullable(),
-    WorkDir: z.string().nullable()
-});
-
-export const zListBodyAgentPatch = z.object({
-    items: z.array(zAgentPatch).nullable(),
-    next_cursor: z.string().optional(),
-    partial: z.boolean().optional(),
-    partial_errors: z.array(z.string()).nullish(),
-    total: z.coerce.bigint().min(BigInt('-9223372036854775808'), { error: 'Invalid value: Expected int64 to be >= -9223372036854775808' }).max(BigInt('9223372036854775807'), { error: 'Invalid value: Expected int64 to be <= 9223372036854775807' })
 });
 
 export const zPostgresCredentialResolvedPayload = z.object({
@@ -1494,7 +1438,81 @@ export const zRunsListOutputBody = z.object({
     status_counts: zRunStatusCounts
 });
 
+export const zSshSecretPathReference = z.object({
+    Path: z.string()
+});
+
 export const zScopeGroup = z.record(z.string(), z.never());
+
+export const zSecretReference = z.object({
+    Environment: z.string(),
+    ID: z.string(),
+    Kubernetes: zKubernetesSecretKeyReference,
+    MountPath: z.string(),
+    SSH: zSshSecretPathReference
+});
+
+export const zAgentPatch = z.object({
+    AppendFragments: z.array(z.string()).nullable(),
+    Args: z.array(z.string()).nullable(),
+    Attach: z.boolean().nullable(),
+    DefaultSlingFormula: z.string().nullable(),
+    DependsOn: z.array(z.string()).nullable(),
+    Dir: z.string(),
+    Env: z.record(z.string(), z.string()),
+    EnvRemove: z.array(z.string()).nullable(),
+    HooksInstalled: z.boolean().nullable(),
+    IdleTimeout: z.string().nullable(),
+    InjectAssignedSkills: z.boolean().nullable(),
+    InjectFragments: z.array(z.string()).nullable(),
+    InjectFragmentsAppend: z.array(z.string()).nullable(),
+    InstallAgentHooks: z.array(z.string()).nullable(),
+    InstallAgentHooksAppend: z.array(z.string()).nullable(),
+    Lifecycle: z.string().nullable(),
+    MCP: z.array(z.string()).nullable(),
+    MCPAppend: z.array(z.string()).nullable(),
+    MaxActiveSessions: z.coerce.bigint().min(BigInt('-9223372036854775808'), { error: 'Invalid value: Expected int64 to be >= -9223372036854775808' }).max(BigInt('9223372036854775807'), { error: 'Invalid value: Expected int64 to be <= 9223372036854775807' }).nullable(),
+    MaxSessionAge: z.string().nullable(),
+    MaxSessionAgeJitter: z.string().nullable(),
+    MinActiveSessions: z.coerce.bigint().min(BigInt('-9223372036854775808'), { error: 'Invalid value: Expected int64 to be >= -9223372036854775808' }).max(BigInt('9223372036854775807'), { error: 'Invalid value: Expected int64 to be <= 9223372036854775807' }).nullable(),
+    MouseMode: z.string().nullable(),
+    Name: z.string(),
+    Nudge: z.string().nullable(),
+    OptionDefaults: z.record(z.string(), z.string()),
+    OverlayDir: z.string().nullable(),
+    Pool: zPoolOverride,
+    PreStart: z.array(z.string()).nullable(),
+    PreStartAppend: z.array(z.string()).nullable(),
+    PromptTemplate: z.string().nullable(),
+    Provider: z.string().nullable(),
+    ResumeCommand: z.string().nullable(),
+    ScaleCheck: z.string().nullable(),
+    Scope: z.string().nullable(),
+    SecretReferences: z.array(zSecretReference).nullable(),
+    Session: z.string().nullable(),
+    SessionLive: z.array(z.string()).nullable(),
+    SessionLiveAppend: z.array(z.string()).nullable(),
+    SessionSetup: z.array(z.string()).nullable(),
+    SessionSetupAppend: z.array(z.string()).nullable(),
+    SessionSetupScript: z.string().nullable(),
+    Skills: z.array(z.string()).nullable(),
+    SkillsAppend: z.array(z.string()).nullable(),
+    SleepAfterIdle: z.string().nullable(),
+    StartCommand: z.string().nullable(),
+    Suspended: z.boolean().nullable(),
+    TmuxAlias: z.string().nullable(),
+    Upstream: z.string().nullable(),
+    WakeMode: z.string().nullable(),
+    WorkDir: z.string().nullable()
+});
+
+export const zListBodyAgentPatch = z.object({
+    items: z.array(zAgentPatch).nullable(),
+    next_cursor: z.string().optional(),
+    partial: z.boolean().optional(),
+    partial_errors: z.array(z.string()).nullish(),
+    total: z.coerce.bigint().min(BigInt('-9223372036854775808'), { error: 'Invalid value: Expected int64 to be >= -9223372036854775808' }).max(BigInt('9223372036854775807'), { error: 'Invalid value: Expected int64 to be <= 9223372036854775807' })
+});
 
 export const zServiceRestartOutputBody = z.object({
     action: z.string(),

@@ -46,7 +46,10 @@ type BreakdownCopyEntry struct {
 // longer flips every agent's fingerprint into a fleet-wide config-drift drain.
 // The bump rebaselines existing v4 hashes silently instead of draining the
 // fleet once on rollout. (#3840)
-const FingerprintVersion = "v5"
+//
+// v6: typed secret-reference identities are provision inputs. Their provider
+// names/keys/paths and destinations are hashed; resolved secret values are not.
+const FingerprintVersion = "v6"
 
 // ConfigFingerprint returns a deterministic hash of the Config fields that
 // define an agent's behavioral identity. Changes to these fields indicate
@@ -212,6 +215,7 @@ func hashCoreFields(h hash.Hash, cfg Config) {
 
 	hashSortedMapIncluded(h, cfg.Env, envFingerprintInclude)
 	hashMCPServers(h, cfg.MCPServers)
+	hashSecretReferences(h, cfg.SecretReferences)
 
 	// FingerprintExtra carries additional identity fields (pool config, etc.)
 	// that aren't part of the session command but should
@@ -381,6 +385,13 @@ func hashMCPServers(h hash.Hash, servers []MCPServerConfig) {
 	}
 }
 
+func hashSecretReferences(h hash.Hash, refs []SecretReference) {
+	for _, identity := range normalizedSecretReferenceIdentities(refs) {
+		h.Write([]byte(identity)) //nolint:errcheck // hash.Write never errors
+		h.Write([]byte{2})        //nolint:errcheck // sentinel between references
+	}
+}
+
 func hashOverlayProviders(h hash.Hash, providers []string) {
 	HashOverlayProviderNames(h, providers)
 }
@@ -424,6 +435,9 @@ func CoreFingerprintBreakdown(cfg Config) BreakdownV1 {
 		}),
 		"MCPServers": fieldHash(func(h hash.Hash) {
 			hashMCPServers(h, cfg.MCPServers)
+		}),
+		"SecretReferences": fieldHash(func(h hash.Hash) {
+			hashSecretReferences(h, cfg.SecretReferences)
 		}),
 		"FPExtra": fieldHash(func(h hash.Hash) {
 			if len(cfg.FingerprintExtra) > 0 {
@@ -553,6 +567,8 @@ func LogCoreFingerprintDrift(w io.Writer, name string, storedJSON string, curren
 			fmt.Fprintf(w, "    Env: %v\n", filteredEnv(current.Env)) //nolint:errcheck // best-effort diag
 		case "MCPServers":
 			fmt.Fprintf(w, "    MCPServers: %+v\n", NormalizeMCPServerConfigs(current.MCPServers)) //nolint:errcheck // best-effort diag
+		case "SecretReferences":
+			fmt.Fprintf(w, "    SecretReferences: %d configured\n", len(current.SecretReferences)) //nolint:errcheck // values and provider identifiers stay private
 		case "FPExtra":
 			fmt.Fprintf(w, "    FPExtra: %v (len=%d)\n", current.FingerprintExtra, len(current.FingerprintExtra)) //nolint:errcheck // best-effort diag
 		case "PreStart":

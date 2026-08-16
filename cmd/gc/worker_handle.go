@@ -163,9 +163,29 @@ func applyWorkerOverlayHints(hints *runtime.Config, cfg *config.City, cityPath, 
 		hints.PackOverlayDirs = effectiveOverlayDirs(cfg.PackOverlayDirs, cfg.RigOverlayDirs, "")
 		return
 	}
+	hints.SecretReferences = runtimeSecretReferences(agentCfg.SecretReferences)
 	hints.InstallAgentHooks = config.ResolveInstallHooks(agentCfg, &cfg.Workspace)
 	rigName := sessionSetupContextForAgent(cityPath, cfg.EffectiveCityName(), firstNonEmptyGCString(agentCfg.QualifiedName(), template), agentCfg, cfg.Rigs).Rig
 	hints.PackOverlayDirs = effectiveOverlayDirs(cfg.PackOverlayDirs, cfg.RigOverlayDirs, rigName)
+}
+
+func runtimeSecretReferences(refs []config.SecretReference) []runtime.SecretReference {
+	if len(refs) == 0 {
+		return nil
+	}
+	result := make([]runtime.SecretReference, len(refs))
+	for i := range refs {
+		result[i] = runtime.SecretReference{
+			ID: refs[i].ID, Environment: refs[i].Environment, MountPath: refs[i].MountPath,
+		}
+		if refs[i].Kubernetes != nil {
+			result[i].Kubernetes = &runtime.KubernetesSecretKeyReference{Name: refs[i].Kubernetes.Name, Key: refs[i].Kubernetes.Key}
+		}
+		if refs[i].SSH != nil {
+			result[i].SSH = &runtime.SSHSecretPathReference{Path: refs[i].SSH.Path}
+		}
+	}
+	return result
 }
 
 func resolvedRuntimeMCPServersWithConfig(

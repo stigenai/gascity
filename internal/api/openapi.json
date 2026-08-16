@@ -389,6 +389,15 @@
               "null"
             ]
           },
+          "SecretReferences": {
+            "items": {
+              "$ref": "#/components/schemas/SecretReference"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "Session": {
             "type": [
               "string",
@@ -507,6 +516,7 @@
           "Suspended",
           "Pool",
           "Env",
+          "SecretReferences",
           "EnvRemove",
           "PreStart",
           "PromptTemplate",
@@ -3660,6 +3670,22 @@
           "TranscriptEntry",
           "TargetSessionID",
           "TargetAgentName"
+        ],
+        "type": "object"
+      },
+      "KubernetesSecretKeyReference": {
+        "additionalProperties": false,
+        "properties": {
+          "Key": {
+            "type": "string"
+          },
+          "Name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "Name",
+          "Key"
         ],
         "type": "object"
       },
@@ -6984,8 +7010,48 @@
         ],
         "type": "object"
       },
+      "SSHSecretPathReference": {
+        "additionalProperties": false,
+        "properties": {
+          "Path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "Path"
+        ],
+        "type": "object"
+      },
       "ScopeGroup": {
         "additionalProperties": false,
+        "type": "object"
+      },
+      "SecretReference": {
+        "additionalProperties": false,
+        "properties": {
+          "Environment": {
+            "type": "string"
+          },
+          "ID": {
+            "type": "string"
+          },
+          "Kubernetes": {
+            "$ref": "#/components/schemas/KubernetesSecretKeyReference"
+          },
+          "MountPath": {
+            "type": "string"
+          },
+          "SSH": {
+            "$ref": "#/components/schemas/SSHSecretPathReference"
+          }
+        },
+        "required": [
+          "ID",
+          "Environment",
+          "MountPath",
+          "Kubernetes",
+          "SSH"
+        ],
         "type": "object"
       },
       "ServiceRestartOutputBody": {

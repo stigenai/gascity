@@ -323,6 +323,20 @@ func deepCopyAgent(src *config.Agent, name, dir string) config.Agent {
 			dst.Env[k] = v
 		}
 	}
+	if len(src.SecretReferences) > 0 {
+		dst.SecretReferences = make([]config.SecretReference, len(src.SecretReferences))
+		for i := range src.SecretReferences {
+			dst.SecretReferences[i] = src.SecretReferences[i]
+			if src.SecretReferences[i].Kubernetes != nil {
+				v := *src.SecretReferences[i].Kubernetes
+				dst.SecretReferences[i].Kubernetes = &v
+			}
+			if src.SecretReferences[i].SSH != nil {
+				v := *src.SecretReferences[i].SSH
+				dst.SecretReferences[i].SSH = &v
+			}
+		}
+	}
 	if len(src.PreStart) > 0 {
 		dst.PreStart = make([]string, len(src.PreStart))
 		copy(dst.PreStart, src.PreStart)

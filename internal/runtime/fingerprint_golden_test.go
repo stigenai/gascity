@@ -43,6 +43,11 @@ func goldenFixtures() map[string]Config {
 				Args: []string{"--port", "0"}, Env: map[string]string{"K": "V"},
 				URL: "https://mcp", Headers: map[string]string{"H": "1"},
 			}},
+			SecretReferences: []SecretReference{{
+				ID: "claude-primary", Environment: "CLAUDE_AUTH_TOKEN",
+				Kubernetes: &KubernetesSecretKeyReference{Name: "claude-primary", Key: "token"},
+				SSH:        &SSHSecretPathReference{Path: "/srv/gc-secrets/claude-primary-token"},
+			}},
 			FingerprintExtra:     map[string]string{"pool": "p1"},
 			PreStart:             []string{"mkdir -p x", "echo pre"},
 			SessionSetup:         []string{"setup-a", "setup-b"},
@@ -123,8 +128,8 @@ func TestFingerprintVersionPin(t *testing.T) {
 	// The version namespaces stored hashes; an UNINTENTIONAL bump during the
 	// de-conflation rebaselines every session (mass restart). An intentional
 	// bump is a deliberate edit to this assertion + a golden regen.
-	if FingerprintVersion != "v5" {
-		t.Errorf("FingerprintVersion = %q, want v5", FingerprintVersion)
+	if FingerprintVersion != "v6" {
+		t.Errorf("FingerprintVersion = %q, want v6", FingerprintVersion)
 	}
 }
 

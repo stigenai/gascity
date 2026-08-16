@@ -31,6 +31,9 @@ var partitionHalfCases = []struct {
 
 	// PROVISION (box) half.
 	{"Env", "provision", func(c *Config) { c.Env = envWith(c.Env, "GC_CITY", "different-city") }},
+	{"SecretReferences", "provision", func(c *Config) {
+		c.SecretReferences = []SecretReference{{ID: "changed", Environment: "TOKEN", Kubernetes: &KubernetesSecretKeyReference{Name: "secret", Key: "token"}}}
+	}},
 	{"FingerprintExtra", "provision", func(c *Config) { c.FingerprintExtra = map[string]string{"pool": "different"} }},
 	{"PreStart", "provision", func(c *Config) { c.PreStart = []string{"echo different-prestart"} }},
 	{"OverlayDir", "provision", func(c *Config) { c.OverlayDir = "/different-overlay" }},
@@ -102,6 +105,7 @@ var coreFieldHalf = map[string]string{
 	"SessionSetupScript":   "launch",
 	// PROVISION (box) half.
 	"Env":                 "provision",
+	"SecretReferences":    "provision",
 	"FingerprintExtra":    "provision",
 	"PreStart":            "provision",
 	"OverlayDir":          "provision",

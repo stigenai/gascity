@@ -127,6 +127,9 @@ type TemplateParams struct {
 	// MCPServers is the effective ACP session/new MCP server set for this
 	// concrete session context.
 	MCPServers []runtime.MCPServerConfig
+	// SecretReferences are provider-owned credential identities resolved only
+	// after runtime placement. Values never enter Env.
+	SecretReferences []runtime.SecretReference
 }
 
 // DisplayName returns the name to use for log messages and event subjects.
@@ -704,6 +707,7 @@ func resolveTemplate(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName 
 		IsACP:            sessionTransport == config.SessionTransportACP,
 		HookEnabled:      hasHooks,
 		MCPServers:       mcpServers,
+		SecretReferences: runtimeSecretReferences(cfgAgent.SecretReferences),
 	}
 	params.SessionOverride = cfgAgent.Session
 	params.EffectiveSessionProvider = effectiveSessionProvider(cfgAgent.Session, p.sessionProvider)
@@ -868,6 +872,7 @@ func templateParamsToConfigWithDelivery(tp TemplateParams) (runtime.Config, prom
 	cfg.PromptSuffix = promptSuffix
 	cfg.PromptFlag = promptFlag
 	cfg.Env = env
+	cfg.SecretReferences = tp.SecretReferences
 	if tp.IsACP {
 		cfg.MCPServers = tp.MCPServers
 	}

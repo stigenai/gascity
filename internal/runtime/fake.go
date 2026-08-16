@@ -59,9 +59,13 @@ type Fake struct {
 	// method returns (false, err) instead of consulting the ordinary fake
 	// state. The plain (unchecked) method is unaffected — it still returns
 	// its best-effort bool as if no error were configured.
-	ProcessAliveErrors map[string]error
-	IsRunningErrors    map[string]error
-	IsAttachedErrors   map[string]error
+	ProcessAliveErrors  map[string]error
+	IsRunningErrors     map[string]error
+	IsAttachedErrors    map[string]error
+	CapsuleStates       map[string]CapsuleStateReference // full digest → allocation
+	CapsuleAttachments  map[string]string                // place name → full digest
+	CapsuleStateErrors  map[string]error                 // full digest → provider error
+	CapsuleDetachErrors map[string]error                 // place name → detach error
 }
 
 var (
@@ -70,6 +74,8 @@ var (
 	_ ProcessAliveChecker = (*Fake)(nil)
 	_ RunningChecker      = (*Fake)(nil)
 	_ AttachedChecker     = (*Fake)(nil)
+	_ CapsuleStateRuntime = (*Fake)(nil)
+	_ CapsuleStatePlace   = (*Fake)(nil)
 )
 
 // Call records a single method invocation on [Fake].
@@ -146,6 +152,10 @@ func NewFake() *Fake {
 		ProcessAliveErrors:      make(map[string]error),
 		IsRunningErrors:         make(map[string]error),
 		IsAttachedErrors:        make(map[string]error),
+		CapsuleStates:           make(map[string]CapsuleStateReference),
+		CapsuleAttachments:      make(map[string]string),
+		CapsuleStateErrors:      make(map[string]error),
+		CapsuleDetachErrors:     make(map[string]error),
 	}
 }
 
@@ -177,8 +187,114 @@ func NewFailFake() *Fake {
 		WaitForIdleGates:        make(map[string]chan struct{}),
 		WaitForIdleStarted:      make(map[string]chan struct{}),
 		RelaunchErrors:          make(map[string]error),
+		CapsuleStates:           make(map[string]CapsuleStateReference),
+		CapsuleAttachments:      make(map[string]string),
+		CapsuleStateErrors:      make(map[string]error),
+		CapsuleDetachErrors:     make(map[string]error),
 		broken:                  true,
 	}
+}
+
+// EnsureCapsuleState creates or reopens one deterministic fake durable
+// allocation. It is independent of the fake session/Place lifecycle.
+func (f *Fake) EnsureCapsuleState(_ context.Context, key CapsuleKey) (CapsuleStateReference, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, Call{Method: "EnsureCapsuleState", Name: key.SessionID, Key: key.Digest})
+	if err := key.Validate(); err != nil {
+		return CapsuleStateReference{}, false, err
+	}
+	if err := f.CapsuleStateErrors[key.Digest]; err != nil {
+		return CapsuleStateReference{}, false, err
+	}
+	if ref, ok := f.CapsuleStates[key.Digest]; ok {
+		if ref.Key != key {
+			return CapsuleStateReference{}, false, fmt.Errorf("%w: fake allocation identity mismatch", ErrCapsuleStateConflict)
+		}
+		return ref, false, nil
+	}
+	ref := CapsuleStateReference{Key: key, Provider: "fake", ResourceID: key.ResourceStem(), MountPath: "/var/lib/gascity/omnigent"}
+	f.CapsuleStates[key.Digest] = ref
+	return ref, true, nil
+}
+
+// OpenCapsuleState returns one existing fake allocation without creating it.
+func (f *Fake) OpenCapsuleState(_ context.Context, key CapsuleKey) (CapsuleStateReference, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, Call{Method: "OpenCapsuleState", Name: key.SessionID, Key: key.Digest})
+	if err := key.Validate(); err != nil {
+		return CapsuleStateReference{}, false, err
+	}
+	if err := f.CapsuleStateErrors[key.Digest]; err != nil {
+		return CapsuleStateReference{}, false, err
+	}
+	ref, ok := f.CapsuleStates[key.Digest]
+	if ok && ref.Key != key {
+		return CapsuleStateReference{}, false, fmt.Errorf("%w: fake allocation identity mismatch", ErrCapsuleStateConflict)
+	}
+	return ref, ok, nil
+}
+
+// PurgeCapsuleState deletes one unattached fake allocation. Missing state is
+// idempotent; an attachment or identity mismatch fails closed.
+func (f *Fake) PurgeCapsuleState(_ context.Context, key CapsuleKey) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, Call{Method: "PurgeCapsuleState", Name: key.SessionID, Key: key.Digest})
+	if err := key.Validate(); err != nil {
+		return err
+	}
+	if err := f.CapsuleStateErrors[key.Digest]; err != nil {
+		return err
+	}
+	ref, ok := f.CapsuleStates[key.Digest]
+	if !ok {
+		return nil
+	}
+	if ref.Key != key {
+		return fmt.Errorf("%w: fake allocation identity mismatch", ErrCapsuleStateConflict)
+	}
+	for _, digest := range f.CapsuleAttachments {
+		if digest == key.Digest {
+			return fmt.Errorf("%w: fake allocation is attached", ErrCapsuleStateConflict)
+		}
+	}
+	delete(f.CapsuleStates, key.Digest)
+	return nil
+}
+
+// AttachCapsuleState exclusively attaches ref to an existing fake Place.
+func (f *Fake) AttachCapsuleState(_ context.Context, placeName string, ref CapsuleStateReference) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, Call{Method: "AttachCapsuleState", Name: placeName, Key: ref.Key.Digest})
+	if _, ok := f.sessions[placeName]; !ok {
+		return fmt.Errorf("%w: %q", ErrSessionNotFound, placeName)
+	}
+	stored, ok := f.CapsuleStates[ref.Key.Digest]
+	if !ok || stored != ref {
+		return fmt.Errorf("%w: fake allocation is absent or mismatched", ErrCapsuleStateConflict)
+	}
+	for place, digest := range f.CapsuleAttachments {
+		if digest == ref.Key.Digest && place != placeName {
+			return fmt.Errorf("%w: fake allocation is attached to %q", ErrCapsuleStateConflict, place)
+		}
+	}
+	f.CapsuleAttachments[placeName] = ref.Key.Digest
+	return nil
+}
+
+// DetachCapsuleState releases one fake Place attachment without deleting state.
+func (f *Fake) DetachCapsuleState(_ context.Context, placeName string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, Call{Method: "DetachCapsuleState", Name: placeName})
+	if err := f.CapsuleDetachErrors[placeName]; err != nil {
+		return err
+	}
+	delete(f.CapsuleAttachments, placeName)
+	return nil
 }
 
 // Start creates a fake session. Returns an error if the name is taken.
@@ -216,6 +332,7 @@ func (f *Fake) Stop(name string) error {
 		return nil
 	}
 	delete(f.sessions, name)
+	delete(f.CapsuleAttachments, name)
 	return nil
 }
 

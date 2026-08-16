@@ -678,6 +678,8 @@ type AgentOverride struct {
 	Pool *PoolOverride `toml:"pool,omitempty"`
 	// Env adds or overrides environment variables.
 	Env map[string]string `toml:"env,omitempty"`
+	// SecretReferences replaces provider-owned credential references.
+	SecretReferences []SecretReference `toml:"secret,omitempty"`
 	// EnvRemove lists env var keys to remove.
 	EnvRemove []string `toml:"env_remove,omitempty"`
 	// PreStart overrides the agent's pre_start commands.
@@ -3170,6 +3172,9 @@ type Agent struct {
 	EmitsPermissionWarning *bool `toml:"emits_permission_warning,omitempty"`
 	// Env sets additional environment variables for the agent process.
 	Env map[string]string `toml:"env,omitempty"`
+	// SecretReferences declares provider-owned credential references. Values
+	// are resolved only by the selected runtime provider and never enter Env.
+	SecretReferences []SecretReference `toml:"secret,omitempty"`
 	// OptionDefaults overrides the provider's effective schema defaults
 	// for this agent. Keys are option keys, values are choice values.
 	// Applied on top of the provider's OptionDefaults (agent keys win).
@@ -3454,6 +3459,7 @@ func (a Agent) Clone() Agent {
 	out.SharedSkills = append([]string(nil), a.SharedSkills...)
 	out.SharedMCP = append([]string(nil), a.SharedMCP...)
 	out.Env = deepCopyStringMap(a.Env)
+	out.SecretReferences = cloneSecretReferences(a.SecretReferences)
 	out.OptionDefaults = deepCopyStringMap(a.OptionDefaults)
 	out.ReadyDelayMs = copyIntPtr(a.ReadyDelayMs)
 	out.MaxActiveSessions = copyIntPtr(a.MaxActiveSessions)
@@ -4013,6 +4019,16 @@ func ValidateAgents(agents []Agent) error {
 			*a.MaxActiveSessions >= 0 && *a.MinActiveSessions > *a.MaxActiveSessions {
 			return fmt.Errorf("agent %q: min_active_sessions (%d) must be <= max_active_sessions (%d)",
 				a.Name, *a.MinActiveSessions, *a.MaxActiveSessions)
+		}
+		if err := validateSecretReferences(a.SecretReferences); err != nil {
+			return fmt.Errorf("agent %q: %w", a.QualifiedName(), err)
+		}
+		for _, ref := range a.SecretReferences {
+			if ref.Environment != "" {
+				if _, exists := a.Env[ref.Environment]; exists {
+					return fmt.Errorf("agent %q: secret environment %q is also declared in env", a.QualifiedName(), ref.Environment)
+				}
+			}
 		}
 	}
 

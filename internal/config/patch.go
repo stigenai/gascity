@@ -39,6 +39,8 @@ type AgentPatch struct {
 	Pool *PoolOverride `toml:"pool,omitempty"`
 	// Env adds or overrides environment variables.
 	Env map[string]string `toml:"env,omitempty"`
+	// SecretReferences replaces the agent's provider-owned secret references.
+	SecretReferences []SecretReference `toml:"secret,omitempty"`
 	// EnvRemove lists env var keys to remove after merging.
 	EnvRemove []string `toml:"env_remove,omitempty"`
 	// PreStart overrides the agent's pre_start commands.
@@ -454,6 +456,9 @@ func applyAgentMutation(a *Agent, p *AgentPatch, sleepSource string) {
 	}
 	if p.Suspended != nil {
 		a.Suspended = *p.Suspended
+	}
+	if len(p.SecretReferences) > 0 {
+		a.SecretReferences = cloneSecretReferences(p.SecretReferences)
 	}
 	if len(p.PreStart) > 0 {
 		a.PreStart = append([]string(nil), p.PreStart...)

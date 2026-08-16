@@ -655,6 +655,11 @@ type Config struct {
 	// Env is additional environment variables set in the session.
 	Env map[string]string
 
+	// SecretReferences carries provider-owned credential identities and their
+	// process destinations without resolving secret values into Env. Remote
+	// providers resolve only their typed source at the provider edge.
+	SecretReferences []SecretReference
+
 	// MCPServers is the effective ACP session/new MCP server list for this
 	// session. Non-ACP providers ignore it.
 	MCPServers []MCPServerConfig

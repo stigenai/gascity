@@ -61,6 +61,7 @@ func LaunchFingerprint(cfg Config) string {
 // per-field framing as hashCoreFields.
 func hashProvisionFields(h hash.Hash, cfg Config) {
 	hashSortedMapIncluded(h, cfg.Env, envFingerprintInclude)
+	hashSecretReferences(h, cfg.SecretReferences)
 
 	if len(cfg.FingerprintExtra) > 0 {
 		h.Write([]byte("fp")) //nolint:errcheck // hash.Write never errors
