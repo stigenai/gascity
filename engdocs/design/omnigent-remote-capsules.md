@@ -88,6 +88,16 @@ define the final types and provider implementations:
 - typed secret references resolve at the provider edge without placing secret
   values in `runtime.Config.Env`.
 
+The concrete handoff is `runtime.CapsuleLaunchConfig`. It is created only after
+the attachment plan and provider-owned durable allocation agree on the capsule
+key. It carries a shell-free command, opaque state/catalog resource IDs, fixed
+in-capsule mount paths, private socket path, and catalog digest. The Kubernetes
+pod projection keeps the existing single agent container and outer tmux
+session, mounts the exclusive PVC, a memory-backed run directory, and a
+required read-only catalog ConfigMap separately, and gates readiness on both
+tmux and the supervisor socket. A nil capsule plan leaves ordinary pod manifests
+on the existing path.
+
 Kubernetes and SSH provide the two concrete implementations required before a
 provider-neutral state or secret seam is accepted. Daytona remains a possible
 future Runtime Provider Protocol implementation; it is not a current built-in

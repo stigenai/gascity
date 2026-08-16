@@ -11,10 +11,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8svalidation "k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/gastownhall/gascity/internal/citylayout"
 	"github.com/gastownhall/gascity/internal/pathutil"
 	"github.com/gastownhall/gascity/internal/runtime"
+	"github.com/gastownhall/gascity/internal/shellquote"
 )
 
 const (
@@ -99,6 +101,9 @@ func remapControllerCommandToPod(cmd string, cfg runtime.Config) string {
 // entrypoint launch and a relaunch produce a byte-identical command.
 func agentCommandB64(cfg runtime.Config) string {
 	cmd := cfg.Command
+	if cfg.Capsule != nil {
+		cmd = shellquote.Join(cfg.Capsule.Command)
+	}
 	if cmd == "" {
 		cmd = "/bin/bash"
 	}
@@ -234,6 +239,9 @@ func projectedPodDoltEnv(cfgEnv map[string]string, managedHost, managedPort stri
 // Same labels, annotations, container names, volumes, and tmux-inside-pod
 // pattern so mixed-mode migration works.
 func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error) {
+	if err := validateK8sCapsuleLaunch(cfg); err != nil {
+		return nil, err
+	}
 	podName := SanitizeName(name)
 	label := SanitizeLabel(name)
 	agentName := cfg.Env["GC_ALIAS"]
@@ -280,13 +288,17 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 			podWorkDir, linuxUsername, podWorkDir,
 			linuxUsername,
 		)
+		if cfg.Capsule != nil {
+			for _, writablePath := range []string{cfg.Capsule.State.MountPath, cfg.Capsule.RunRoot} {
+				userSetup += fmt.Sprintf(`mkdir -p %q && chown -R %q %q; `, writablePath, linuxUsername, writablePath)
+			}
+		}
 	}
 	credCopy := `mkdir -p $HOME/.claude && cp -rL /tmp/claude-secret/. $HOME/.claude/ 2>/dev/null; git config --global --add safe.directory '*' 2>/dev/null; `
 	wsWait := ""
 	if !p.prebaked {
 		wsWait = `while [ ! -f /workspace/.gc-workspace-ready ]; do sleep 0.5; done; `
 	}
-
 	var tmuxCmd string
 	if linuxUsername != "" {
 		// Run tmux session as the dynamic user via su.
@@ -321,6 +333,30 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 		volumes = append(volumes, corev1.Volume{
 			Name: "ws", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		})
+	}
+	if cfg.Capsule != nil {
+		capsule := cfg.Capsule
+		mainVolMounts = append(mainVolMounts,
+			corev1.VolumeMount{Name: "capsule-state", MountPath: capsule.State.MountPath},
+			corev1.VolumeMount{Name: "capsule-run", MountPath: capsule.RunRoot},
+			corev1.VolumeMount{Name: "capsule-catalog", MountPath: capsule.CatalogMountPath, ReadOnly: true},
+		)
+		catalogMode := int32(0o444)
+		volumes = append(volumes,
+			corev1.Volume{Name: "capsule-state", VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: capsule.State.ResourceID},
+			}},
+			corev1.Volume{Name: "capsule-run", VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory},
+			}},
+			corev1.Volume{Name: "capsule-catalog", VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: capsule.CatalogResourceID},
+					DefaultMode:          &catalogMode,
+					Optional:             boolPtr(false),
+				},
+			}},
+		)
 	}
 
 	mainVolMounts = append(mainVolMounts, corev1.VolumeMount{
@@ -386,6 +422,25 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 			Volumes: volumes,
 		},
 	}
+	if cfg.Capsule != nil {
+		capsule := cfg.Capsule
+		pod.Labels["gc-capsule"] = "true"
+		pod.Annotations["gc-capsule-digest"] = capsule.Key.Digest
+		pod.Annotations["gc-capsule-catalog-sha256"] = capsule.CatalogSHA256
+		agent := &pod.Spec.Containers[0]
+		agent.ReadinessProbe = &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{
+				"sh", "-c", fmt.Sprintf("tmux has-session -t %s && test -S %s", shellquote.Quote(tmuxSession), shellquote.Quote(capsule.SocketPath)),
+			}}},
+			InitialDelaySeconds: 1, PeriodSeconds: 2, TimeoutSeconds: 1, FailureThreshold: 15,
+		}
+		agent.LivenessProbe = &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{
+				"tmux", "has-session", "-t", tmuxSession,
+			}}},
+			InitialDelaySeconds: 5, PeriodSeconds: 10, TimeoutSeconds: 2, FailureThreshold: 3,
+		}
+	}
 
 	// Apply optional scheduling fields.
 	pod.Spec.NodeSelector = maps.Clone(p.nodeSelector)
@@ -416,6 +471,44 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 	}
 
 	return pod, nil
+}
+
+func validateK8sCapsuleLaunch(cfg runtime.Config) error {
+	if cfg.Capsule == nil {
+		return nil
+	}
+	capsule := cfg.Capsule
+	if err := capsule.Validate(); err != nil {
+		return fmt.Errorf("invalid capsule launch: %w", err)
+	}
+	if capsule.State.Provider != string(runtime.SecretProviderKubernetes) {
+		return fmt.Errorf("invalid capsule launch: state provider must be %q", runtime.SecretProviderKubernetes)
+	}
+	for kind, value := range map[string]string{
+		"state claim":      capsule.State.ResourceID,
+		"catalog resource": capsule.CatalogResourceID,
+	} {
+		if problems := k8svalidation.IsDNS1123Subdomain(value); len(problems) > 0 {
+			return fmt.Errorf("invalid capsule launch: %s is not a Kubernetes DNS name", kind)
+		}
+	}
+	podWorkDir := projectedPodWorkDir(cfg)
+	for kind, value := range map[string]string{
+		"state mount":   capsule.State.MountPath,
+		"run root":      capsule.RunRoot,
+		"catalog mount": capsule.CatalogMountPath,
+	} {
+		if pathsOverlap(value, podWorkDir) {
+			return fmt.Errorf("invalid capsule launch: %s must be separate from workspace", kind)
+		}
+	}
+	return nil
+}
+
+func pathsOverlap(left, right string) bool {
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	return left == right || strings.HasPrefix(left, right+string(filepath.Separator)) || strings.HasPrefix(right, left+string(filepath.Separator))
 }
 
 func cloneTolerations(in []corev1.Toleration) []corev1.Toleration {

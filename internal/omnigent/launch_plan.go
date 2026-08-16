@@ -224,6 +224,30 @@ func (p AttachmentLaunchPlan) CommandArgs() []string {
 	return args
 }
 
+// RuntimeCapsuleConfig projects a resolved remote attachment and provider-owned
+// durable allocation into the shared runtime placement record. The catalog
+// resource ID remains opaque so Kubernetes and SSH can use different staging
+// mechanisms without adding provider details to the Omnigent adapter.
+func (p AttachmentLaunchPlan) RuntimeCapsuleConfig(state runtime.CapsuleStateReference, catalogResourceID string) (*runtime.CapsuleLaunchConfig, error) {
+	if p.Location != AttachmentLocationCapsule {
+		return nil, errors.New("runtime capsule config requires capsule attachment location")
+	}
+	if state.Key != p.CapsuleKey || state.MountPath != p.StateRoot {
+		return nil, fmt.Errorf("%w: runtime capsule state does not match attachment plan", runtime.ErrCapsuleStateConflict)
+	}
+	command := append(p.CommandArgs(), "--profile", p.ProfileID)
+	capsule := &runtime.CapsuleLaunchConfig{
+		Key: p.CapsuleKey, State: state, Command: command,
+		RunRoot: filepath.Dir(p.SocketPath), SocketPath: p.SocketPath,
+		CatalogResourceID: strings.TrimSpace(catalogResourceID),
+		CatalogMountPath:  filepath.Dir(p.CatalogPath), CatalogSHA256: p.CatalogSHA256,
+	}
+	if err := capsule.Validate(); err != nil {
+		return nil, err
+	}
+	return capsule, nil
+}
+
 // Fingerprint returns a versioned non-secret identity for provisioning drift.
 func (p AttachmentLaunchPlan) Fingerprint() string {
 	h := sha256.New()

@@ -660,6 +660,10 @@ type Config struct {
 	// providers resolve only their typed source at the provider edge.
 	SecretReferences []SecretReference
 
+	// Capsule carries an optional non-secret colocated-service launch plan.
+	// Concrete providers resolve its opaque resources at the placement edge.
+	Capsule *CapsuleLaunchConfig
+
 	// MCPServers is the effective ACP session/new MCP server list for this
 	// session. Non-ACP providers ignore it.
 	MCPServers []MCPServerConfig

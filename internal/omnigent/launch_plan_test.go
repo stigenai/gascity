@@ -113,6 +113,66 @@ func TestAttachmentLaunchPlanFingerprintIsDeterministicAndSensitiveToInputs(t *t
 	}
 }
 
+func TestAttachmentLaunchPlanProjectsProviderNeutralRuntimeCapsule(t *testing.T) {
+	t.Parallel()
+	input := testCapsuleLaunchInput(t)
+	input.Runtime = "k8s"
+	plan, err := ResolveAttachmentLaunchPlan(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := runtime.CapsuleStateReference{
+		Key: plan.CapsuleKey, Provider: "k8s", ResourceID: plan.CapsuleKey.ResourceStem(), MountPath: CapsuleStateRoot,
+	}
+	capsule, err := plan.RuntimeCapsuleConfig(state, "gco-catalog-a1b2c3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := capsule.Validate(); err != nil {
+		t.Fatalf("runtime capsule config: %v", err)
+	}
+	if got := strings.Join(capsule.Command, " "); got != "gc omnigent attach --mode capsule --socket /run/gascity/omnigent/sidecar.sock --state-root /var/lib/gascity/omnigent --catalog /etc/gascity/omnigent/profiles.yaml --profile profile" {
+		t.Fatalf("capsule command = %q", got)
+	}
+	if capsule.RunRoot != "/run/gascity/omnigent" || capsule.CatalogMountPath != "/etc/gascity/omnigent" || capsule.CatalogSHA256 != plan.CatalogSHA256 {
+		t.Fatalf("capsule paths/digest = %#v", capsule)
+	}
+
+	badState := state
+	badState.MountPath = "/tmp/wrong"
+	if _, err := plan.RuntimeCapsuleConfig(badState, "gco-catalog-a1b2c3"); err == nil {
+		t.Fatal("RuntimeCapsuleConfig accepted mismatched state mount")
+	}
+}
+
+func TestRuntimeCapsuleConfigFollowsResolvedHybridRouteOnly(t *testing.T) {
+	t.Parallel()
+	input := testCapsuleLaunchInput(t)
+	input.Runtime = "hybrid"
+	input.HybridRouteSet = true
+	input.HybridRemote = true
+	remotePlan, err := ResolveAttachmentLaunchPlan(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := runtime.CapsuleStateReference{
+		Key: remotePlan.CapsuleKey, Provider: "k8s", ResourceID: remotePlan.CapsuleKey.ResourceStem(), MountPath: CapsuleStateRoot,
+	}
+	if _, err := remotePlan.RuntimeCapsuleConfig(state, "gco-catalog-a1b2c3"); err != nil {
+		t.Fatalf("remote hybrid route did not produce capsule config: %v", err)
+	}
+
+	input.HybridRemote = false
+	input.SecretReferences = nil
+	localPlan, err := ResolveAttachmentLaunchPlan(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := localPlan.RuntimeCapsuleConfig(runtime.CapsuleStateReference{}, "gco-catalog-a1b2c3"); err == nil {
+		t.Fatal("local hybrid route produced remote capsule config")
+	}
+}
+
 func testCapsuleLaunchInput(t *testing.T) AttachmentLaunchInput {
 	t.Helper()
 	return AttachmentLaunchInput{

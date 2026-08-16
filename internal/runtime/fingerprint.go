@@ -216,6 +216,7 @@ func hashCoreFields(h hash.Hash, cfg Config) {
 	hashSortedMapIncluded(h, cfg.Env, envFingerprintInclude)
 	hashMCPServers(h, cfg.MCPServers)
 	hashSecretReferences(h, cfg.SecretReferences)
+	hashCapsuleLaunchConfig(h, cfg.Capsule)
 
 	// FingerprintExtra carries additional identity fields (pool config, etc.)
 	// that aren't part of the session command but should
@@ -392,6 +393,28 @@ func hashSecretReferences(h hash.Hash, refs []SecretReference) {
 	}
 }
 
+func hashCapsuleLaunchConfig(h hash.Hash, capsule *CapsuleLaunchConfig) {
+	if capsule == nil {
+		return
+	}
+	values := []string{
+		capsule.Key.Digest,
+		capsule.State.Provider,
+		capsule.State.ResourceID,
+		capsule.State.MountPath,
+		capsule.RunRoot,
+		capsule.SocketPath,
+		capsule.CatalogResourceID,
+		capsule.CatalogMountPath,
+		capsule.CatalogSHA256,
+	}
+	values = append(values, capsule.Command...)
+	for _, value := range values {
+		h.Write([]byte(value)) //nolint:errcheck // hash.Write never errors
+		h.Write([]byte{0})     //nolint:errcheck // separator
+	}
+}
+
 func hashOverlayProviders(h hash.Hash, providers []string) {
 	HashOverlayProviderNames(h, providers)
 }
@@ -438,6 +461,9 @@ func CoreFingerprintBreakdown(cfg Config) BreakdownV1 {
 		}),
 		"SecretReferences": fieldHash(func(h hash.Hash) {
 			hashSecretReferences(h, cfg.SecretReferences)
+		}),
+		"Capsule": fieldHash(func(h hash.Hash) {
+			hashCapsuleLaunchConfig(h, cfg.Capsule)
 		}),
 		"FPExtra": fieldHash(func(h hash.Hash) {
 			if len(cfg.FingerprintExtra) > 0 {
@@ -569,6 +595,8 @@ func LogCoreFingerprintDrift(w io.Writer, name string, storedJSON string, curren
 			fmt.Fprintf(w, "    MCPServers: %+v\n", NormalizeMCPServerConfigs(current.MCPServers)) //nolint:errcheck // best-effort diag
 		case "SecretReferences":
 			fmt.Fprintf(w, "    SecretReferences: %d configured\n", len(current.SecretReferences)) //nolint:errcheck // values and provider identifiers stay private
+		case "Capsule":
+			fmt.Fprintf(w, "    Capsule: configured=%t\n", current.Capsule != nil) //nolint:errcheck // provider identifiers and paths stay private
 		case "FPExtra":
 			fmt.Fprintf(w, "    FPExtra: %v (len=%d)\n", current.FingerprintExtra, len(current.FingerprintExtra)) //nolint:errcheck // best-effort diag
 		case "PreStart":

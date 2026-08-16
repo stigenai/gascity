@@ -185,6 +185,42 @@ func TestSecretReferenceIdentityControlsProvisionFingerprintWithoutRotationValue
 	}
 }
 
+func TestCapsuleLaunchConfigValidationAndProvisionFingerprint(t *testing.T) {
+	t.Parallel()
+	key, err := NewCapsuleKey("cluster/namespace/city", "ga-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	capsule := &CapsuleLaunchConfig{
+		Key:     key,
+		State:   CapsuleStateReference{Key: key, Provider: "k8s", ResourceID: key.ResourceStem(), MountPath: "/var/lib/gascity/omnigent"},
+		Command: []string{"gc", "omnigent", "attach", "--mode", "capsule"},
+		RunRoot: "/run/gascity/omnigent", SocketPath: "/run/gascity/omnigent/sidecar.sock",
+		CatalogResourceID: "catalog", CatalogMountPath: "/etc/gascity/omnigent",
+		CatalogSHA256: "sha256:" + strings.Repeat("a", 64),
+	}
+	if err := capsule.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	base := Config{Capsule: capsule}
+	changedCapsule := *capsule
+	changedCapsule.CatalogSHA256 = "sha256:" + strings.Repeat("b", 64)
+	changed := Config{Capsule: &changedCapsule}
+	if CoreFingerprint(base) == CoreFingerprint(changed) || ProvisionFingerprint(base) == ProvisionFingerprint(changed) {
+		t.Fatal("capsule catalog generation did not change provision identity")
+	}
+	if LaunchFingerprint(base) != LaunchFingerprint(changed) {
+		t.Fatal("capsule catalog generation changed launch-only fingerprint")
+	}
+
+	overlap := *capsule
+	overlap.RunRoot = overlap.State.MountPath + "/run"
+	overlap.SocketPath = overlap.RunRoot + "/sidecar.sock"
+	if err := overlap.Validate(); err == nil {
+		t.Fatal("CapsuleLaunchConfig accepted nested writable roots")
+	}
+}
+
 func TestFakeCapsuleStateLifecycleRetainsAcrossPlaceTeardownAndPurgesExplicitly(t *testing.T) {
 	t.Parallel()
 	fake := NewFake()

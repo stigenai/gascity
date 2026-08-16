@@ -27,7 +27,7 @@ import (
 // docs/architecture/worker-runtime-transport-unweld-v0.md §6):
 //
 //	PROVISION (box):  Env (allow-listed), FingerprintExtra, PreStart,
-//	                  OverlayDir, OverlayProviders, CopyFiles.
+//	                  OverlayDir, OverlayProviders, CopyFiles, Capsule.
 //	LAUNCH (agent):   Command, Lifecycle, Upstream, MCPServers,
 //	                  AcceptStartupDialogs, MouseOn, SessionSetup,
 //	                  SessionSetupScript.
@@ -62,6 +62,7 @@ func LaunchFingerprint(cfg Config) string {
 func hashProvisionFields(h hash.Hash, cfg Config) {
 	hashSortedMapIncluded(h, cfg.Env, envFingerprintInclude)
 	hashSecretReferences(h, cfg.SecretReferences)
+	hashCapsuleLaunchConfig(h, cfg.Capsule)
 
 	if len(cfg.FingerprintExtra) > 0 {
 		h.Write([]byte("fp")) //nolint:errcheck // hash.Write never errors

@@ -1,13 +1,200 @@
 package k8s
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 
 	"github.com/gastownhall/gascity/internal/runtime"
+	"github.com/gastownhall/gascity/internal/shellquote"
 )
+
+func TestBuildPod_CapsuleLaunchUsesOneAgentContainerAndIsolatedMounts(t *testing.T) {
+	t.Parallel()
+	key, err := runtime.NewCapsuleKey("cluster/test-ns/city", "ga-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := []string{
+		"gc", "omnigent", "attach", "--mode", "capsule", "--profile", "claude-compatible",
+		"--socket", "/run/gascity/omnigent/sidecar.sock",
+		"--state-root", "/var/lib/gascity/omnigent",
+		"--catalog", "/etc/gascity/omnigent/profiles.yaml",
+	}
+	capsule := &runtime.CapsuleLaunchConfig{
+		Key: key,
+		State: runtime.CapsuleStateReference{
+			Key: key, Provider: "k8s", ResourceID: key.ResourceStem(), MountPath: "/var/lib/gascity/omnigent",
+		},
+		Command:           command,
+		RunRoot:           "/run/gascity/omnigent",
+		SocketPath:        "/run/gascity/omnigent/sidecar.sock",
+		CatalogResourceID: "gco-catalog-a1b2c3",
+		CatalogMountPath:  "/etc/gascity/omnigent",
+		CatalogSHA256:     "sha256:" + strings.Repeat("a", 64),
+	}
+
+	for _, prebaked := range []bool{false, true} {
+		t.Run(map[bool]string{false: "staged image", true: "prebaked image"}[prebaked], func(t *testing.T) {
+			p := newProviderWithOps(newFakeK8sOps())
+			p.prebaked = prebaked
+			pod, err := buildPod("test-session", runtime.Config{
+				Command: "controller-command-must-not-run",
+				WorkDir: "/city/rig",
+				Env:     map[string]string{"GC_CITY": "/city", "GC_AGENT": "worker"},
+				Capsule: capsule,
+			}, p)
+			if err != nil {
+				t.Fatalf("buildPod: %v", err)
+			}
+			if len(pod.Spec.Containers) != 1 || pod.Spec.Containers[0].Name != "agent" {
+				t.Fatalf("containers = %#v, want one existing agent container", pod.Spec.Containers)
+			}
+			agent := pod.Spec.Containers[0]
+			if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken {
+				t.Fatal("capsule pod enabled service-account token automount")
+			}
+			assertRestrictedAgentContext(t, agent.SecurityContext)
+			encodedCommand := base64.StdEncoding.EncodeToString([]byte(shellquote.Join(command)))
+			if !strings.Contains(strings.Join(agent.Args, " "), encodedCommand) || strings.Contains(strings.Join(agent.Args, " "), "controller-command-must-not-run") {
+				t.Fatalf("agent args do not contain exact capsule command: %q", agent.Args)
+			}
+
+			mounts := podVolumeMountsByName(agent.VolumeMounts)
+			assertPodMount(t, mounts, "capsule-state", "/var/lib/gascity/omnigent", false)
+			assertPodMount(t, mounts, "capsule-run", "/run/gascity/omnigent", false)
+			assertPodMount(t, mounts, "capsule-catalog", "/etc/gascity/omnigent", true)
+			volumes := podVolumesByName(pod.Spec.Volumes)
+			if volumes["capsule-state"].PersistentVolumeClaim == nil || volumes["capsule-state"].PersistentVolumeClaim.ClaimName != key.ResourceStem() {
+				t.Fatalf("state volume = %#v", volumes["capsule-state"])
+			}
+			if volumes["capsule-run"].EmptyDir == nil {
+				t.Fatalf("run volume = %#v, want place-local EmptyDir", volumes["capsule-run"])
+			}
+			if volumes["capsule-catalog"].ConfigMap == nil || volumes["capsule-catalog"].ConfigMap.Name != capsule.CatalogResourceID || volumes["capsule-catalog"].ConfigMap.Optional == nil || *volumes["capsule-catalog"].ConfigMap.Optional {
+				t.Fatalf("catalog volume = %#v, want required ConfigMap", volumes["capsule-catalog"])
+			}
+			if pod.Annotations["gc-capsule-digest"] != key.Digest || pod.Annotations["gc-capsule-catalog-sha256"] != capsule.CatalogSHA256 || pod.Labels["gc-capsule"] != "true" {
+				t.Fatalf("capsule metadata = labels=%v annotations=%v", pod.Labels, pod.Annotations)
+			}
+			if agent.ReadinessProbe == nil || agent.ReadinessProbe.Exec == nil || !strings.Contains(strings.Join(agent.ReadinessProbe.Exec.Command, " "), capsule.SocketPath) {
+				t.Fatalf("readiness probe = %#v, want private socket gate", agent.ReadinessProbe)
+			}
+			if agent.LivenessProbe == nil || agent.LivenessProbe.Exec == nil || !strings.Contains(strings.Join(agent.LivenessProbe.Exec.Command, " "), "tmux has-session") {
+				t.Fatalf("liveness probe = %#v, want outer tmux gate", agent.LivenessProbe)
+			}
+			if len(agent.Resources.Requests) == 0 || len(agent.Resources.Limits) == 0 {
+				t.Fatalf("capsule lost configured resource bounds: %#v", agent.Resources)
+			}
+			if prebaked && len(pod.Spec.InitContainers) != 0 {
+				t.Fatalf("prebaked capsule added staging init container: %#v", pod.Spec.InitContainers)
+			}
+			if !prebaked && len(pod.Spec.InitContainers) != 1 {
+				t.Fatalf("staged capsule init containers = %#v, want existing stage container", pod.Spec.InitContainers)
+			}
+			encoded, err := json.Marshal(pod)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{"controller-command-must-not-run"} {
+				if strings.Contains(string(encoded), forbidden) {
+					t.Fatalf("pod manifest leaked %q: %s", forbidden, encoded)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildPod_CapsuleDynamicUserOwnsWritableMountsBeforeTmux(t *testing.T) {
+	t.Parallel()
+	capsule := testK8sCapsuleLaunch(t)
+	p := newProviderWithOps(newFakeK8sOps())
+	pod, err := buildPod("test-session", runtime.Config{
+		Command: "/bin/bash", WorkDir: "/workspace",
+		Env: map[string]string{"LINUX_USERNAME": "capsule-user"}, Capsule: capsule,
+	}, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entrypoint := pod.Spec.Containers[0].Args[0]
+	for _, required := range []string{capsule.State.MountPath, capsule.RunRoot, `chown -R "capsule-user"`, `su - capsule-user`} {
+		if !strings.Contains(entrypoint, required) {
+			t.Fatalf("dynamic-user entrypoint missing %q: %s", required, entrypoint)
+		}
+	}
+	if strings.Index(entrypoint, "chown -R") > strings.Index(entrypoint, "tmux new-session") {
+		t.Fatalf("writable capsule mounts are not owned before tmux start: %s", entrypoint)
+	}
+}
+
+func TestBuildPod_RejectsInvalidCapsulePlanBeforeManifest(t *testing.T) {
+	t.Parallel()
+	valid := testK8sCapsuleLaunch(t)
+	cases := map[string]func(*runtime.CapsuleLaunchConfig){
+		"forged key":              func(c *runtime.CapsuleLaunchConfig) { c.Key.Digest = strings.Repeat("f", 64) },
+		"state key mismatch":      func(c *runtime.CapsuleLaunchConfig) { c.State.Key.SessionID = "other" },
+		"wrong state provider":    func(c *runtime.CapsuleLaunchConfig) { c.State.Provider = "ssh" },
+		"missing state claim":     func(c *runtime.CapsuleLaunchConfig) { c.State.ResourceID = "" },
+		"relative state mount":    func(c *runtime.CapsuleLaunchConfig) { c.State.MountPath = "state" },
+		"socket outside run root": func(c *runtime.CapsuleLaunchConfig) { c.SocketPath = "/tmp/service.sock" },
+		"missing command":         func(c *runtime.CapsuleLaunchConfig) { c.Command = nil },
+		"catalog digest mismatch": func(c *runtime.CapsuleLaunchConfig) { c.CatalogSHA256 = "sha256:bad" },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			capsule := *valid
+			capsule.Command = append([]string(nil), valid.Command...)
+			mutate(&capsule)
+			_, err := buildPod("test-session", runtime.Config{Command: "/bin/bash", Capsule: &capsule}, newProviderWithOps(newFakeK8sOps()))
+			if err == nil {
+				t.Fatal("buildPod succeeded, want capsule validation error")
+			}
+		})
+	}
+}
+
+func testK8sCapsuleLaunch(t *testing.T) *runtime.CapsuleLaunchConfig {
+	t.Helper()
+	key, err := runtime.NewCapsuleKey("cluster/test-ns/city", "ga-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &runtime.CapsuleLaunchConfig{
+		Key:     key,
+		State:   runtime.CapsuleStateReference{Key: key, Provider: "k8s", ResourceID: key.ResourceStem(), MountPath: "/var/lib/gascity/omnigent"},
+		Command: []string{"gc", "omnigent", "attach", "--mode", "capsule"},
+		RunRoot: "/run/gascity/omnigent", SocketPath: "/run/gascity/omnigent/sidecar.sock",
+		CatalogResourceID: "gco-catalog-a1b2c3", CatalogMountPath: "/etc/gascity/omnigent",
+		CatalogSHA256: "sha256:" + strings.Repeat("a", 64),
+	}
+}
+
+func podVolumeMountsByName(mounts []corev1.VolumeMount) map[string]corev1.VolumeMount {
+	out := make(map[string]corev1.VolumeMount, len(mounts))
+	for _, mount := range mounts {
+		out[mount.Name] = mount
+	}
+	return out
+}
+
+func podVolumesByName(volumes []corev1.Volume) map[string]corev1.VolumeSource {
+	out := make(map[string]corev1.VolumeSource, len(volumes))
+	for _, volume := range volumes {
+		out[volume.Name] = volume.VolumeSource
+	}
+	return out
+}
+
+func assertPodMount(t *testing.T, mounts map[string]corev1.VolumeMount, name, path string, readOnly bool) {
+	t.Helper()
+	mount, ok := mounts[name]
+	if !ok || mount.MountPath != path || mount.ReadOnly != readOnly {
+		t.Fatalf("mount %q = %#v, want path=%q readOnly=%t", name, mount, path, readOnly)
+	}
+}
 
 func TestBuildPod_NodeSelector(t *testing.T) {
 	p := newProviderWithOps(newFakeK8sOps())
@@ -97,6 +284,17 @@ func TestBuildPod_NoSchedulingFields_NoBehaviorChange(t *testing.T) {
 	}
 	if pod.Spec.PriorityClassName != "" {
 		t.Errorf("PriorityClassName should be empty when not set")
+	}
+	if pod.Labels["gc-capsule"] != "" || pod.Annotations["gc-capsule-digest"] != "" {
+		t.Fatalf("ordinary pod gained capsule metadata: labels=%v annotations=%v", pod.Labels, pod.Annotations)
+	}
+	if pod.Spec.Containers[0].ReadinessProbe != nil || pod.Spec.Containers[0].LivenessProbe != nil {
+		t.Fatalf("ordinary pod gained capsule probes: %#v", pod.Spec.Containers[0])
+	}
+	for _, volume := range pod.Spec.Volumes {
+		if strings.HasPrefix(volume.Name, "capsule-") {
+			t.Fatalf("ordinary pod gained capsule volume: %#v", volume)
+		}
 	}
 }
 

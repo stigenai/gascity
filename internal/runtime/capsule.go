@@ -21,6 +21,7 @@ var (
 	environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	kubernetesNamePattern  = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 	kubernetesKeyPattern   = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	capsuleDigestPattern   = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 )
 
 // SecretProvider identifies the runtime edge allowed to resolve a secret
@@ -289,6 +290,72 @@ type CapsuleStateReference struct {
 	Provider   string
 	ResourceID string
 	MountPath  string
+}
+
+// CapsuleLaunchConfig is the provider-neutral, non-secret plan for starting a
+// capsule-local service and its interactive client inside one runtime Place.
+// ResourceID fields are opaque provider-owned names, not operator paths.
+type CapsuleLaunchConfig struct {
+	Key               CapsuleKey
+	State             CapsuleStateReference
+	Command           []string
+	RunRoot           string
+	SocketPath        string
+	CatalogResourceID string
+	CatalogMountPath  string
+	CatalogSHA256     string
+}
+
+// Validate checks provider-neutral identity, path, command, and catalog
+// invariants before a concrete runtime authors infrastructure.
+func (c CapsuleLaunchConfig) Validate() error {
+	if err := c.Key.Validate(); err != nil {
+		return err
+	}
+	if c.State.Key != c.Key {
+		return fmt.Errorf("%w: capsule state key does not match launch key", ErrCapsuleStateConflict)
+	}
+	if strings.TrimSpace(c.State.ResourceID) == "" {
+		return errors.New("capsule state resource id is required")
+	}
+	for kind, value := range map[string]string{
+		"state mount":   c.State.MountPath,
+		"run root":      c.RunRoot,
+		"socket":        c.SocketPath,
+		"catalog mount": c.CatalogMountPath,
+	} {
+		if value == "" || !filepath.IsAbs(value) || filepath.Clean(value) != value || value == string(filepath.Separator) {
+			return fmt.Errorf("capsule %s must be a clean absolute non-root path", kind)
+		}
+	}
+	relSocket, err := filepath.Rel(c.RunRoot, c.SocketPath)
+	if err != nil || relSocket == "." || relSocket == ".." || strings.HasPrefix(relSocket, ".."+string(filepath.Separator)) {
+		return errors.New("capsule socket must stay beneath run root")
+	}
+	if capsulePathsOverlap(c.State.MountPath, c.RunRoot) || capsulePathsOverlap(c.State.MountPath, c.CatalogMountPath) || capsulePathsOverlap(c.RunRoot, c.CatalogMountPath) {
+		return errors.New("capsule state, run, and catalog mounts must be distinct")
+	}
+	if len(c.Command) == 0 || strings.TrimSpace(c.Command[0]) == "" {
+		return errors.New("capsule command is required")
+	}
+	for _, arg := range c.Command {
+		if strings.ContainsRune(arg, 0) {
+			return errors.New("capsule command arguments must not contain NUL")
+		}
+	}
+	if strings.TrimSpace(c.CatalogResourceID) == "" {
+		return errors.New("capsule catalog resource id is required")
+	}
+	if !capsuleDigestPattern.MatchString(c.CatalogSHA256) {
+		return errors.New("capsule catalog digest must use sha256:<64 lowercase hex> form")
+	}
+	return nil
+}
+
+func capsulePathsOverlap(left, right string) bool {
+	left = filepath.Clean(left)
+	right = filepath.Clean(right)
+	return left == right || strings.HasPrefix(left, right+string(filepath.Separator)) || strings.HasPrefix(right, left+string(filepath.Separator))
 }
 
 // CapsuleStateRuntime is the optional Runtime capability that owns durable
