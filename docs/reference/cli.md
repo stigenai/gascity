@@ -2628,7 +2628,9 @@ gc omnigent attach [flags]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--conversation` | string |  | exact opaque Omnigent conversation ID to resume |
+| `--mode` | string |  | explicit attachment boundary: controller or capsule |
 | `--profile` | string |  | opaque local Omnigent execution profile ID |
+| `--socket` | string |  | private capsule Unix socket (capsule mode only) |
 | `--title` | string |  | non-secret conversation title |
 
 ## gc omnigent doctor

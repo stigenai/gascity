@@ -175,7 +175,7 @@ func TestOmnigentProviderProfilePrecedenceUsesStandardTypedOptions(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(launch.Command, "gc omnigent attach --profile claude-primary") {
+	if !strings.Contains(launch.Command, "gc omnigent attach --mode controller --profile claude-primary") {
 		t.Fatalf("launch command = %q", launch.Command)
 	}
 	if !strings.Contains(agentResolved.ResumeCommand, "--conversation {{.SessionKey}} --profile claude-primary") {
@@ -212,7 +212,7 @@ func TestOmnigentExampleProfilesKeepOneGasCityTopology(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildProviderLaunchCommand(%s): %v", profile, err)
 		}
-		if !strings.Contains(launch.Command, "gc omnigent attach --profile "+profile) {
+		if !strings.Contains(launch.Command, "gc omnigent attach --mode controller --profile "+profile) {
 			t.Fatalf("launch(%s) = %q", profile, launch.Command)
 		}
 		gotTopology := agent.Name + ":" + agent.Provider + ":omnigent-service"

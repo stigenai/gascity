@@ -22,12 +22,12 @@ startup_timeout = "30s"
 [providers.omnigent]
 display_name = "Omnigent (local)"
 command = "gc"
-args = ["omnigent", "attach"]
+args = ["omnigent", "attach", "--mode", "controller"]
 path_check = "gc"
 prompt_mode = "none"
 resume_flag = "--conversation"
 resume_style = "flag"
-resume_command = "gc omnigent attach --conversation {{.SessionKey}}"
+resume_command = "gc omnigent attach --mode controller --conversation {{.SessionKey}}"
 
 [[providers.omnigent.options_schema]]
 key = "profile"

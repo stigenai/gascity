@@ -68,13 +68,17 @@ var omnigentBindSessionKey = func(cityPath, sessionID, conversationID string) (s
 }
 
 func newOmnigentAttachCmd(stdout, stderr io.Writer) *cobra.Command {
-	var profileID, conversationID, title string
+	var profileID, conversationID, title, attachmentMode, socketPath string
 	cmd := &cobra.Command{
 		Use:          "attach",
 		Short:        "Attach this Gas City worker pane to an Omnigent conversation",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			location, err := resolveOmnigentAttachmentLocation(attachmentMode, socketPath)
+			if err != nil {
+				return fmt.Errorf("gc omnigent attach: %w", err)
+			}
 			selection, err := omnigent.SelectProfile(profileID, os.LookupEnv)
 			if err != nil {
 				return fmt.Errorf("gc omnigent attach: %w", err)
@@ -94,9 +98,15 @@ func newOmnigentAttachCmd(stdout, stderr io.Writer) *cobra.Command {
 			if strings.TrimSpace(title) == "" {
 				title = identity.Agent
 			}
-			client, err := omnigentCityClient(resolved.CityPath)
+			var client *omnigent.APIClient
+			switch location.Mode {
+			case string(omnigent.AttachmentLocationController):
+				client, err = omnigentCityClient(resolved.CityPath)
+			case string(omnigent.AttachmentLocationCapsule):
+				client, err = omnigent.NewUnixAPIClient(location.SocketPath)
+			}
 			if err != nil {
-				return fmt.Errorf("gc omnigent attach: %w", err)
+				return fmt.Errorf("gc omnigent attach: open %s client: %w", location.Mode, err)
 			}
 			policyBridge, err := newOmnigentPolicyMailBridge(cmd.Context(), client, identity.SessionID, func() (mail.Provider, error) {
 				provider, code := openCityMailProvider(stderr, "gc omnigent policy mail")
@@ -134,7 +144,35 @@ func newOmnigentAttachCmd(stdout, stderr io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&profileID, "profile", "", "opaque local Omnigent execution profile ID")
 	cmd.Flags().StringVar(&conversationID, "conversation", "", "exact opaque Omnigent conversation ID to resume")
 	cmd.Flags().StringVar(&title, "title", "", "non-secret conversation title")
+	cmd.Flags().StringVar(&attachmentMode, "mode", "", "explicit attachment boundary: controller or capsule")
+	cmd.Flags().StringVar(&socketPath, "socket", "", "private capsule Unix socket (capsule mode only)")
 	return cmd
+}
+
+type omnigentAttachmentLocation struct {
+	Mode       string
+	SocketPath string
+}
+
+func resolveOmnigentAttachmentLocation(mode, socketPath string) (omnigentAttachmentLocation, error) {
+	mode = strings.TrimSpace(mode)
+	socketPath = strings.TrimSpace(socketPath)
+	switch mode {
+	case string(omnigent.AttachmentLocationController):
+		if socketPath != "" {
+			return omnigentAttachmentLocation{}, errors.New("controller mode does not accept a capsule socket")
+		}
+		return omnigentAttachmentLocation{Mode: mode}, nil
+	case string(omnigent.AttachmentLocationCapsule):
+		if socketPath == "" || !filepath.IsAbs(socketPath) || filepath.Clean(socketPath) != socketPath {
+			return omnigentAttachmentLocation{}, errors.New("capsule mode requires a clean absolute private Unix socket path")
+		}
+		return omnigentAttachmentLocation{Mode: mode, SocketPath: socketPath}, nil
+	case "":
+		return omnigentAttachmentLocation{}, errors.New("--mode is required; choose controller or capsule explicitly")
+	default:
+		return omnigentAttachmentLocation{}, fmt.Errorf("unsupported attachment mode %q", mode)
+	}
 }
 
 func resolveOmnigentRequestedConversation(stored, explicit, sessionID string) (string, error) {

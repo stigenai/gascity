@@ -55,7 +55,7 @@ func TestOmnigentAttachRejectsRemoteCityBeforeLocalServiceLookup(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	cmd := newOmnigentAttachCmd(&stdout, &stderr)
-	cmd.SetArgs([]string{"--profile", "claude-primary"})
+	cmd.SetArgs([]string{"--mode", "controller", "--profile", "claude-primary"})
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "resolve local city") || !strings.Contains(err.Error(), "does not support a remote city") {
 		t.Fatalf("attach remote error = %v", err)
@@ -597,5 +597,22 @@ func TestOmnigentServeRequiresServiceOwnedAbsoluteEnvironment(t *testing.T) {
 	}
 	if stdout.Len() != 0 || strings.Contains(stderr.String(), "secret") {
 		t.Fatalf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+func TestResolveOmnigentAttachmentLocationIsExplicitAndConfined(t *testing.T) {
+	t.Parallel()
+	controller, err := resolveOmnigentAttachmentLocation("controller", "")
+	if err != nil || controller.Mode != "controller" || controller.SocketPath != "" {
+		t.Fatalf("controller location = %+v, %v", controller, err)
+	}
+	capsule, err := resolveOmnigentAttachmentLocation("capsule", "/run/gascity/omnigent/sidecar.sock")
+	if err != nil || capsule.Mode != "capsule" || capsule.SocketPath == "" {
+		t.Fatalf("capsule location = %+v, %v", capsule, err)
+	}
+	for _, invalid := range []struct{ mode, socket string }{{"", ""}, {"auto", ""}, {"controller", "/run/x.sock"}, {"capsule", ""}, {"capsule", "relative.sock"}} {
+		if _, err := resolveOmnigentAttachmentLocation(invalid.mode, invalid.socket); err == nil {
+			t.Fatalf("resolveOmnigentAttachmentLocation(%q, %q) succeeded", invalid.mode, invalid.socket)
+		}
 	}
 }
