@@ -163,7 +163,7 @@ func newPolicyMailSidecar(t *testing.T, recipient string) (*omnigent.APIClient, 
 		t: t, recipient: recipient,
 		bound: make(chan struct{}, 1), responded: make(chan struct{}, 1),
 	}
-	fake.server = newOmnigentCLITestServer(http.HandlerFunc(fake.serveHTTP))
+	fake.server = newCommandHTTPTestServer(http.HandlerFunc(fake.serveHTTP))
 	t.Cleanup(fake.server.Close)
 	client, err := omnigent.NewAPIClient(fake.server.URL, fake.server.Client())
 	if err != nil {

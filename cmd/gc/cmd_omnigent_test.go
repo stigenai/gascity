@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,7 +19,7 @@ import (
 	"github.com/gastownhall/gascity/internal/omnigent"
 )
 
-func newOmnigentCLITestServer(handler http.Handler) *httptest.Server {
+func newCommandHTTPTestServer(handler http.Handler) *httptest.Server {
 	return httptest.NewServer(handler)
 }
 
@@ -166,7 +165,7 @@ func TestRunOmnigentAttachPreservesInputAndOrderedLiveOutput(t *testing.T) {
 	persisted := make(chan struct{})
 	failoverObserved := make(chan struct{})
 	var streamOnce sync.Once
-	server := newOmnigentCLITestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newCommandHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/gascity/v1/profiles":
 			writeOmnigentTestJSON(t, w, http.StatusOK, []omnigent.PublicProfile{{
@@ -307,7 +306,7 @@ func TestRunOmnigentAttachPreservesInputAndOrderedLiveOutput(t *testing.T) {
 func TestRunOmnigentAttachConcurrentFreshLaunchConvergesOnPersistedWinner(t *testing.T) {
 	var attachmentCalls int
 	var stoppedCandidate bool
-	server := newOmnigentCLITestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newCommandHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/gascity/v1/profiles":
 			writeOmnigentTestJSON(t, w, http.StatusOK, []omnigent.PublicProfile{{
@@ -366,7 +365,7 @@ func TestRunOmnigentAttachConcurrentFreshLaunchConvergesOnPersistedWinner(t *tes
 
 func TestRunOmnigentAttachPersistenceFailureStopsFreshConversationBeforeStreaming(t *testing.T) {
 	var stopped, streamed bool
-	server := newOmnigentCLITestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newCommandHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/gascity/v1/profiles":
 			writeOmnigentTestJSON(t, w, http.StatusOK, []omnigent.PublicProfile{{
@@ -404,7 +403,7 @@ func TestRunOmnigentAttachPersistenceFailureStopsFreshConversationBeforeStreamin
 func TestRunOmnigentAttachSIGTERMStopsDurableConversationWithoutClearingIdentity(t *testing.T) {
 	streamOpened := make(chan struct{})
 	stopped := make(chan struct{})
-	server := newOmnigentCLITestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newCommandHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/gascity/v1/profiles":
 			writeOmnigentTestJSON(t, w, http.StatusOK, []omnigent.PublicProfile{{
@@ -628,32 +627,20 @@ func TestStartOmnigentCapsuleSupervisorUsesPrivateSocketAndStopsRunner(t *testin
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	socketPath := filepath.Join(root, "sidecar.sock")
 	stopped := make(chan struct{})
-	serve := func(ctx context.Context, cfg omnigent.SidecarConfig) error {
-		listener, err := net.Listen("unix", cfg.SocketPath)
-		if err != nil {
-			return err
-		}
-		server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/health" {
-				http.NotFound(w, r)
-				return
-			}
-			w.WriteHeader(http.StatusOK)
-		})}
-		go func() { _ = server.Serve(listener) }()
+	started := make(chan struct{})
+	serve := func(ctx context.Context, _ omnigent.SidecarConfig) error {
+		close(started)
 		<-ctx.Done()
-		_ = server.Close()
-		_ = listener.Close()
-		_ = os.Remove(cfg.SocketPath)
 		close(stopped)
 		return nil
 	}
-	client, stop, err := startOmnigentCapsuleSupervisor(context.Background(), omnigent.SidecarConfig{SocketPath: socketPath, StartupTimeout: time.Second}, serve)
+	readiness := func(context.Context, *omnigent.APIClient) error { <-started; return nil }
+	client, stop, err := startOmnigentCapsuleSupervisor(context.Background(), omnigent.SidecarConfig{SocketPath: socketPath, StartupTimeout: time.Second}, serve, readiness)
 	if err != nil {
 		t.Fatalf("startOmnigentCapsuleSupervisor: %v", err)
 	}
-	if err := client.Health(context.Background()); err != nil {
-		t.Fatalf("capsule client health: %v", err)
+	if client == nil {
+		t.Fatal("capsule client is nil")
 	}
 	if err := stop(); err != nil {
 		t.Fatalf("stop capsule supervisor: %v", err)
@@ -678,7 +665,7 @@ func TestStartOmnigentCapsuleSupervisorSurfacesEarlyFailure(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	_, _, err = startOmnigentCapsuleSupervisor(context.Background(), omnigent.SidecarConfig{
 		SocketPath: filepath.Join(root, "sidecar.sock"), StartupTimeout: time.Second,
-	}, func(context.Context, omnigent.SidecarConfig) error { return want })
+	}, func(context.Context, omnigent.SidecarConfig) error { return want }, func(context.Context, *omnigent.APIClient) error { return errors.New("not ready") })
 	if !errors.Is(err, want) {
 		t.Fatalf("early supervisor error = %v, want %v", err, want)
 	}

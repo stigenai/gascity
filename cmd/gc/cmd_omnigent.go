@@ -108,7 +108,7 @@ func newOmnigentAttachCmd(stdout, stderr io.Writer) *cobra.Command {
 				client, stopSupervisor, err = startOmnigentCapsuleSupervisor(cmd.Context(), omnigent.SidecarConfig{
 					StateRoot: location.StateRoot, CatalogPath: location.CatalogPath, SocketPath: location.SocketPath,
 					ImmutableCatalog: true, Stdout: stdout, Stderr: stderr,
-				}, omnigent.ServeSidecar)
+				}, omnigent.ServeSidecar, nil)
 			}
 			if err != nil {
 				return fmt.Errorf("gc omnigent attach: open %s client: %w", location.Mode, err)
@@ -192,7 +192,7 @@ func resolveOmnigentAttachmentLocation(mode, socketPath, stateRoot, catalogPath 
 
 type omnigentSidecarRunner func(context.Context, omnigent.SidecarConfig) error
 
-func startOmnigentCapsuleSupervisor(ctx context.Context, cfg omnigent.SidecarConfig, serve omnigentSidecarRunner) (*omnigent.APIClient, func() error, error) {
+func startOmnigentCapsuleSupervisor(ctx context.Context, cfg omnigent.SidecarConfig, serve omnigentSidecarRunner, readiness func(context.Context, *omnigent.APIClient) error) (*omnigent.APIClient, func() error, error) {
 	if serve == nil {
 		return nil, nil, errors.New("omnigent capsule supervisor is required")
 	}
@@ -205,6 +205,9 @@ func startOmnigentCapsuleSupervisor(ctx context.Context, cfg omnigent.SidecarCon
 		<-done
 		return nil, nil, err
 	}
+	if readiness == nil {
+		readiness = func(probeCtx context.Context, client *omnigent.APIClient) error { return client.Health(probeCtx) }
+	}
 	timeout := cfg.StartupTimeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -215,7 +218,7 @@ func startOmnigentCapsuleSupervisor(ctx context.Context, cfg omnigent.SidecarCon
 	defer ticker.Stop()
 	for {
 		healthCtx, healthCancel := context.WithTimeout(readyCtx, 250*time.Millisecond)
-		healthErr := client.Health(healthCtx)
+		healthErr := readiness(healthCtx, client)
 		healthCancel()
 		if healthErr == nil {
 			var once sync.Once

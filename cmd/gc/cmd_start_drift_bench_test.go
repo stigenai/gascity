@@ -23,7 +23,7 @@ import (
 // without spinning up a real supervisor.
 func fakeHealthServer(buildID string) *httptest.Server {
 	body := fmt.Sprintf(`{"status":"ok","version":"v0","build_id":%q,"uptime_sec":1,"cities_total":0,"cities_running":0}`, buildID)
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	return newCommandHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(body))
 	}))
