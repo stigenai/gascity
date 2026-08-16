@@ -100,7 +100,7 @@ func TestAttachmentLaunchPlanFingerprintIsDeterministicAndSensitiveToInputs(t *t
 		t.Fatalf("fingerprint is not deterministic: %q %q %v", first.Fingerprint(), second.Fingerprint(), err)
 	}
 	changed := input
-	changed.Pin.Commit = strings.Repeat("b", 40)
+	changed.CatalogSHA256 = "sha256:" + strings.Repeat("b", 64)
 	third, err := ResolveAttachmentLaunchPlan(changed)
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +118,8 @@ func testCapsuleLaunchInput(t *testing.T) AttachmentLaunchInput {
 	return AttachmentLaunchInput{
 		Workspace: "/workspace/rig", CityScope: "cluster-a/namespace-a/city-a", SessionID: "ga-session",
 		StateRoot: CapsuleStateRoot, SocketPath: CapsuleSocketPath, CatalogPath: CapsuleCatalogPath,
-		Pin: Pin{Commit: strings.Repeat("a", 40), PackageVersion: "0.10.0.dev0", Executable: "omnigent", SHA256: "sha256:" + strings.Repeat("1", 64)},
+		CatalogSHA256: "sha256:" + strings.Repeat("c", 64),
+		Pin:           Pin{Commit: strings.Repeat("a", 40), PackageVersion: "0.10.0.dev0", Executable: "omnigent", SHA256: "sha256:" + strings.Repeat("1", 64)},
 		SecretReferences: []runtime.SecretReference{{
 			ID: "profile", Environment: "CLAUDE_AUTH_TOKEN",
 			Kubernetes: &runtime.KubernetesSecretKeyReference{Name: "claude-primary", Key: "token"},

@@ -4,6 +4,8 @@
 package omnigent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +17,42 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
+
+// CatalogBundleSHA256 hashes the validated non-secret catalog and every
+// referenced agent definition in stable profile-ID order. Remote providers use
+// it as staged-input identity so catalog edits require an explicit relaunch.
+func CatalogBundleSHA256(path string) (string, error) {
+	catalog, err := LoadCatalog(path)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	writeFile := func(label, filePath string) error {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			return fmt.Errorf("read omnigent catalog bundle %s: %w", label, err)
+		}
+		_, _ = h.Write([]byte(label))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write(data)
+		_, _ = h.Write([]byte{0})
+		return nil
+	}
+	if err := writeFile("catalog", path); err != nil {
+		return "", err
+	}
+	ids := make([]string, 0, len(catalog.profiles))
+	for id := range catalog.profiles {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if err := writeFile("profile:"+id, catalog.profiles[id].AgentPath); err != nil {
+			return "", err
+		}
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
+}
 
 const catalogVersion = 1
 

@@ -107,7 +107,7 @@ func newOmnigentAttachCmd(stdout, stderr io.Writer) *cobra.Command {
 			case string(omnigent.AttachmentLocationCapsule):
 				client, stopSupervisor, err = startOmnigentCapsuleSupervisor(cmd.Context(), omnigent.SidecarConfig{
 					StateRoot: location.StateRoot, CatalogPath: location.CatalogPath, SocketPath: location.SocketPath,
-					Stdout: stdout, Stderr: stderr,
+					ImmutableCatalog: true, Stdout: stdout, Stderr: stderr,
 				}, omnigent.ServeSidecar)
 			}
 			if err != nil {

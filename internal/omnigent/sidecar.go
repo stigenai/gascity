@@ -23,14 +23,18 @@ import (
 // SidecarConfig identifies the service-owned local state and catalog. Empty
 // CatalogPath resolves to <state-root>/config/profiles.yaml.
 type SidecarConfig struct {
-	StateRoot       string
-	CatalogPath     string
-	SocketPath      string
-	LoopbackPort    int
-	StartupTimeout  time.Duration
-	ShutdownTimeout time.Duration
-	Stdout          io.Writer
-	Stderr          io.Writer
+	StateRoot   string
+	CatalogPath string
+	// ImmutableCatalog permits a provider-staged catalog outside StateRoot.
+	// The catalog and every referenced agent file must be regular, non-symlink,
+	// and read-only before the pinned executable is verified or started.
+	ImmutableCatalog bool
+	SocketPath       string
+	LoopbackPort     int
+	StartupTimeout   time.Duration
+	ShutdownTimeout  time.Duration
+	Stdout           io.Writer
+	Stderr           io.Writer
 }
 
 const (
@@ -85,6 +89,11 @@ func PrepareSidecar(ctx context.Context, cfg SidecarConfig, port int) (*Prepared
 	catalog, err := LoadCatalog(paths.CatalogPath)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.ImmutableCatalog {
+		if err := validateImmutableCatalogFiles(catalog, paths.CatalogPath); err != nil {
+			return nil, err
+		}
 	}
 	verified, err := VerifyExecutable(ctx, catalog.Pin)
 	if err != nil {
@@ -150,11 +159,20 @@ func prepareSidecarPaths(cfg SidecarConfig) (SidecarPaths, error) {
 	if err != nil {
 		return SidecarPaths{}, fmt.Errorf("resolve omnigent catalog: %w", err)
 	}
-	if !pathWithin(configDir, resolvedCatalog) {
-		return SidecarPaths{}, errors.New("omnigent catalog must stay beneath the service config directory")
-	}
-	if err := os.Chmod(resolvedCatalog, 0o600); err != nil {
-		return SidecarPaths{}, fmt.Errorf("secure omnigent catalog: %w", err)
+	if cfg.ImmutableCatalog {
+		if pathWithin(configDir, resolvedCatalog) {
+			return SidecarPaths{}, errors.New("immutable omnigent catalog must be staged outside the writable state root")
+		}
+		if err := validateReadOnlyRegularFile(catalogPath, "catalog"); err != nil {
+			return SidecarPaths{}, err
+		}
+	} else {
+		if !pathWithin(configDir, resolvedCatalog) {
+			return SidecarPaths{}, errors.New("omnigent catalog must stay beneath the service config directory")
+		}
+		if err := os.Chmod(resolvedCatalog, 0o600); err != nil {
+			return SidecarPaths{}, fmt.Errorf("secure omnigent catalog: %w", err)
+		}
 	}
 	configPath := filepath.Join(configDir, "config.yaml")
 	if err := ensurePrivateEmptyConfig(configPath); err != nil {
@@ -171,6 +189,32 @@ func prepareSidecarPaths(cfg SidecarConfig) (SidecarPaths, error) {
 		DatabasePath: filepath.Join(resolvedRoot, "data", "chat.db"),
 		ConfigPath:   configPath, CatalogPath: resolvedCatalog,
 	}, nil
+}
+
+func validateImmutableCatalogFiles(catalog *Catalog, catalogPath string) error {
+	if err := validateReadOnlyRegularFile(catalogPath, "catalog"); err != nil {
+		return err
+	}
+	for _, profile := range catalog.profiles {
+		if err := validateReadOnlyRegularFile(profile.AgentPath, "profile agent"); err != nil {
+			return fmt.Errorf("omnigent profile %q: %w", profile.ID, err)
+		}
+	}
+	return nil
+}
+
+func validateReadOnlyRegularFile(path, kind string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("inspect immutable omnigent %s: %w", kind, err)
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("immutable omnigent %s must be a regular non-symlink file", kind)
+	}
+	if info.Mode().Perm()&0o222 != 0 {
+		return fmt.Errorf("immutable omnigent %s must be read-only", kind)
+	}
+	return nil
 }
 
 func ensurePrivateEmptyConfig(path string) error {

@@ -130,6 +130,87 @@ profiles:
 	}
 }
 
+func TestPrepareSidecarAcceptsOnlyReadOnlyProviderStagedCatalog(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-specific")
+	}
+	stateRoot := t.TempDir()
+	stagedRoot := t.TempDir()
+	executable := filepath.Join(stateRoot, "omnigent")
+	body := "#!/bin/sh\necho 'omnigent 0.10.0.dev0 (2aba5079)'\n"
+	if err := os.WriteFile(executable, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	agentPath := filepath.Join(stagedRoot, "agent.yaml")
+	if err := os.WriteFile(agentPath, []byte("name: staged\nprompt: work\n"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(body))
+	catalogPath := filepath.Join(stagedRoot, "profiles.yaml")
+	catalog := fmt.Sprintf(`version: 1
+omnigent:
+  commit: 2aba5079d4d3a2a84d8c9927884fc4b8ce0eeecc
+  package_version: 0.10.0.dev0
+  executable: %s
+  sha256: sha256:%x
+profiles:
+  staged:
+    display_name: Staged
+    blurb: Immutable staged profile.
+    harness: codex
+    backend: loopback
+    network: offline
+    agent: agent.yaml
+`, executable, sum)
+	if err := os.WriteFile(catalogPath, []byte(catalog), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := SidecarConfig{StateRoot: stateRoot, CatalogPath: catalogPath, ImmutableCatalog: true}
+	if _, err := PrepareSidecar(context.Background(), cfg, 43123); err == nil || !strings.Contains(err.Error(), "catalog must be read-only") {
+		t.Fatalf("mutable catalog error = %v", err)
+	}
+	if err := os.Chmod(catalogPath, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareSidecar(context.Background(), cfg, 43123); err != nil {
+		t.Fatalf("PrepareSidecar(read-only staged catalog): %v", err)
+	}
+	firstDigest, err := CatalogBundleSHA256(catalogPath)
+	if err != nil || !digestPattern.MatchString(firstDigest) {
+		t.Fatalf("CatalogBundleSHA256 = %q, %v", firstDigest, err)
+	}
+	if err := os.Chmod(agentPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareSidecar(context.Background(), cfg, 43123); err == nil || !strings.Contains(err.Error(), "profile agent must be read-only") {
+		t.Fatalf("mutable profile agent error = %v", err)
+	}
+	if err := os.Chmod(agentPath, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(agentPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(agentPath, []byte("name: staged\nprompt: changed\n"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(agentPath, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	secondDigest, err := CatalogBundleSHA256(catalogPath)
+	if err != nil || secondDigest == firstDigest {
+		t.Fatalf("catalog bundle digest after agent change = %q, %v; want change", secondDigest, err)
+	}
+	linkPath := filepath.Join(stagedRoot, "catalog-link.yaml")
+	if err := os.Symlink(catalogPath, linkPath); err != nil {
+		t.Fatal(err)
+	}
+	cfg.CatalogPath = linkPath
+	if _, err := PrepareSidecar(context.Background(), cfg, 43123); err == nil || !strings.Contains(err.Error(), "non-symlink") {
+		t.Fatalf("symlink catalog error = %v", err)
+	}
+}
+
 func TestSidecarHandlerProxiesHealthAndExposesOnlyPublicProfileMetadata(t *testing.T) {
 	catalog := loadFailoverCatalog(t)
 	upstream := newOmnigentHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

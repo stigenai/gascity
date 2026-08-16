@@ -47,6 +47,7 @@ type AttachmentLaunchInput struct {
 	StateRoot        string
 	SocketPath       string
 	CatalogPath      string
+	CatalogSHA256    string
 	Pin              Pin
 	SecretReferences []runtime.SecretReference
 }
@@ -61,6 +62,7 @@ type AttachmentLaunchPlan struct {
 	StateRoot        string
 	SocketPath       string
 	CatalogPath      string
+	CatalogSHA256    string
 	CapsuleKey       runtime.CapsuleKey
 	Pin              Pin
 	SecretProvider   runtime.SecretProvider
@@ -92,6 +94,9 @@ func ResolveAttachmentLaunchPlan(input AttachmentLaunchInput) (AttachmentLaunchP
 	if err := validatePin(input.Pin); err != nil {
 		return AttachmentLaunchPlan{}, err
 	}
+	if !digestPattern.MatchString(input.CatalogSHA256) {
+		return AttachmentLaunchPlan{}, errors.New("omnigent capsule catalog digest must use sha256:<64 lowercase hex> form")
+	}
 	key, err := runtime.NewCapsuleKey(input.CityScope, input.SessionID)
 	if err != nil {
 		return AttachmentLaunchPlan{}, err
@@ -103,6 +108,7 @@ func ResolveAttachmentLaunchPlan(input AttachmentLaunchInput) (AttachmentLaunchP
 	plan.StateRoot = CapsuleStateRoot
 	plan.SocketPath = CapsuleSocketPath
 	plan.CatalogPath = CapsuleCatalogPath
+	plan.CatalogSHA256 = input.CatalogSHA256
 	plan.CapsuleKey = key
 	plan.Pin = input.Pin
 	plan.SecretProvider = provider
@@ -154,7 +160,7 @@ func (p AttachmentLaunchPlan) Fingerprint() string {
 	h := sha256.New()
 	for _, value := range []string{
 		string(p.Location), p.Runtime, p.Workspace, p.StateRoot, p.SocketPath, p.CatalogPath,
-		p.CapsuleKey.Digest, p.Pin.Commit, p.Pin.PackageVersion, p.Pin.Executable, p.Pin.SHA256,
+		p.CapsuleKey.Digest, p.CatalogSHA256, p.Pin.Commit, p.Pin.PackageVersion, p.Pin.Executable, p.Pin.SHA256,
 		string(p.SecretProvider), runtime.ProvisionFingerprint(runtime.Config{SecretReferences: p.SecretReferences}),
 	} {
 		_, _ = h.Write([]byte(value))
