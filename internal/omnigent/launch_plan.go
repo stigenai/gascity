@@ -73,6 +73,53 @@ type AttachmentLaunchPlan struct {
 	ProfileCredentials []ProfileCredentialProjection
 }
 
+// RemoteAttachmentStatus is the public, non-secret projection of a capsule
+// launch. Provider-confined environment names, credential paths, state paths,
+// catalog paths, and secret source identifiers are intentionally absent.
+type RemoteAttachmentStatus struct {
+	Mode                 AttachmentLocation     `json:"mode"`
+	Runtime              string                 `json:"runtime"`
+	SecretProvider       runtime.SecretProvider `json:"secret_provider"`
+	SessionID            string                 `json:"session_id"`
+	CapsuleFingerprint   string                 `json:"capsule_fingerprint"`
+	LaunchFingerprint    string                 `json:"launch_fingerprint"`
+	ProfileID            string                 `json:"profile_id"`
+	Harness              string                 `json:"harness"`
+	Backend              string                 `json:"backend"`
+	Blurb                string                 `json:"blurb"`
+	CredentialReferences int                    `json:"credential_references"`
+	PinCommit            string                 `json:"pin_commit"`
+	PinPackageVersion    string                 `json:"pin_package_version"`
+	PinSHA256            string                 `json:"pin_sha256"`
+}
+
+// RemoteStatus returns the only launch-plan shape suitable for public status,
+// CLI JSON, events, metrics, and Beads metadata.
+func (p AttachmentLaunchPlan) RemoteStatus() RemoteAttachmentStatus {
+	status := RemoteAttachmentStatus{
+		Mode: p.Location, Runtime: remoteRuntimeKind(p.Runtime), SecretProvider: p.SecretProvider,
+		SessionID: p.CapsuleKey.SessionID, CapsuleFingerprint: p.CapsuleKey.Digest,
+		LaunchFingerprint: p.Fingerprint(), ProfileID: p.ProfileID,
+		CredentialReferences: len(p.SecretReferences), PinCommit: p.Pin.Commit,
+		PinPackageVersion: p.Pin.PackageVersion, PinSHA256: p.Pin.SHA256,
+	}
+	if len(p.ProfileCredentials) > 0 {
+		profile := p.ProfileCredentials[0]
+		status.Harness = profile.Harness
+		status.Backend = profile.Backend
+		status.Blurb = profile.Blurb
+	}
+	return status
+}
+
+func remoteRuntimeKind(value string) string {
+	value = strings.TrimSpace(value)
+	if kind, _, ok := strings.Cut(value, ":"); ok {
+		return kind
+	}
+	return value
+}
+
 // ResolveAttachmentLaunchPlan maps an already selected Gas City runtime onto
 // exactly one local or capsule boundary. Capability failures never reroute.
 func ResolveAttachmentLaunchPlan(input AttachmentLaunchInput) (AttachmentLaunchPlan, error) {

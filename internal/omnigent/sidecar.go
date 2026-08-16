@@ -18,6 +18,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/gastownhall/gascity/internal/runtime"
 )
 
 // SidecarConfig identifies the service-owned local state and catalog. Empty
@@ -709,8 +711,18 @@ func startSidecarProcess(prepared *PreparedSidecar, args []string, stdoutTarget,
 	cmd := exec.Command(prepared.Plan.Executable, args...)
 	cmd.Dir = prepared.Paths.Root
 	cmd.Env = prepared.Plan.Env
-	stdout := newRedactingWriter(stdoutTarget)
-	stderr := newRedactingWriter(stderrTarget)
+	environmentReferences := make([]runtime.SecretReference, 0, len(prepared.Catalog.EnvironmentNames()))
+	for _, name := range prepared.Catalog.EnvironmentNames() {
+		environmentReferences = append(environmentReferences, runtime.SecretReference{Environment: name})
+	}
+	redactor := newRemoteRedactor(prepared.Plan.Env, environmentReferences,
+		prepared.Paths.Root, prepared.Paths.ConfigDir, prepared.Paths.DataDir,
+		prepared.Paths.RunDir, prepared.Paths.SecretsDir, prepared.Paths.LogsDir,
+		prepared.Paths.ArtifactsDir, prepared.Paths.DatabasePath, prepared.Paths.ConfigPath,
+		prepared.Paths.CatalogPath,
+	)
+	stdout := newRedactingWriterWith(stdoutTarget, redactor)
+	stderr := newRedactingWriterWith(stderrTarget, redactor)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

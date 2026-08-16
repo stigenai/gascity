@@ -503,9 +503,10 @@ func redactedClientError(operation string, err error) error {
 		if code == "" {
 			code = http.StatusText(apiErr.StatusCode)
 		}
-		return fmt.Errorf("%s: omnigent API %s (HTTP %d)", operation, boundedText(code, 80), apiErr.StatusCode)
+		message := fmt.Sprintf("%s: omnigent API %s (HTTP %d)", operation, boundedText(redactSensitiveText(code), 80), apiErr.StatusCode)
+		return &remoteRedactedError{message: message, cause: err}
 	}
-	return fmt.Errorf("%s: %w", operation, err)
+	return &remoteRedactedError{message: operation + ": omnigent transport failed", cause: err}
 }
 
 func (l *conversationLocks) acquire(id string) func() {

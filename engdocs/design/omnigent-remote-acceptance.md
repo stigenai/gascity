@@ -126,6 +126,13 @@ also mandatory.
   codecs, state transitions, cleanup targets, and error categories;
 - fake Kubernetes and scripted SSH provider contract tests covering every call,
   rollback, retry, and injected failure boundary;
+- one centralized generated-canary audit captures provider-facing output,
+  process arguments, public status/CLI JSON, logs, crash errors, fingerprint
+  diagnostics, metrics/events, and Beads metadata. It rejects secret values,
+  auth environment names, credential paths, sensitive provider state paths,
+  policy content, transcripts, and user input while separately proving the
+  provider-confined launch plan retains only the reference metadata required to
+  project credentials;
 - hermetic pinned-Omnigent double for server/host/conversation/stream/failover and
   policy behavior;
 - isolated real tmux tests using unique sockets plus direct PID/process-group

@@ -119,6 +119,11 @@ catalog references. Multiple Claude profiles accidentally share mutable auth.
 **Required controls:**
 
 - runtime configuration carries typed secret references, never resolved values;
+- environment destinations, mount destinations, and provider source paths are
+  permitted only in the provider-confined launch/provision plan that must
+  materialize them. Public status, CLI JSON, logs, errors, metrics, events, and
+  Beads metadata use the non-secret remote status projection and must not
+  serialize that provider-confined plan;
 - Kubernetes projects only named Secret keys into an owner-only profile volume;
 - SSH profiles use separate pre-provisioned owner-only credential directories or
   a provider-native reference resolver; secrets never appear in an SSH command;
