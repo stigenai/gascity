@@ -2,6 +2,7 @@ package omnigent
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -142,6 +143,14 @@ func TestAttachmentLaunchPlanProjectsProviderNeutralRuntimeCapsule(t *testing.T)
 		Commit: plan.Pin.Commit, SHA256: plan.Pin.SHA256,
 	}) {
 		t.Fatalf("capsule executable pin = %#v, want plan pin %#v", capsule.ExecutablePin, plan.Pin)
+	}
+	if len(capsule.CatalogInputs) != 2 || capsule.CatalogInputs[0].RelativePath != "agent.yaml" || capsule.CatalogInputs[1].RelativePath != "profiles.yaml" {
+		t.Fatalf("capsule staged inputs = %#v, want agent then catalog commit file", capsule.CatalogInputs)
+	}
+	for _, input := range capsule.CatalogInputs {
+		if !filepath.IsAbs(input.SourcePath) || !strings.HasPrefix(input.SHA256, "sha256:") || input.Mode != 0o644 {
+			t.Fatalf("invalid staged input = %#v", input)
+		}
 	}
 
 	badState := state

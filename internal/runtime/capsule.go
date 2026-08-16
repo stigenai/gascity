@@ -320,6 +320,16 @@ type CapsuleExecutablePin struct {
 	SHA256         string
 }
 
+// CapsuleInput is one immutable non-secret controller file staged beneath a
+// provider-owned capsule catalog root. RelativePath is never an absolute remote
+// destination, and SHA256 authenticates bytes before and after transport.
+type CapsuleInput struct {
+	SourcePath   string
+	RelativePath string
+	SHA256       string
+	Mode         uint32
+}
+
 // CapsuleLaunchConfig is the provider-neutral, non-secret plan for starting a
 // capsule-local service and its interactive client inside one runtime Place.
 // ResourceID fields are opaque provider-owned names, not operator paths.
@@ -332,6 +342,7 @@ type CapsuleLaunchConfig struct {
 	CatalogResourceID string
 	CatalogMountPath  string
 	CatalogSHA256     string
+	CatalogInputs     []CapsuleInput
 	ExecutablePin     CapsuleExecutablePin
 	Network           CapsuleNetworkMode
 }
@@ -381,6 +392,25 @@ func (c CapsuleLaunchConfig) Validate() error {
 	}
 	if !capsuleDigestPattern.MatchString(c.CatalogSHA256) {
 		return errors.New("capsule catalog digest must use sha256:<64 lowercase hex> form")
+	}
+	seenInputs := make(map[string]struct{}, len(c.CatalogInputs))
+	for i, input := range c.CatalogInputs {
+		if input.SourcePath == "" || !filepath.IsAbs(input.SourcePath) || filepath.Clean(input.SourcePath) != input.SourcePath {
+			return fmt.Errorf("capsule catalog input %d source must be a clean absolute path", i)
+		}
+		if input.RelativePath == "" || filepath.IsAbs(input.RelativePath) || filepath.Clean(input.RelativePath) != input.RelativePath || input.RelativePath == ".." || strings.HasPrefix(input.RelativePath, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("capsule catalog input %d destination must be a contained relative path", i)
+		}
+		if _, duplicate := seenInputs[input.RelativePath]; duplicate {
+			return fmt.Errorf("capsule catalog input destination %q is duplicated", input.RelativePath)
+		}
+		seenInputs[input.RelativePath] = struct{}{}
+		if !capsuleDigestPattern.MatchString(input.SHA256) {
+			return fmt.Errorf("capsule catalog input %q digest must use sha256:<64 lowercase hex> form", input.RelativePath)
+		}
+		if input.Mode&^0o777 != 0 || input.Mode&0o400 == 0 || input.Mode&0o022 != 0 {
+			return fmt.Errorf("capsule catalog input %q mode must be owner-readable and not group/world writable", input.RelativePath)
+		}
 	}
 	if strings.TrimSpace(c.ExecutablePin.Executable) == "" {
 		return errors.New("capsule executable pin requires an executable")

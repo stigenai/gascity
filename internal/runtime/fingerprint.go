@@ -414,10 +414,19 @@ func hashCapsuleLaunchConfig(h hash.Hash, capsule *CapsuleLaunchConfig) {
 		capsule.ExecutablePin.SHA256,
 		string(capsule.Network),
 	}
-	values = append(values, capsule.Command...)
 	for _, value := range values {
 		h.Write([]byte(value)) //nolint:errcheck // hash.Write never errors
 		h.Write([]byte{0})     //nolint:errcheck // separator
+	}
+	for _, input := range capsule.CatalogInputs {
+		h.Write([]byte(input.RelativePath))                      //nolint:errcheck // hash.Write never errors
+		h.Write([]byte{0})                                       //nolint:errcheck // separator
+		h.Write([]byte(input.SHA256))                            //nolint:errcheck // hash.Write never errors
+		h.Write([]byte{byte(input.Mode >> 8), byte(input.Mode)}) //nolint:errcheck // stable mode framing
+	}
+	for _, arg := range capsule.Command {
+		h.Write([]byte(arg)) //nolint:errcheck // hash.Write never errors
+		h.Write([]byte{0})   //nolint:errcheck // separator
 	}
 }
 

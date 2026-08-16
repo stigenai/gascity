@@ -61,6 +61,12 @@ func cloneRuntimeConfig(cfg runtime.Config) runtime.Config {
 	cfg.SessionLive = append([]string(nil), cfg.SessionLive...)
 	cfg.PackOverlayDirs = append([]string(nil), cfg.PackOverlayDirs...)
 	cfg.CopyFiles = append([]runtime.CopyEntry(nil), cfg.CopyFiles...)
+	if cfg.Capsule != nil {
+		capsule := *cfg.Capsule
+		capsule.Command = append([]string(nil), cfg.Capsule.Command...)
+		capsule.CatalogInputs = append([]runtime.CapsuleInput(nil), cfg.Capsule.CatalogInputs...)
+		cfg.Capsule = &capsule
+	}
 	cfg.FingerprintExtra = cloneStringMap(cfg.FingerprintExtra)
 	return cfg
 }

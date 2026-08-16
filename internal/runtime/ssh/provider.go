@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gastownhall/gascity/internal/runtime"
@@ -36,10 +38,12 @@ var ErrInvalidSessionName = errors.New("invalid session name")
 // SessionSetupScript / SessionLive / post-start liveness / initial Nudge). Still
 // deferred: startup-dialog dismissal (EmitsPermissionWarning /
 // AcceptStartupDialogs), live SessionLive re-apply via RunLive (a no-op, like
-// k8s), and CopyTo.
+// k8s). CopyTo supports contained atomic regular-file staging.
 type Provider struct {
 	conn            *Conn
 	postStartSettle time.Duration // settle before the post-start liveness recheck
+	mu              sync.RWMutex
+	workDirs        map[string]string
 }
 
 var (
@@ -55,7 +59,7 @@ const defaultPostStartSettle = time.Second
 
 // NewProvider returns an ssh Provider for the box at ep.
 func NewProvider(ep Endpoint) *Provider {
-	return &Provider{conn: New(ep), postStartSettle: defaultPostStartSettle}
+	return &Provider{conn: New(ep), postStartSettle: defaultPostStartSettle, workDirs: make(map[string]string)}
 }
 
 // Exec runs argv on the box — the connection primitive (see [Conn.Exec]).
@@ -108,6 +112,9 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 		return fmt.Errorf("%w %q: must match %s", ErrInvalidSessionName, name, validTmuxName.String())
 	}
 	if err := p.preflightCapsule(ctx, cfg); err != nil {
+		return fmt.Errorf("ssh start %q: %w", name, err)
+	}
+	if err := p.stageCapsuleInputs(ctx, cfg); err != nil {
 		return fmt.Errorf("ssh start %q: %w", name, err)
 	}
 	if p.hasSession(ctx, name) {
@@ -173,6 +180,14 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 
 	if cfg.Nudge != "" {
 		_ = p.Nudge(name, runtime.TextContent(cfg.Nudge))
+	}
+	if cfg.WorkDir != "" {
+		p.mu.Lock()
+		if p.workDirs == nil {
+			p.workDirs = make(map[string]string)
+		}
+		p.workDirs[name] = cfg.WorkDir
+		p.mu.Unlock()
 	}
 	return nil
 }
@@ -286,6 +301,9 @@ func (p *Provider) Stop(name string) error {
 	if _, _, err := p.tmux(context.Background(), name, "kill-session", "-t", name); err != nil {
 		return fmt.Errorf("ssh stop %q: %w", name, err)
 	}
+	p.mu.Lock()
+	delete(p.workDirs, name)
+	p.mu.Unlock()
 	return nil
 }
 
@@ -433,8 +451,32 @@ func (p *Provider) GetLastActivity(name string) (time.Time, error) {
 	return time.Unix(secs, 0), nil
 }
 
-// CopyTo is not yet supported by the v0 ssh provider (best-effort no-op).
-func (p *Provider) CopyTo(_, _, _ string) error { return nil }
+// CopyTo atomically stages one regular non-secret file beneath the remembered
+// remote session workdir. Unknown sessions remain a best-effort no-op.
+func (p *Provider) CopyTo(name, src, relDst string) error {
+	return p.copyTo(context.Background(), name, src, relDst)
+}
+
+func (p *Provider) copyTo(ctx context.Context, name, src, relDst string) error {
+	p.mu.RLock()
+	root := p.workDirs[name]
+	p.mu.RUnlock()
+	if root == "" {
+		return nil
+	}
+	if relDst == "" {
+		relDst = filepath.Base(src)
+	}
+	cleanDestination := filepath.Clean(relDst)
+	if filepath.IsAbs(cleanDestination) || cleanDestination == "." || cleanDestination == ".." || strings.HasPrefix(cleanDestination, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("ssh copy-to destination %q must stay beneath the session workdir", relDst)
+	}
+	input, err := capsuleInputFromCopyEntry(src, cleanDestination)
+	if err != nil {
+		return fmt.Errorf("ssh copy-to %q: %w", cleanDestination, err)
+	}
+	return p.stageRemoteInputs(ctx, root, []runtime.CapsuleInput{input})
+}
 
 // RunLive is a no-op for the ssh provider (session_live re-apply unsupported).
 func (p *Provider) RunLive(_ string, _ runtime.Config) error { return nil }

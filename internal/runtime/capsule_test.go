@@ -206,6 +206,10 @@ func TestCapsuleLaunchConfigValidationAndProvisionFingerprint(t *testing.T) {
 		RunRoot: "/run/gascity/omnigent", SocketPath: "/run/gascity/omnigent/sidecar.sock",
 		CatalogResourceID: "catalog", CatalogMountPath: "/etc/gascity/omnigent",
 		CatalogSHA256: "sha256:" + strings.Repeat("a", 64),
+		CatalogInputs: []CapsuleInput{{
+			SourcePath: "/controller/catalog.yaml", RelativePath: "profiles.yaml",
+			SHA256: "sha256:" + strings.Repeat("f", 64), Mode: 0o644,
+		}},
 		ExecutablePin: CapsuleExecutablePin{
 			Executable: "omnigent", PackageVersion: "0.10.0.dev0",
 			Commit: strings.Repeat("c", 40), SHA256: "sha256:" + strings.Repeat("d", 64),
@@ -229,6 +233,20 @@ func TestCapsuleLaunchConfigValidationAndProvisionFingerprint(t *testing.T) {
 	changedPin.ExecutablePin.SHA256 = "sha256:" + strings.Repeat("e", 64)
 	if ProvisionFingerprint(base) == ProvisionFingerprint(Config{Capsule: &changedPin}) {
 		t.Fatal("capsule executable pin did not change provision identity")
+	}
+	changedInput := *capsule
+	changedInput.CatalogInputs = append([]CapsuleInput(nil), capsule.CatalogInputs...)
+	changedInput.CatalogInputs[0].SHA256 = "sha256:" + strings.Repeat("1", 64)
+	if ProvisionFingerprint(base) == ProvisionFingerprint(Config{Capsule: &changedInput}) {
+		t.Fatal("capsule staged input did not change provision identity")
+	}
+	escapingInput := *capsule
+	escapingInput.CatalogInputs = []CapsuleInput{{
+		SourcePath: "/controller/catalog.yaml", RelativePath: "../escape",
+		SHA256: "sha256:" + strings.Repeat("f", 64), Mode: 0o666,
+	}}
+	if err := escapingInput.Validate(); err == nil {
+		t.Fatal("CapsuleLaunchConfig accepted escaping writable staged input")
 	}
 
 	overlap := *capsule

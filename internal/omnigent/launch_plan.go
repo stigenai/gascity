@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/gastownhall/gascity/internal/runtime"
@@ -66,6 +68,7 @@ type AttachmentLaunchPlan struct {
 	SocketPath         string
 	CatalogPath        string
 	CatalogSHA256      string
+	CatalogInputs      []runtime.CapsuleInput
 	CapsuleKey         runtime.CapsuleKey
 	Pin                Pin
 	SecretProvider     runtime.SecretProvider
@@ -165,10 +168,15 @@ func ResolveAttachmentLaunchPlan(input AttachmentLaunchInput) (AttachmentLaunchP
 		return AttachmentLaunchPlan{}, err
 	}
 	selected := flattenProfileCredentialReferences(profileCredentials)
+	catalogInputs, err := input.Catalog.capsuleInputs(filepath.Base(CapsuleCatalogPath))
+	if err != nil {
+		return AttachmentLaunchPlan{}, err
+	}
 	plan.StateRoot = CapsuleStateRoot
 	plan.SocketPath = CapsuleSocketPath
 	plan.CatalogPath = CapsuleCatalogPath
 	plan.CatalogSHA256 = input.CatalogSHA256
+	plan.CatalogInputs = catalogInputs
 	plan.CapsuleKey = key
 	plan.Pin = input.Pin
 	plan.ProfileID = profileID
@@ -243,6 +251,7 @@ func (p AttachmentLaunchPlan) RuntimeCapsuleConfig(state runtime.CapsuleStateRef
 		RunRoot: filepath.Dir(p.SocketPath), SocketPath: p.SocketPath,
 		CatalogResourceID: strings.TrimSpace(catalogResourceID),
 		CatalogMountPath:  filepath.Dir(p.CatalogPath), CatalogSHA256: p.CatalogSHA256,
+		CatalogInputs: append([]runtime.CapsuleInput(nil), p.CatalogInputs...),
 		ExecutablePin: runtime.CapsuleExecutablePin{
 			Executable: p.Pin.Executable, PackageVersion: p.Pin.PackageVersion,
 			Commit: p.Pin.Commit, SHA256: p.Pin.SHA256,
@@ -274,5 +283,54 @@ func (p AttachmentLaunchPlan) Fingerprint() string {
 			_, _ = h.Write([]byte{0})
 		}
 	}
+	for _, input := range p.CatalogInputs {
+		_, _ = h.Write([]byte(input.RelativePath))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write([]byte(input.SHA256))
+		_, _ = h.Write([]byte{0})
+	}
 	return "v1:" + hex.EncodeToString(h.Sum(nil))
+}
+
+func (c *Catalog) capsuleInputs(catalogRelativePath string) ([]runtime.CapsuleInput, error) {
+	if c == nil || c.sourcePath == "" {
+		return nil, errors.New("remote Omnigent attachment catalog source is unavailable")
+	}
+	byDestination := make(map[string]string, len(c.profiles))
+	for _, profile := range c.profiles {
+		if previous, ok := byDestination[profile.AgentRelativePath]; ok && previous != profile.AgentPath {
+			return nil, fmt.Errorf("omnigent catalog destination %q resolves to multiple agent files", profile.AgentRelativePath)
+		}
+		byDestination[profile.AgentRelativePath] = profile.AgentPath
+	}
+	destinations := make([]string, 0, len(byDestination))
+	for destination := range byDestination {
+		destinations = append(destinations, destination)
+	}
+	sort.Strings(destinations)
+	inputs := make([]runtime.CapsuleInput, 0, len(destinations)+1)
+	for _, destination := range destinations {
+		input, err := capsuleInputForFile(byDestination[destination], destination)
+		if err != nil {
+			return nil, err
+		}
+		inputs = append(inputs, input)
+	}
+	catalogInput, err := capsuleInputForFile(c.sourcePath, catalogRelativePath)
+	if err != nil {
+		return nil, err
+	}
+	return append(inputs, catalogInput), nil
+}
+
+func capsuleInputForFile(sourcePath, relativePath string) (runtime.CapsuleInput, error) {
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return runtime.CapsuleInput{}, fmt.Errorf("read staged Omnigent input %q: %w", relativePath, err)
+	}
+	digest := sha256.Sum256(data)
+	return runtime.CapsuleInput{
+		SourcePath: sourcePath, RelativePath: relativePath,
+		SHA256: "sha256:" + hex.EncodeToString(digest[:]), Mode: 0o644,
+	}, nil
 }

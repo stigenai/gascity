@@ -20,7 +20,7 @@ import (
 //   - the carrier's in-box tmux target is the SESSION NAME (one host, many named
 //     sessions), not "main" — but that is internal to the provider's driving
 //     methods, so the Attachment delegation is identical;
-//   - CopyTo is not yet supported (a best-effort no-op), so Stage is a no-op;
+//   - CopyTo and Stage use contained, checksum-verified atomic remote writes;
 //   - meta lives in the tmux session environment (box ground-truth).
 //
 // As with exec/k8s, Start welds provision+launch, so Transport.Launch and
@@ -112,12 +112,11 @@ func (pl *sshPlace) Exec(ctx context.Context, req runtime.ExecRequest) (runtime.
 	return runtime.ExecResult{Output: out, Code: code}, nil
 }
 
-// Stage copies entries via CopyTo (←CopyTo). The v0 ssh provider's CopyTo is a
-// best-effort no-op (it returns nil), so Stage is effectively a no-op today; a
-// future CopyTo failure would abort the batch at that entry.
-func (pl *sshPlace) Stage(_ context.Context, files []runtime.CopyEntry) error {
+// Stage copies entries through the same contained atomic-write path used by
+// capsule input staging. A failure aborts the batch before later entries.
+func (pl *sshPlace) Stage(ctx context.Context, files []runtime.CopyEntry) error {
 	for _, f := range files {
-		if err := pl.p.CopyTo(pl.name, f.Src, f.RelDst); err != nil {
+		if err := pl.p.copyTo(ctx, pl.name, f.Src, f.RelDst); err != nil {
 			return err
 		}
 	}

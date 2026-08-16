@@ -1,6 +1,10 @@
 package worker
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/gastownhall/gascity/internal/runtime"
+)
 
 // TestProfileFamily pins the profile-to-family mapping used by clone and
 // continuation handling. Losing a case here silently routes that profile's
@@ -26,5 +30,18 @@ func TestProfileFamily(t *testing.T) {
 				t.Fatalf("profileFamily(%q) = %q, want %q", tt.profile, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestCloneRuntimeConfigDeepCopiesCapsuleInputs(t *testing.T) {
+	original := runtime.Config{Capsule: &runtime.CapsuleLaunchConfig{
+		Command:       []string{"gc", "omnigent"},
+		CatalogInputs: []runtime.CapsuleInput{{SourcePath: "/source", RelativePath: "profiles.yaml"}},
+	}}
+	cloned := cloneRuntimeConfig(original)
+	cloned.Capsule.Command[0] = "changed"
+	cloned.Capsule.CatalogInputs[0].RelativePath = "changed.yaml"
+	if original.Capsule.Command[0] != "gc" || original.Capsule.CatalogInputs[0].RelativePath != "profiles.yaml" {
+		t.Fatalf("clone mutated source capsule: %#v", original.Capsule)
 	}
 }

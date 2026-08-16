@@ -2,7 +2,11 @@ package ssh
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -145,6 +149,12 @@ func testSSHCapsuleConfig(t *testing.T) runtime.Config {
 	if err != nil {
 		t.Fatal(err)
 	}
+	catalogBytes := []byte("version: 1\nprofiles: {}\n")
+	catalogSource := filepath.Join(t.TempDir(), "profiles.yaml")
+	if err := os.WriteFile(catalogSource, catalogBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	catalogDigest := sha256.Sum256(catalogBytes)
 	return runtime.Config{
 		WorkDir: "/srv/gascity/work",
 		Capsule: &runtime.CapsuleLaunchConfig{
@@ -157,6 +167,10 @@ func testSSHCapsuleConfig(t *testing.T) runtime.Config {
 			RunRoot: "/run/gascity/omnigent", SocketPath: "/run/gascity/omnigent/sidecar.sock",
 			CatalogResourceID: "catalog-sha", CatalogMountPath: "/etc/gascity/omnigent",
 			CatalogSHA256: "sha256:" + strings.Repeat("a", 64),
+			CatalogInputs: []runtime.CapsuleInput{{
+				SourcePath: catalogSource, RelativePath: "profiles.yaml",
+				SHA256: "sha256:" + hex.EncodeToString(catalogDigest[:]), Mode: 0o644,
+			}},
 			ExecutablePin: runtime.CapsuleExecutablePin{
 				Executable: "omnigent", PackageVersion: "0.10.0.dev0",
 				Commit: strings.Repeat("b", 40), SHA256: "sha256:" + strings.Repeat("d", 64),

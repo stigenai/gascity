@@ -89,9 +89,10 @@ var (
 
 // Catalog is a validated local Omnigent profile catalog.
 type Catalog struct {
-	Version  int
-	Pin      Pin
-	profiles map[string]ResolvedProfile
+	Version    int
+	Pin        Pin
+	profiles   map[string]ResolvedProfile
+	sourcePath string
 }
 
 // Pin identifies the exact externally installed Omnigent executable contract.
@@ -113,6 +114,7 @@ type ResolvedProfile struct {
 	Network             string
 	AgentName           string
 	AgentPath           string
+	AgentRelativePath   string
 	Fallbacks           []string
 	Environment         []string
 	SecretReferences    []string
@@ -235,7 +237,14 @@ func LoadCatalog(path string) (*Catalog, error) {
 	if err := validateProfileSecretReferenceOwnership(profiles); err != nil {
 		return nil, err
 	}
-	return &Catalog{Version: doc.Version, Pin: doc.Omnigent, profiles: profiles}, nil
+	resolvedCatalog, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve omnigent catalog file: %w", err)
+	}
+	if !pathWithin(resolvedRoot, resolvedCatalog) {
+		return nil, errors.New("omnigent catalog symlink target must stay beneath catalog directory")
+	}
+	return &Catalog{Version: doc.Version, Pin: doc.Omnigent, profiles: profiles, sourcePath: resolvedCatalog}, nil
 }
 
 func validatePin(pin Pin) error {
@@ -368,6 +377,7 @@ func resolveProfile(root, resolvedRoot, id string, raw profileDocument) (Resolve
 	}
 	profile.AgentName = agentName
 	profile.AgentPath = resolvedAgent
+	profile.AgentRelativePath = filepath.ToSlash(filepath.Clean(filepath.FromSlash(agentRef)))
 	return profile, nil
 }
 

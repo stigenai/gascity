@@ -3,6 +3,8 @@ package ssh
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/gastownhall/gascity/internal/runtime"
@@ -232,16 +234,24 @@ func TestSeamsSshTransportOpen(t *testing.T) {
 	}
 }
 
-// TestSeamsSshStageAndTeardown proves Stage is a no-op (v0 ssh has no CopyTo) and
-// Teardown kills the remote tmux session.
+// TestSeamsSshStageAndTeardown proves Stage uses the contained remote write
+// boundary and Teardown kills the remote tmux session.
 func TestSeamsSshStageAndTeardown(t *testing.T) {
-	f := &fakeRunner{}
+	f := &fakeRunner{respond: successfulCapsulePreflightResponse}
 	p := providerWith(f)
+	p.workDirs = map[string]string{"s": "/remote/work"}
 	place := &sshPlace{p: p, name: "s"}
 	ctx := context.Background()
+	source := filepath.Join(t.TempDir(), "source")
+	if err := os.WriteFile(source, []byte("staged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
-	if err := place.Stage(ctx, []runtime.CopyEntry{{Src: "/a", RelDst: "x"}}); err != nil {
-		t.Fatalf("Stage = %v; want nil (v0 no-op)", err)
+	if err := place.Stage(ctx, []runtime.CopyEntry{{Src: source, RelDst: "x"}}); err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	if firstCall(f, isCapsuleStageCall) == nil {
+		t.Fatal("Stage did not issue contained remote write")
 	}
 	if err := place.Teardown(ctx); err != nil {
 		t.Fatalf("Teardown: %v", err)
