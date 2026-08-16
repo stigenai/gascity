@@ -14,7 +14,16 @@ import (
 
 // providerWith builds a Provider whose connection uses the given fake runner.
 func providerWith(f *fakeRunner) *Provider {
-	return &Provider{conn: &Conn{ep: Endpoint{User: "u", Host: "box"}, run: f}}
+	return &Provider{
+		conn:             &Conn{ep: Endpoint{User: "u", Host: "box"}, run: f},
+		capsuleStateRoot: defaultCapsuleStateRoot, workDirs: make(map[string]string),
+	}
+}
+
+func providerWithCapsuleStateRoot(root string) *Provider {
+	p := providerWith(&fakeRunner{})
+	p.capsuleStateRoot = root
+	return p
 }
 
 func firstCall(f *fakeRunner, predicate func([]string) bool) []string {

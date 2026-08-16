@@ -124,6 +124,22 @@ func TestSeamsSshCapabilitiesAndTransport(t *testing.T) {
 	}
 }
 
+func TestSeamsSshExposeCapsuleStateCapabilities(t *testing.T) {
+	p := providerWithCapsuleStateRoot(t.TempDir())
+	rt, _ := p.Seams()
+	if _, ok := rt.(runtime.CapsuleStateRuntime); !ok {
+		t.Fatal("ssh Runtime does not expose CapsuleStateRuntime")
+	}
+	place := &sshPlace{p: p, name: "session"}
+	if _, ok := any(place).(runtime.CapsuleStatePlace); !ok {
+		t.Fatal("ssh Place does not expose CapsuleStatePlace")
+	}
+	wrapped := &seamBackedProvider{Provider: runtime.NewProviderFromSeams(rt, &sshTransport{p: p}), raw: p}
+	if _, ok := any(wrapped).(runtime.CapsuleStateRuntime); !ok {
+		t.Fatal("production SSH provider wrapper hides CapsuleStateRuntime")
+	}
+}
+
 // TestSeamsSshMetaStore proves the MetaStore seam round-trips through the tmux
 // session environment.
 func TestSeamsSshMetaStore(t *testing.T) {

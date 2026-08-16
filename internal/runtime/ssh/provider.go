@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gastownhall/gascity/internal/runtime"
+	"github.com/gastownhall/gascity/internal/shellquote"
 )
 
 // validTmuxName mirrors the local tmux provider's guard: a session name must be
@@ -40,10 +41,11 @@ var ErrInvalidSessionName = errors.New("invalid session name")
 // AcceptStartupDialogs), live SessionLive re-apply via RunLive (a no-op, like
 // k8s). CopyTo supports contained atomic regular-file staging.
 type Provider struct {
-	conn            *Conn
-	postStartSettle time.Duration // settle before the post-start liveness recheck
-	mu              sync.RWMutex
-	workDirs        map[string]string
+	conn             *Conn
+	postStartSettle  time.Duration // settle before the post-start liveness recheck
+	capsuleStateRoot string
+	mu               sync.RWMutex
+	workDirs         map[string]string
 }
 
 var (
@@ -59,7 +61,10 @@ const defaultPostStartSettle = time.Second
 
 // NewProvider returns an ssh Provider for the box at ep.
 func NewProvider(ep Endpoint) *Provider {
-	return &Provider{conn: New(ep), postStartSettle: defaultPostStartSettle, workDirs: make(map[string]string)}
+	return &Provider{
+		conn: New(ep), postStartSettle: defaultPostStartSettle,
+		capsuleStateRoot: defaultCapsuleStateRoot, workDirs: make(map[string]string),
+	}
 }
 
 // Exec runs argv on the box — the connection primitive (see [Conn.Exec]).
@@ -111,12 +116,11 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 	if !validTmuxName.MatchString(name) {
 		return fmt.Errorf("%w %q: must match %s", ErrInvalidSessionName, name, validTmuxName.String())
 	}
-	if err := p.preflightCapsule(ctx, cfg); err != nil {
+	prepared, err := p.prepareCapsuleLaunch(ctx, name, cfg)
+	if err != nil {
 		return fmt.Errorf("ssh start %q: %w", name, err)
 	}
-	if err := p.stageCapsuleInputs(ctx, cfg); err != nil {
-		return fmt.Errorf("ssh start %q: %w", name, err)
-	}
+	cfg = prepared
 	if p.hasSession(ctx, name) {
 		return fmt.Errorf("%w: ssh session %q", runtime.ErrSessionExists, name)
 	}
@@ -158,6 +162,12 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 		}
 		return fmt.Errorf("ssh start %q: tmux new-session exited %d", name, code)
 	}
+	if cfg.Capsule != nil {
+		if err := p.markCapsuleStateAttached(ctx, name, cfg.Capsule.State); err != nil {
+			_ = p.Stop(name)
+			return fmt.Errorf("ssh start %q: %w", name, err)
+		}
+	}
 
 	// SessionSetup, SessionSetupScript, and SessionLive run on the box,
 	// best-effort, with the same cwd + env prelude.
@@ -196,6 +206,9 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 // defaulting to a login shell when none is configured. Shared by Start and
 // Relaunch so both launch an identical command line.
 func resolveCommand(cfg runtime.Config) string {
+	if cfg.Capsule != nil {
+		return shellquote.Join(cfg.Capsule.Command)
+	}
 	if cfg.Command == "" {
 		return defaultRemoteShell
 	}
@@ -249,6 +262,16 @@ func (p *Provider) Relaunch(ctx context.Context, name string, cfg runtime.Config
 	}
 	if !p.hasSession(ctx, name) {
 		return fmt.Errorf("%w: ssh session %q (box must be provisioned first)", runtime.ErrSessionNotFound, name)
+	}
+	prepared, err := p.prepareCapsuleLaunch(ctx, name, cfg)
+	if err != nil {
+		return fmt.Errorf("ssh relaunch %q: %w", name, err)
+	}
+	cfg = prepared
+	if cfg.Capsule != nil {
+		if err := p.requireCapsuleStateAttachment(ctx, name, cfg.Capsule.State); err != nil {
+			return fmt.Errorf("ssh relaunch %q: %w", name, err)
+		}
 	}
 
 	prelude := setupPrelude(cfg, name)

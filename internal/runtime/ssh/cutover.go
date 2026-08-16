@@ -21,6 +21,7 @@ var (
 	_ runtime.Provider                = (*seamBackedProvider)(nil)
 	_ runtime.SleepCapabilityProvider = (*seamBackedProvider)(nil)
 	_ runtime.RelaunchProvider        = (*seamBackedProvider)(nil)
+	_ runtime.CapsuleStateRuntime     = (*seamBackedProvider)(nil)
 )
 
 // NewSeamBacked constructs an ssh provider for ep served through the seams.
@@ -39,4 +40,20 @@ func (s *seamBackedProvider) SleepCapability(name string) runtime.SessionSleepCa
 // (respawn-pane over the ssh Conn; B2, RelaunchProvider).
 func (s *seamBackedProvider) Relaunch(ctx context.Context, name string, cfg runtime.Config) error {
 	return s.raw.Relaunch(ctx, name, cfg)
+}
+
+func (s *seamBackedProvider) EnsureCapsuleState(ctx context.Context, key runtime.CapsuleKey) (runtime.CapsuleStateReference, bool, error) {
+	return s.raw.EnsureCapsuleState(ctx, key)
+}
+
+func (s *seamBackedProvider) OpenCapsuleState(ctx context.Context, key runtime.CapsuleKey) (runtime.CapsuleStateReference, bool, error) {
+	return s.raw.OpenCapsuleState(ctx, key)
+}
+
+func (s *seamBackedProvider) ListCapsuleStates(ctx context.Context) ([]runtime.CapsuleStateReference, error) {
+	return s.raw.ListCapsuleStates(ctx)
+}
+
+func (s *seamBackedProvider) PurgeCapsuleState(ctx context.Context, key runtime.CapsuleKey) error {
+	return s.raw.PurgeCapsuleState(ctx, key)
 }

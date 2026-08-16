@@ -37,8 +37,9 @@ func (p *Provider) Seams() (runtime.Runtime, runtime.Transport) {
 type sshRuntime struct{ p *Provider }
 
 var (
-	_ runtime.Runtime   = (*sshRuntime)(nil)
-	_ runtime.MetaStore = (*sshRuntime)(nil)
+	_ runtime.Runtime             = (*sshRuntime)(nil)
+	_ runtime.MetaStore           = (*sshRuntime)(nil)
+	_ runtime.CapsuleStateRuntime = (*sshRuntime)(nil)
 )
 
 // Provision launches the agent in a new remote tmux session named name (←Start);
@@ -91,6 +92,22 @@ func (r *sshRuntime) RemoveMeta(name, key string) error {
 	return r.p.RemoveMeta(name, key)
 }
 
+func (r *sshRuntime) EnsureCapsuleState(ctx context.Context, key runtime.CapsuleKey) (runtime.CapsuleStateReference, bool, error) {
+	return r.p.EnsureCapsuleState(ctx, key)
+}
+
+func (r *sshRuntime) OpenCapsuleState(ctx context.Context, key runtime.CapsuleKey) (runtime.CapsuleStateReference, bool, error) {
+	return r.p.OpenCapsuleState(ctx, key)
+}
+
+func (r *sshRuntime) ListCapsuleStates(ctx context.Context) ([]runtime.CapsuleStateReference, error) {
+	return r.p.ListCapsuleStates(ctx)
+}
+
+func (r *sshRuntime) PurgeCapsuleState(ctx context.Context, key runtime.CapsuleKey) error {
+	return r.p.PurgeCapsuleState(ctx, key)
+}
+
 // --- WHERE: Place ---
 
 type sshPlace struct {
@@ -98,7 +115,24 @@ type sshPlace struct {
 	name string
 }
 
-var _ runtime.Place = (*sshPlace)(nil)
+var (
+	_ runtime.Place             = (*sshPlace)(nil)
+	_ runtime.CapsuleStatePlace = (*sshPlace)(nil)
+)
+
+func (pl *sshPlace) AttachCapsuleState(ctx context.Context, placeName string, ref runtime.CapsuleStateReference) error {
+	if placeName != "" && placeName != pl.name {
+		return runtime.ErrCapsuleStateConflict
+	}
+	return pl.p.AttachCapsuleState(ctx, pl.name, ref)
+}
+
+func (pl *sshPlace) DetachCapsuleState(ctx context.Context, placeName string) error {
+	if placeName != "" && placeName != pl.name {
+		return runtime.ErrCapsuleStateConflict
+	}
+	return pl.p.DetachCapsuleState(ctx, pl.name)
+}
 
 // Exec runs argv on the box over the ssh connection (←ExecProvider.Exec). A
 // non-zero exit is the command's own result (Code set, nil error); a transport

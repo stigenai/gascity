@@ -10,13 +10,13 @@ version = 2
 [[audit_baseline]]
 scope = "all"
 resource = "subprocess"
-baseline_calls = 542
-baseline_files = 169
+baseline_calls = 543
+baseline_files = 170
 reported_calls = 495
 reported_files = 135
-owner_bead = "ga-xgv.5.2"
+owner_bead = "ga-xgv.5.3"
 invariant = "tracked test source totals remain visible as audit evidence"
-resource_owner = "ga-xgv.5.2 owns the isolated SSH atomic-staging fixture; ga-xgv.4.5, ga-dfk, and ga-80po0c.2 own the remaining source census"
+resource_owner = "ga-xgv.5.3 owns the isolated SSH persistent-state fixture; ga-xgv.5.2, ga-xgv.4.5, ga-dfk, and ga-80po0c.2 own the remaining source census"
 migration_target = "P0.4a"
 expires = "2026-10-01"
 

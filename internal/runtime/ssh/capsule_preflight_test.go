@@ -160,10 +160,16 @@ func testSSHCapsuleConfig(t *testing.T) runtime.Config {
 		Capsule: &runtime.CapsuleLaunchConfig{
 			Key: key,
 			State: runtime.CapsuleStateReference{
-				Key: key, Provider: "ssh", ResourceID: "/var/lib/gascity/omnigent",
-				ResourceUID: "ssh-state-v1", MountPath: "/var/lib/gascity/omnigent",
+				Key: key, Provider: "ssh", ResourceID: key.ResourceStem(),
+				ResourceUID: "7:42", MountPath: "/var/lib/gascity/omnigent",
 			},
-			Command: []string{"gc", "omnigent", "attach", "--mode", "capsule"},
+			Command: []string{
+				"gc", "omnigent", "attach", "--mode", "capsule",
+				"--socket", "/run/gascity/omnigent/sidecar.sock",
+				"--state-root", "/var/lib/gascity/omnigent",
+				"--catalog", "/etc/gascity/omnigent/profiles.yaml",
+				"--profile", "claude-primary",
+			},
 			RunRoot: "/run/gascity/omnigent", SocketPath: "/run/gascity/omnigent/sidecar.sock",
 			CatalogResourceID: "catalog-sha", CatalogMountPath: "/etc/gascity/omnigent",
 			CatalogSHA256: "sha256:" + strings.Repeat("a", 64),
@@ -186,6 +192,8 @@ func testSSHCapsuleConfig(t *testing.T) runtime.Config {
 
 func successfulCapsulePreflightResponse(argv []string) ([]byte, int, error) {
 	switch {
+	case len(argv) >= 3 && argv[0] == "sh" && argv[2] == remoteOpenCapsuleStateScript:
+		return []byte("7:42\n"), 0, nil
 	case len(argv) == 2 && argv[0] == "uname" && argv[1] == "-s":
 		return []byte("Linux\n"), 0, nil
 	case isShellProbe(argv):
