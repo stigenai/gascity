@@ -48,6 +48,23 @@ func TestOmnigentCommandExposesServeWithoutRemoteOrInstallControls(t *testing.T)
 	}
 }
 
+func TestOmnigentAttachRejectsRemoteCityBeforeLocalServiceLookup(t *testing.T) {
+	t.Setenv("GC_HOME", t.TempDir())
+	addProdContext(t)
+	setProdContextFlag(t)
+
+	var stdout, stderr bytes.Buffer
+	cmd := newOmnigentAttachCmd(&stdout, &stderr)
+	cmd.SetArgs([]string{"--profile", "claude-primary"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "resolve local city") || !strings.Contains(err.Error(), "does not support a remote city") {
+		t.Fatalf("attach remote error = %v", err)
+	}
+	if strings.Contains(err.Error(), "controller unavailable") || strings.Contains(err.Error(), "local service proxy") {
+		t.Fatalf("remote attach reached local service lookup: %v", err)
+	}
+}
+
 func TestRenderOmnigentCLIReportGoldenShowsProvenanceWithoutSecrets(t *testing.T) {
 	report := omnigentCLIReport{
 		SchemaVersion: "1", CityPath: "/city",

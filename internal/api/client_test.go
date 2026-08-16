@@ -747,6 +747,26 @@ func TestClientLocalServiceProxyRejectsInvalidScopeAndName(t *testing.T) {
 	}
 }
 
+func TestClientLocalServiceProxyRejectsRemoteCityWithoutRequest(t *testing.T) {
+	var requests atomic.Int64
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer ts.Close()
+
+	client, err := NewRemoteCityScopedClient(ts.URL, "city", RemoteOptions{})
+	if err != nil {
+		t.Fatalf("NewRemoteCityScopedClient: %v", err)
+	}
+	if _, err := client.LocalServiceProxy("omnigent"); err == nil || !strings.Contains(err.Error(), "unavailable for remote cities") {
+		t.Fatalf("LocalServiceProxy remote error = %v", err)
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("remote LocalServiceProxy issued %d requests, want none", got)
+	}
+}
+
 func TestClientListCities(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v0/cities" {
