@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -68,14 +69,14 @@ var omnigentBindSessionKey = func(cityPath, sessionID, conversationID string) (s
 }
 
 func newOmnigentAttachCmd(stdout, stderr io.Writer) *cobra.Command {
-	var profileID, conversationID, title, attachmentMode, socketPath string
+	var profileID, conversationID, title, attachmentMode, socketPath, stateRoot, catalogPath string
 	cmd := &cobra.Command{
 		Use:          "attach",
 		Short:        "Attach this Gas City worker pane to an Omnigent conversation",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			location, err := resolveOmnigentAttachmentLocation(attachmentMode, socketPath)
+			location, err := resolveOmnigentAttachmentLocation(attachmentMode, socketPath, stateRoot, catalogPath)
 			if err != nil {
 				return fmt.Errorf("gc omnigent attach: %w", err)
 			}
@@ -99,11 +100,15 @@ func newOmnigentAttachCmd(stdout, stderr io.Writer) *cobra.Command {
 				title = identity.Agent
 			}
 			var client *omnigent.APIClient
+			stopSupervisor := func() error { return nil }
 			switch location.Mode {
 			case string(omnigent.AttachmentLocationController):
 				client, err = omnigentCityClient(resolved.CityPath)
 			case string(omnigent.AttachmentLocationCapsule):
-				client, err = omnigent.NewUnixAPIClient(location.SocketPath)
+				client, stopSupervisor, err = startOmnigentCapsuleSupervisor(cmd.Context(), omnigent.SidecarConfig{
+					StateRoot: location.StateRoot, CatalogPath: location.CatalogPath, SocketPath: location.SocketPath,
+					Stdout: stdout, Stderr: stderr,
+				}, omnigent.ServeSidecar)
 			}
 			if err != nil {
 				return fmt.Errorf("gc omnigent attach: open %s client: %w", location.Mode, err)
@@ -118,7 +123,6 @@ func newOmnigentAttachCmd(stdout, stderr io.Writer) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("gc omnigent attach: %w", err)
 			}
-			defer policyBridge.Close()
 			storedConversationID, err := omnigentLoadSessionKey(resolved.CityPath, identity.SessionID)
 			if err != nil {
 				return fmt.Errorf("gc omnigent attach: load durable conversation identity: %w", err)
@@ -130,12 +134,15 @@ func newOmnigentAttachCmd(stdout, stderr io.Writer) *cobra.Command {
 			interrupts := make(chan os.Signal, 2)
 			signal.Notify(interrupts, os.Interrupt, syscall.SIGTERM)
 			defer signal.Stop(interrupts)
-			if err := runOmnigentAttach(cmd.Context(), client, omnigent.AttachmentOpenInput{
+			attachErr := runOmnigentAttach(cmd.Context(), client, omnigent.AttachmentOpenInput{
 				ProfileID: selection.ID, ConversationID: requestedConversationID,
 				Workspace: workspace, Title: title, Identity: identity,
 			}, func(candidate string) (string, error) {
 				return omnigentBindSessionKey(resolved.CityPath, identity.SessionID, candidate)
-			}, policyBridge, cmd.InOrStdin(), stdout, stderr, interrupts); err != nil {
+			}, policyBridge, cmd.InOrStdin(), stdout, stderr, interrupts)
+			policyBridge.Close()
+			stopErr := stopSupervisor()
+			if err := errors.Join(attachErr, stopErr); err != nil {
 				return fmt.Errorf("gc omnigent attach: %w", err)
 			}
 			return nil
@@ -146,32 +153,99 @@ func newOmnigentAttachCmd(stdout, stderr io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&title, "title", "", "non-secret conversation title")
 	cmd.Flags().StringVar(&attachmentMode, "mode", "", "explicit attachment boundary: controller or capsule")
 	cmd.Flags().StringVar(&socketPath, "socket", "", "private capsule Unix socket (capsule mode only)")
+	cmd.Flags().StringVar(&stateRoot, "state-root", "", "durable capsule Omnigent state root (capsule mode only)")
+	cmd.Flags().StringVar(&catalogPath, "catalog", "", "immutable capsule profile catalog (capsule mode only)")
 	return cmd
 }
 
 type omnigentAttachmentLocation struct {
-	Mode       string
-	SocketPath string
+	Mode        string
+	SocketPath  string
+	StateRoot   string
+	CatalogPath string
 }
 
-func resolveOmnigentAttachmentLocation(mode, socketPath string) (omnigentAttachmentLocation, error) {
+func resolveOmnigentAttachmentLocation(mode, socketPath, stateRoot, catalogPath string) (omnigentAttachmentLocation, error) {
 	mode = strings.TrimSpace(mode)
 	socketPath = strings.TrimSpace(socketPath)
+	stateRoot = strings.TrimSpace(stateRoot)
+	catalogPath = strings.TrimSpace(catalogPath)
 	switch mode {
 	case string(omnigent.AttachmentLocationController):
-		if socketPath != "" {
-			return omnigentAttachmentLocation{}, errors.New("controller mode does not accept a capsule socket")
+		if socketPath != "" || stateRoot != "" || catalogPath != "" {
+			return omnigentAttachmentLocation{}, errors.New("controller mode does not accept capsule paths")
 		}
 		return omnigentAttachmentLocation{Mode: mode}, nil
 	case string(omnigent.AttachmentLocationCapsule):
-		if socketPath == "" || !filepath.IsAbs(socketPath) || filepath.Clean(socketPath) != socketPath {
-			return omnigentAttachmentLocation{}, errors.New("capsule mode requires a clean absolute private Unix socket path")
+		for kind, value := range map[string]string{"socket": socketPath, "state root": stateRoot, "catalog": catalogPath} {
+			if value == "" || !filepath.IsAbs(value) || filepath.Clean(value) != value {
+				return omnigentAttachmentLocation{}, fmt.Errorf("capsule mode requires a clean absolute %s path", kind)
+			}
 		}
-		return omnigentAttachmentLocation{Mode: mode, SocketPath: socketPath}, nil
+		return omnigentAttachmentLocation{Mode: mode, SocketPath: socketPath, StateRoot: stateRoot, CatalogPath: catalogPath}, nil
 	case "":
 		return omnigentAttachmentLocation{}, errors.New("--mode is required; choose controller or capsule explicitly")
 	default:
 		return omnigentAttachmentLocation{}, fmt.Errorf("unsupported attachment mode %q", mode)
+	}
+}
+
+type omnigentSidecarRunner func(context.Context, omnigent.SidecarConfig) error
+
+func startOmnigentCapsuleSupervisor(ctx context.Context, cfg omnigent.SidecarConfig, serve omnigentSidecarRunner) (*omnigent.APIClient, func() error, error) {
+	if serve == nil {
+		return nil, nil, errors.New("omnigent capsule supervisor is required")
+	}
+	supervisorCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- serve(supervisorCtx, cfg) }()
+	client, err := omnigent.NewUnixAPIClient(cfg.SocketPath)
+	if err != nil {
+		cancel()
+		<-done
+		return nil, nil, err
+	}
+	timeout := cfg.StartupTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	readyCtx, readyCancel := context.WithTimeout(ctx, timeout)
+	defer readyCancel()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		healthCtx, healthCancel := context.WithTimeout(readyCtx, 250*time.Millisecond)
+		healthErr := client.Health(healthCtx)
+		healthCancel()
+		if healthErr == nil {
+			var once sync.Once
+			var stopErr error
+			stop := func() error {
+				once.Do(func() {
+					cancel()
+					select {
+					case stopErr = <-done:
+					case <-time.After(5 * time.Second):
+						stopErr = errors.New("timed out stopping omnigent capsule supervisor")
+					}
+				})
+				return stopErr
+			}
+			return client, stop, nil
+		}
+		select {
+		case serveErr := <-done:
+			cancel()
+			if serveErr == nil {
+				serveErr = errors.New("omnigent capsule supervisor exited before readiness")
+			}
+			return nil, nil, serveErr
+		case <-readyCtx.Done():
+			cancel()
+			<-done
+			return nil, nil, fmt.Errorf("wait for omnigent capsule supervisor readiness: %w", readyCtx.Err())
+		case <-ticker.C:
+		}
 	}
 }
 

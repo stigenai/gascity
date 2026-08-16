@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -602,17 +604,82 @@ func TestOmnigentServeRequiresServiceOwnedAbsoluteEnvironment(t *testing.T) {
 
 func TestResolveOmnigentAttachmentLocationIsExplicitAndConfined(t *testing.T) {
 	t.Parallel()
-	controller, err := resolveOmnigentAttachmentLocation("controller", "")
+	controller, err := resolveOmnigentAttachmentLocation("controller", "", "", "")
 	if err != nil || controller.Mode != "controller" || controller.SocketPath != "" {
 		t.Fatalf("controller location = %+v, %v", controller, err)
 	}
-	capsule, err := resolveOmnigentAttachmentLocation("capsule", "/run/gascity/omnigent/sidecar.sock")
+	capsule, err := resolveOmnigentAttachmentLocation("capsule", "/run/gascity/omnigent/sidecar.sock", "/var/lib/gascity/omnigent", "/etc/gascity/omnigent/profiles.yaml")
 	if err != nil || capsule.Mode != "capsule" || capsule.SocketPath == "" {
 		t.Fatalf("capsule location = %+v, %v", capsule, err)
 	}
 	for _, invalid := range []struct{ mode, socket string }{{"", ""}, {"auto", ""}, {"controller", "/run/x.sock"}, {"capsule", ""}, {"capsule", "relative.sock"}} {
-		if _, err := resolveOmnigentAttachmentLocation(invalid.mode, invalid.socket); err == nil {
+		if _, err := resolveOmnigentAttachmentLocation(invalid.mode, invalid.socket, "", ""); err == nil {
 			t.Fatalf("resolveOmnigentAttachmentLocation(%q, %q) succeeded", invalid.mode, invalid.socket)
 		}
+	}
+}
+
+func TestStartOmnigentCapsuleSupervisorUsesPrivateSocketAndStopsRunner(t *testing.T) {
+	t.Parallel()
+	root, err := os.MkdirTemp("/var/tmp", "gco-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	socketPath := filepath.Join(root, "sidecar.sock")
+	stopped := make(chan struct{})
+	serve := func(ctx context.Context, cfg omnigent.SidecarConfig) error {
+		listener, err := net.Listen("unix", cfg.SocketPath)
+		if err != nil {
+			return err
+		}
+		server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/health" {
+				http.NotFound(w, r)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		})}
+		go func() { _ = server.Serve(listener) }()
+		<-ctx.Done()
+		_ = server.Close()
+		_ = listener.Close()
+		_ = os.Remove(cfg.SocketPath)
+		close(stopped)
+		return nil
+	}
+	client, stop, err := startOmnigentCapsuleSupervisor(context.Background(), omnigent.SidecarConfig{SocketPath: socketPath, StartupTimeout: time.Second}, serve)
+	if err != nil {
+		t.Fatalf("startOmnigentCapsuleSupervisor: %v", err)
+	}
+	if err := client.Health(context.Background()); err != nil {
+		t.Fatalf("capsule client health: %v", err)
+	}
+	if err := stop(); err != nil {
+		t.Fatalf("stop capsule supervisor: %v", err)
+	}
+	select {
+	case <-stopped:
+	default:
+		t.Fatal("capsule runner was not stopped")
+	}
+	if err := stop(); err != nil {
+		t.Fatalf("repeated stop capsule supervisor: %v", err)
+	}
+}
+
+func TestStartOmnigentCapsuleSupervisorSurfacesEarlyFailure(t *testing.T) {
+	t.Parallel()
+	want := errors.New("pin mismatch")
+	root, err := os.MkdirTemp("/var/tmp", "gco-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	_, _, err = startOmnigentCapsuleSupervisor(context.Background(), omnigent.SidecarConfig{
+		SocketPath: filepath.Join(root, "sidecar.sock"), StartupTimeout: time.Second,
+	}, func(context.Context, omnigent.SidecarConfig) error { return want })
+	if !errors.Is(err, want) {
+		t.Fatalf("early supervisor error = %v, want %v", err, want)
 	}
 }

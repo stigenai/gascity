@@ -144,7 +144,7 @@ func cleanAbsolutePath(kind, value string) (string, error) {
 func (p AttachmentLaunchPlan) CommandArgs() []string {
 	args := []string{"gc", "omnigent", "attach", "--mode", string(p.Location)}
 	if p.Location == AttachmentLocationCapsule {
-		args = append(args, "--socket", p.SocketPath)
+		args = append(args, "--socket", p.SocketPath, "--state-root", p.StateRoot, "--catalog", p.CatalogPath)
 	}
 	return args
 }
