@@ -37,36 +37,42 @@ var (
 	_ runtime.ProcessAliveChecker             = (*Provider)(nil)
 	_ runtime.RunningChecker                  = (*Provider)(nil)
 	_ runtime.AttachedChecker                 = (*Provider)(nil)
+	_ runtime.CapsuleStateRuntime             = (*Provider)(nil)
+	_ runtime.CapsuleStatePlace               = (*Provider)(nil)
 )
 
 // Provider is a native Kubernetes session provider using client-go.
 // Eliminates subprocess overhead by making direct API calls over reused
 // HTTP/2 connections. Pod manifests are compatible with gc-session-k8s.
 type Provider struct {
-	ops                k8sOps
-	namespace          string
-	image              string
-	k8sContext         string
-	managedServiceHost string
-	managedServicePort string
-	cpuRequest         string
-	memRequest         string
-	cpuLimit           string
-	memLimit           string
-	serviceAccount     string              // pod service account name (GC_K8S_SERVICE_ACCOUNT)
-	prebaked           bool                // skip staging + init container for prebaked images
-	nodeSelector       map[string]string   // GC_K8S_NODE_SELECTOR (JSON)
-	tolerations        []corev1.Toleration // GC_K8S_TOLERATIONS (JSON)
-	affinity           *corev1.Affinity    // GC_K8S_AFFINITY (JSON)
-	priorityClassName  string              // GC_K8S_PRIORITY_CLASS_NAME
-	postStartSettle    time.Duration       // settle time before post-start liveness check
-	stderr             io.Writer           // warning output (default os.Stderr)
-	runningPodCacheMu  sync.RWMutex
-	runningPodCache    *runningPodState
-	runningPodCacheAt  time.Time
-	runningPodCacheTTL time.Duration
-	runningPodCacheGen uint64
-	runningPodFlight   singleflight.Group
+	ops                     k8sOps
+	pvcOps                  k8sPVCOps
+	namespace               string
+	image                   string
+	k8sContext              string
+	managedServiceHost      string
+	managedServicePort      string
+	cpuRequest              string
+	memRequest              string
+	cpuLimit                string
+	memLimit                string
+	serviceAccount          string              // pod service account name (GC_K8S_SERVICE_ACCOUNT)
+	prebaked                bool                // skip staging + init container for prebaked images
+	nodeSelector            map[string]string   // GC_K8S_NODE_SELECTOR (JSON)
+	tolerations             []corev1.Toleration // GC_K8S_TOLERATIONS (JSON)
+	affinity                *corev1.Affinity    // GC_K8S_AFFINITY (JSON)
+	priorityClassName       string              // GC_K8S_PRIORITY_CLASS_NAME
+	capsuleCityScope        string              // GC_K8S_CAPSULE_CITY_SCOPE
+	capsuleStorageRequest   string              // GC_K8S_CAPSULE_STORAGE_REQUEST
+	capsuleStorageClassName string              // GC_K8S_CAPSULE_STORAGE_CLASS
+	postStartSettle         time.Duration       // settle time before post-start liveness check
+	stderr                  io.Writer           // warning output (default os.Stderr)
+	runningPodCacheMu       sync.RWMutex
+	runningPodCache         *runningPodState
+	runningPodCacheAt       time.Time
+	runningPodCacheTTL      time.Duration
+	runningPodCacheGen      uint64
+	runningPodFlight        singleflight.Group
 }
 
 type runningPodState struct {
@@ -90,6 +96,9 @@ type schedulingFields struct {
 //   - GC_K8S_CPU_REQUEST, GC_K8S_MEM_REQUEST — resource requests
 //   - GC_K8S_CPU_LIMIT, GC_K8S_MEM_LIMIT — resource limits
 //   - GC_K8S_DOLT_SECRET — namespace-local Secret containing username/password
+//   - GC_K8S_CAPSULE_CITY_SCOPE — trusted stable identity for capsule PVC ownership
+//   - GC_K8S_CAPSULE_STORAGE_REQUEST — per-session capsule PVC request (default: 10Gi)
+//   - GC_K8S_CAPSULE_STORAGE_CLASS — optional StorageClass for capsule PVCs
 //
 // The in-cluster Dolt service alias defaults to the provider defaults
 // (dolt.gc.svc.cluster.local:3307). Pods receive projected GC_DOLT_* env;
@@ -125,29 +134,30 @@ func NewProvider() (*Provider, error) {
 		return nil, err
 	}
 
+	realOps := &realK8sOps{clientset: clientset, restConfig: restConfig, namespace: namespace}
 	return &Provider{
-		ops: &realK8sOps{
-			clientset:  clientset,
-			restConfig: restConfig,
-			namespace:  namespace,
-		},
-		namespace:          namespace,
-		image:              image,
-		k8sContext:         k8sContext,
-		managedServiceHost: managedServiceHost,
-		managedServicePort: managedServicePort,
-		cpuRequest:         envOrDefault("GC_K8S_CPU_REQUEST", "500m"),
-		memRequest:         envOrDefault("GC_K8S_MEM_REQUEST", "1Gi"),
-		cpuLimit:           envOrDefault("GC_K8S_CPU_LIMIT", "2"),
-		memLimit:           envOrDefault("GC_K8S_MEM_LIMIT", "4Gi"),
-		serviceAccount:     os.Getenv("GC_K8S_SERVICE_ACCOUNT"),
-		prebaked:           os.Getenv("GC_K8S_PREBAKED") == "true",
-		postStartSettle:    3 * time.Second,
-		stderr:             os.Stderr,
-		nodeSelector:       scheduling.nodeSelector,
-		tolerations:        scheduling.tolerations,
-		affinity:           scheduling.affinity,
-		priorityClassName:  scheduling.priorityClassName,
+		ops:                     realOps,
+		pvcOps:                  realOps,
+		namespace:               namespace,
+		image:                   image,
+		k8sContext:              k8sContext,
+		managedServiceHost:      managedServiceHost,
+		managedServicePort:      managedServicePort,
+		cpuRequest:              envOrDefault("GC_K8S_CPU_REQUEST", "500m"),
+		memRequest:              envOrDefault("GC_K8S_MEM_REQUEST", "1Gi"),
+		cpuLimit:                envOrDefault("GC_K8S_CPU_LIMIT", "2"),
+		memLimit:                envOrDefault("GC_K8S_MEM_LIMIT", "4Gi"),
+		serviceAccount:          os.Getenv("GC_K8S_SERVICE_ACCOUNT"),
+		prebaked:                os.Getenv("GC_K8S_PREBAKED") == "true",
+		postStartSettle:         3 * time.Second,
+		stderr:                  os.Stderr,
+		nodeSelector:            scheduling.nodeSelector,
+		tolerations:             scheduling.tolerations,
+		affinity:                scheduling.affinity,
+		priorityClassName:       scheduling.priorityClassName,
+		capsuleCityScope:        strings.TrimSpace(os.Getenv("GC_K8S_CAPSULE_CITY_SCOPE")),
+		capsuleStorageRequest:   envOrDefault("GC_K8S_CAPSULE_STORAGE_REQUEST", "10Gi"),
+		capsuleStorageClassName: strings.TrimSpace(os.Getenv("GC_K8S_CAPSULE_STORAGE_CLASS")),
 		// Long enough to cover one bounded concurrent EnrichInfos page and the
 		// session-stream precheck that follows it; short enough that external pod
 		// state changes remain visible on the next controller tick.
@@ -178,17 +188,21 @@ func parseSchedulingEnv() (schedulingFields, error) {
 
 // newProviderWithOps creates a provider with a custom k8sOps (for testing).
 func newProviderWithOps(ops k8sOps) *Provider {
+	pvcOps, _ := ops.(k8sPVCOps)
 	return &Provider{
-		ops:                ops,
-		namespace:          "test-ns",
-		image:              "test-image:latest",
-		managedServiceHost: podManagedDoltHost,
-		managedServicePort: podManagedDoltPort,
-		cpuRequest:         "500m",
-		memRequest:         "1Gi",
-		cpuLimit:           "2",
-		memLimit:           "4Gi",
-		stderr:             io.Discard,
+		ops:                   ops,
+		pvcOps:                pvcOps,
+		namespace:             "test-ns",
+		image:                 "test-image:latest",
+		managedServiceHost:    podManagedDoltHost,
+		managedServicePort:    podManagedDoltPort,
+		cpuRequest:            "500m",
+		memRequest:            "1Gi",
+		cpuLimit:              "2",
+		memLimit:              "4Gi",
+		capsuleCityScope:      "cluster/test-ns/city",
+		capsuleStorageRequest: "10Gi",
+		stderr:                io.Discard,
 	}
 }
 
@@ -196,6 +210,14 @@ func newProviderWithOps(ops k8sOps) *Provider {
 func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) error {
 	if p.image == "" {
 		return fmt.Errorf("starting session %q: GC_K8S_IMAGE is required", name)
+	}
+	if err := p.validateCapsuleStateForStart(ctx, cfg); err != nil {
+		return fmt.Errorf("validating capsule state for session %q: %w", name, err)
+	}
+	if cfg.Capsule != nil {
+		if err := p.AttachCapsuleState(ctx, name, cfg.Capsule.State); err != nil {
+			return fmt.Errorf("attaching capsule state for session %q: %w", name, err)
+		}
 	}
 	podName := SanitizeName(name)
 	label := SanitizeLabel(name)
@@ -230,7 +252,6 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 			return fmt.Errorf("waiting for existing pod %q deletion: %w", pod.Name, waitErr)
 		}
 	}
-
 	// Build and create pod.
 	pod, err := buildPod(name, cfg, p)
 	if err != nil {
@@ -618,7 +639,7 @@ func (p *Provider) IsAttached(name string) bool {
 	return attached
 }
 
-// IsAttachedChecked is the IsAttached analogue of IsRunningChecked.
+// IsAttachedChecked is the IsAttached analog of IsRunningChecked.
 func (p *Provider) IsAttachedChecked(name string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), runningPodSnapshotTimeout)
 	defer cancel()

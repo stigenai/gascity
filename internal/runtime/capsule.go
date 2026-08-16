@@ -286,10 +286,11 @@ func normalizedSecretReferenceIdentities(refs []SecretReference) []string {
 // CapsuleStateReference is an opaque provider-owned durable allocation. The
 // mount path is a fixed capsule-internal location, not an operator path.
 type CapsuleStateReference struct {
-	Key        CapsuleKey
-	Provider   string
-	ResourceID string
-	MountPath  string
+	Key         CapsuleKey
+	Provider    string
+	ResourceID  string
+	ResourceUID string
+	MountPath   string
 }
 
 // CapsuleLaunchConfig is the provider-neutral, non-secret plan for starting a
@@ -317,6 +318,9 @@ func (c CapsuleLaunchConfig) Validate() error {
 	}
 	if strings.TrimSpace(c.State.ResourceID) == "" {
 		return errors.New("capsule state resource id is required")
+	}
+	if strings.TrimSpace(c.State.ResourceUID) == "" {
+		return errors.New("capsule state resource uid is required")
 	}
 	for kind, value := range map[string]string{
 		"state mount":   c.State.MountPath,

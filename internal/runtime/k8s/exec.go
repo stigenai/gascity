@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -27,6 +28,13 @@ type k8sOps interface {
 	deletePod(ctx context.Context, name string, uid types.UID, grace int64) error
 	listPods(ctx context.Context, selector string, fieldSelector string) ([]corev1.Pod, error)
 	execInPod(ctx context.Context, pod, container string, cmd []string, stdin io.Reader) (string, error)
+}
+
+type k8sPVCOps interface {
+	createPVC(ctx context.Context, pvc *corev1.PersistentVolumeClaim) (*corev1.PersistentVolumeClaim, error)
+	getPVC(ctx context.Context, name string) (*corev1.PersistentVolumeClaim, error)
+	listPVCs(ctx context.Context, selector string) ([]corev1.PersistentVolumeClaim, error)
+	deletePVC(ctx context.Context, name string, uid types.UID) error
 }
 
 // realK8sOps wraps a Kubernetes clientset and REST config for real API calls.
@@ -64,6 +72,31 @@ func (r *realK8sOps) listPods(ctx context.Context, selector string, fieldSelecto
 		return nil, err
 	}
 	return list.Items, nil
+}
+
+func (r *realK8sOps) createPVC(ctx context.Context, pvc *corev1.PersistentVolumeClaim) (*corev1.PersistentVolumeClaim, error) {
+	return r.clientset.CoreV1().PersistentVolumeClaims(r.namespace).Create(ctx, pvc, metav1.CreateOptions{})
+}
+
+func (r *realK8sOps) getPVC(ctx context.Context, name string) (*corev1.PersistentVolumeClaim, error) {
+	return r.clientset.CoreV1().PersistentVolumeClaims(r.namespace).Get(ctx, name, metav1.GetOptions{})
+}
+
+func (r *realK8sOps) listPVCs(ctx context.Context, selector string) ([]corev1.PersistentVolumeClaim, error) {
+	list, err := r.clientset.CoreV1().PersistentVolumeClaims(r.namespace).List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+func (r *realK8sOps) deletePVC(ctx context.Context, name string, uid types.UID) error {
+	if uid == "" {
+		return fmt.Errorf("refusing to delete PVC %q without an immutable UID", name)
+	}
+	return r.clientset.CoreV1().PersistentVolumeClaims(r.namespace).Delete(ctx, name, metav1.DeleteOptions{
+		Preconditions: &metav1.Preconditions{UID: &uid},
+	})
 }
 
 func (r *realK8sOps) execInPod(ctx context.Context, pod, container string, cmd []string, stdin io.Reader) (string, error) {
@@ -109,7 +142,9 @@ func (r *realK8sOps) execInPod(ctx context.Context, pod, container string, cmd [
 // Records all calls for assertions and returns configurable results.
 type fakeK8sOps struct {
 	pods  map[string]*corev1.Pod
+	pvcs  map[string]*corev1.PersistentVolumeClaim
 	calls []fakeCall
+	pvcMu sync.Mutex
 
 	// Configurable behaviors.
 	execOutput   map[string]string                              // pod+cmd key → stdout
@@ -119,6 +154,10 @@ type fakeK8sOps struct {
 	deleteErr    error
 	getErr       error
 	listErr      error
+	pvcCreateErr error
+	pvcGetErr    error
+	pvcListErr   error
+	pvcDeleteErr error
 	beforeDelete func(name string)
 }
 
@@ -134,9 +173,77 @@ type fakeCall struct {
 func newFakeK8sOps() *fakeK8sOps {
 	return &fakeK8sOps{
 		pods:       make(map[string]*corev1.Pod),
+		pvcs:       make(map[string]*corev1.PersistentVolumeClaim),
 		execOutput: make(map[string]string),
 		execErr:    make(map[string]error),
 	}
+}
+
+func (f *fakeK8sOps) createPVC(_ context.Context, pvc *corev1.PersistentVolumeClaim) (*corev1.PersistentVolumeClaim, error) {
+	f.pvcMu.Lock()
+	defer f.pvcMu.Unlock()
+	f.calls = append(f.calls, fakeCall{method: "createPVC", pod: pvc.Name})
+	if f.pvcCreateErr != nil {
+		return nil, f.pvcCreateErr
+	}
+	if _, exists := f.pvcs[pvc.Name]; exists {
+		return nil, apierrors.NewAlreadyExists(schema.GroupResource{Resource: "persistentvolumeclaims"}, pvc.Name)
+	}
+	created := pvc.DeepCopy()
+	if created.UID == "" {
+		created.UID = types.UID("fake-pvc-uid-" + pvc.Name)
+	}
+	created.ResourceVersion = "1"
+	f.pvcs[pvc.Name] = created
+	return created.DeepCopy(), nil
+}
+
+func (f *fakeK8sOps) getPVC(_ context.Context, name string) (*corev1.PersistentVolumeClaim, error) {
+	f.pvcMu.Lock()
+	defer f.pvcMu.Unlock()
+	f.calls = append(f.calls, fakeCall{method: "getPVC", pod: name})
+	if f.pvcGetErr != nil {
+		return nil, f.pvcGetErr
+	}
+	pvc, ok := f.pvcs[name]
+	if !ok {
+		return nil, apierrors.NewNotFound(schema.GroupResource{Resource: "persistentvolumeclaims"}, name)
+	}
+	return pvc.DeepCopy(), nil
+}
+
+func (f *fakeK8sOps) listPVCs(_ context.Context, selector string) ([]corev1.PersistentVolumeClaim, error) {
+	f.pvcMu.Lock()
+	defer f.pvcMu.Unlock()
+	f.calls = append(f.calls, fakeCall{method: "listPVCs", selector: selector})
+	if f.pvcListErr != nil {
+		return nil, f.pvcListErr
+	}
+	var result []corev1.PersistentVolumeClaim
+	for _, pvc := range f.pvcs {
+		if matchesLabels(pvc.Labels, selector) {
+			result = append(result, *pvc.DeepCopy())
+		}
+	}
+	return result, nil
+}
+
+func (f *fakeK8sOps) deletePVC(_ context.Context, name string, uid types.UID) error {
+	f.pvcMu.Lock()
+	defer f.pvcMu.Unlock()
+	f.calls = append(f.calls, fakeCall{method: "deletePVC", pod: name, uid: uid})
+	if f.pvcDeleteErr != nil {
+		return f.pvcDeleteErr
+	}
+	pvc, ok := f.pvcs[name]
+	if !ok {
+		return apierrors.NewNotFound(schema.GroupResource{Resource: "persistentvolumeclaims"}, name)
+	}
+	if uid == "" || pvc.UID != uid {
+		return apierrors.NewConflict(schema.GroupResource{Resource: "persistentvolumeclaims"}, name, fmt.Errorf("UID precondition failed"))
+	}
+	delete(f.pvcs, name)
+	return nil
 }
 
 func (f *fakeK8sOps) record(method, pod string, cmd []string) {
@@ -241,6 +348,10 @@ func execKey(pod string, cmd []string) string {
 
 // matchesSelector does simple label matching for the fake.
 func matchesSelector(p *corev1.Pod, selector string) bool {
+	return matchesLabels(p.Labels, selector)
+}
+
+func matchesLabels(labels map[string]string, selector string) bool {
 	if selector == "" {
 		return true
 	}
@@ -249,7 +360,7 @@ func matchesSelector(p *corev1.Pod, selector string) bool {
 		if len(kv) != 2 {
 			continue
 		}
-		if p.Labels[kv[0]] != kv[1] {
+		if labels[kv[0]] != kv[1] {
 			return false
 		}
 	}

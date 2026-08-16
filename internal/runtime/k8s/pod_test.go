@@ -27,7 +27,7 @@ func TestBuildPod_CapsuleLaunchUsesOneAgentContainerAndIsolatedMounts(t *testing
 	capsule := &runtime.CapsuleLaunchConfig{
 		Key: key,
 		State: runtime.CapsuleStateReference{
-			Key: key, Provider: "k8s", ResourceID: key.ResourceStem(), MountPath: "/var/lib/gascity/omnigent",
+			Key: key, Provider: "k8s", ResourceID: key.ResourceStem(), ResourceUID: "test-pvc-uid", MountPath: "/var/lib/gascity/omnigent",
 		},
 		Command:           command,
 		RunRoot:           "/run/gascity/omnigent",
@@ -164,7 +164,7 @@ func testK8sCapsuleLaunch(t *testing.T) *runtime.CapsuleLaunchConfig {
 	}
 	return &runtime.CapsuleLaunchConfig{
 		Key:     key,
-		State:   runtime.CapsuleStateReference{Key: key, Provider: "k8s", ResourceID: key.ResourceStem(), MountPath: "/var/lib/gascity/omnigent"},
+		State:   runtime.CapsuleStateReference{Key: key, Provider: "k8s", ResourceID: key.ResourceStem(), ResourceUID: "test-pvc-uid", MountPath: "/var/lib/gascity/omnigent"},
 		Command: []string{"gc", "omnigent", "attach", "--mode", "capsule"},
 		RunRoot: "/run/gascity/omnigent", SocketPath: "/run/gascity/omnigent/sidecar.sock",
 		CatalogResourceID: "gco-catalog-a1b2c3", CatalogMountPath: "/etc/gascity/omnigent",

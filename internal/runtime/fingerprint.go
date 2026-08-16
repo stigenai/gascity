@@ -401,6 +401,7 @@ func hashCapsuleLaunchConfig(h hash.Hash, capsule *CapsuleLaunchConfig) {
 		capsule.Key.Digest,
 		capsule.State.Provider,
 		capsule.State.ResourceID,
+		capsule.State.ResourceUID,
 		capsule.State.MountPath,
 		capsule.RunRoot,
 		capsule.SocketPath,

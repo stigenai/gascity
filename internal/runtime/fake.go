@@ -215,7 +215,7 @@ func (f *Fake) EnsureCapsuleState(_ context.Context, key CapsuleKey) (CapsuleSta
 		}
 		return ref, false, nil
 	}
-	ref := CapsuleStateReference{Key: key, Provider: "fake", ResourceID: key.ResourceStem(), MountPath: "/var/lib/gascity/omnigent"}
+	ref := CapsuleStateReference{Key: key, Provider: "fake", ResourceID: key.ResourceStem(), ResourceUID: "fake-" + key.Token, MountPath: "/var/lib/gascity/omnigent"}
 	f.CapsuleStates[key.Digest] = ref
 	return ref, true, nil
 }

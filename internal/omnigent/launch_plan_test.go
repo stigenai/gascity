@@ -122,7 +122,7 @@ func TestAttachmentLaunchPlanProjectsProviderNeutralRuntimeCapsule(t *testing.T)
 		t.Fatal(err)
 	}
 	state := runtime.CapsuleStateReference{
-		Key: plan.CapsuleKey, Provider: "k8s", ResourceID: plan.CapsuleKey.ResourceStem(), MountPath: CapsuleStateRoot,
+		Key: plan.CapsuleKey, Provider: "k8s", ResourceID: plan.CapsuleKey.ResourceStem(), ResourceUID: "test-pvc-uid", MountPath: CapsuleStateRoot,
 	}
 	capsule, err := plan.RuntimeCapsuleConfig(state, "gco-catalog-a1b2c3")
 	if err != nil {
@@ -156,7 +156,7 @@ func TestRuntimeCapsuleConfigFollowsResolvedHybridRouteOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := runtime.CapsuleStateReference{
-		Key: remotePlan.CapsuleKey, Provider: "k8s", ResourceID: remotePlan.CapsuleKey.ResourceStem(), MountPath: CapsuleStateRoot,
+		Key: remotePlan.CapsuleKey, Provider: "k8s", ResourceID: remotePlan.CapsuleKey.ResourceStem(), ResourceUID: "test-pvc-uid", MountPath: CapsuleStateRoot,
 	}
 	if _, err := remotePlan.RuntimeCapsuleConfig(state, "gco-catalog-a1b2c3"); err != nil {
 		t.Fatalf("remote hybrid route did not produce capsule config: %v", err)

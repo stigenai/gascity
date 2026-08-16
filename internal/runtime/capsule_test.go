@@ -193,7 +193,7 @@ func TestCapsuleLaunchConfigValidationAndProvisionFingerprint(t *testing.T) {
 	}
 	capsule := &CapsuleLaunchConfig{
 		Key:     key,
-		State:   CapsuleStateReference{Key: key, Provider: "k8s", ResourceID: key.ResourceStem(), MountPath: "/var/lib/gascity/omnigent"},
+		State:   CapsuleStateReference{Key: key, Provider: "k8s", ResourceID: key.ResourceStem(), ResourceUID: "test-pvc-uid", MountPath: "/var/lib/gascity/omnigent"},
 		Command: []string{"gc", "omnigent", "attach", "--mode", "capsule"},
 		RunRoot: "/run/gascity/omnigent", SocketPath: "/run/gascity/omnigent/sidecar.sock",
 		CatalogResourceID: "catalog", CatalogMountPath: "/etc/gascity/omnigent",
