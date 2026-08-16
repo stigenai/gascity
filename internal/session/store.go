@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/gastownhall/gascity/internal/beads"
@@ -178,6 +179,73 @@ func (s *Store) setMetadataValue(id, key, value string) error {
 // empty-string-clear contract.
 func (s *Store) SetMarker(id, key, value string) error {
 	return s.setMetadataValue(id, key, value)
+}
+
+// BindSessionKey durably binds the first non-empty provider conversation key
+// to an existing session. It never overwrites a prior key. The returned value
+// is the authoritative winner; created reports whether this call installed it.
+// Conditional stores converge across processes, while the session mutation
+// lock preserves the same contract for legacy stores within one gc process.
+func (s *Store) BindSessionKey(id, sessionKey string) (winner string, created bool, err error) {
+	id = strings.TrimSpace(id)
+	sessionKey = strings.TrimSpace(sessionKey)
+	if id == "" {
+		return "", false, fmt.Errorf("binding session key: empty session id")
+	}
+	if sessionKey == "" {
+		return "", false, fmt.Errorf("binding session key for %q: empty key", id)
+	}
+	info, err := s.Get(id)
+	if err != nil {
+		return "", false, err
+	}
+	if existing := strings.TrimSpace(info.SessionKey); existing != "" {
+		return existing, false, nil
+	}
+
+	if writer, ok := beads.ConditionalWriterFor(s.store.Store); ok {
+		swapped, casErr := writer.CompareAndSetMetadataKey(id, "session_key", "", sessionKey)
+		if casErr == nil && swapped {
+			return sessionKey, true, nil
+		}
+		if casErr == nil || !beads.IsConditionalWriteUnsupported(casErr) {
+			refreshed, getErr := s.Get(id)
+			if getErr != nil {
+				if casErr != nil {
+					return "", false, fmt.Errorf("binding session key for %q: %w (verification failed: %w)", id, casErr, getErr)
+				}
+				return "", false, getErr
+			}
+			if existing := strings.TrimSpace(refreshed.SessionKey); existing != "" {
+				return existing, casErr == nil && existing == sessionKey, nil
+			}
+			if casErr != nil {
+				return "", false, fmt.Errorf("binding session key for %q: %w", id, casErr)
+			}
+			return "", false, fmt.Errorf("binding session key for %q: conditional write lost without a persisted winner", id)
+		}
+	}
+
+	err = WithSessionMutationLock(id, func() error {
+		refreshed, getErr := s.Get(id)
+		if getErr != nil {
+			return getErr
+		}
+		if existing := strings.TrimSpace(refreshed.SessionKey); existing != "" {
+			winner = existing
+			return nil
+		}
+		if setErr := s.setMetadataValue(id, "session_key", sessionKey); setErr != nil {
+			return setErr
+		}
+		winner = sessionKey
+		created = true
+		return nil
+	})
+	if err != nil {
+		return "", false, fmt.Errorf("binding session key for %q: %w", id, err)
+	}
+	return winner, created, nil
 }
 
 // ClaimAsyncStartCleanupObligation value-CASes the durable async-start journal

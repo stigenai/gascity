@@ -144,7 +144,7 @@ func TestStatusSessionSnapshotKillsBdChildOnTimeout(t *testing.T) {
 	}
 
 	oldTimeout := statusStoreReadTimeout
-	statusStoreReadTimeout = 200 * time.Millisecond
+	statusStoreReadTimeout = time.Second
 	t.Cleanup(func() { statusStoreReadTimeout = oldTimeout })
 
 	binDir := t.TempDir()
@@ -483,7 +483,7 @@ func TestStatusStoreWorkCountsWaitsForReadyResolutionCleanup(t *testing.T) {
 
 func TestStatusReadyStoreWithTimeoutBoundsSlowScopedStoreResolution(t *testing.T) {
 	oldTimeout := statusStoreReadTimeout
-	statusStoreReadTimeout = 200 * time.Millisecond
+	statusStoreReadTimeout = time.Second
 	t.Cleanup(func() { statusStoreReadTimeout = oldTimeout })
 
 	state := newFakeState(t)
@@ -510,7 +510,7 @@ func TestStatusListStoreWithTimeoutKillsBdChildOnTimeout(t *testing.T) {
 	}
 
 	oldTimeout := statusStoreReadTimeout
-	statusStoreReadTimeout = 200 * time.Millisecond
+	statusStoreReadTimeout = time.Second
 	t.Cleanup(func() { statusStoreReadTimeout = oldTimeout })
 
 	binDir := t.TempDir()

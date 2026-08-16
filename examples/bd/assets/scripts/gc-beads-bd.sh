@@ -1054,13 +1054,17 @@ has_deleted_data_inodes() {
                 deleted = 0
             }
             substr($0, 1, 1) == "f" {
+                if (pending_links && name != "") {
+                    deleted = pending_deleted
+                }
+                pending_links = 0
+                pending_deleted = 0
                 flush()
                 next
             }
             substr($0, 1, 1) == "k" {
-                if (substr($0, 2) == "0") {
-                    deleted = 1
-                }
+                pending_links = 1
+                pending_deleted = (substr($0, 2) == "0")
                 next
             }
             substr($0, 1, 1) == "n" {
@@ -1068,6 +1072,9 @@ has_deleted_data_inodes() {
                     flush()
                 }
                 name = substr($0, 2)
+                deleted = (pending_links && pending_deleted)
+                pending_links = 0
+                pending_deleted = 0
                 if (name ~ / \(deleted\)$/) {
                     deleted = 1
                     sub(/ \(deleted\)$/, "", name)
@@ -1075,6 +1082,9 @@ has_deleted_data_inodes() {
                 next
             }
             END {
+                if (pending_links && name != "") {
+                    deleted = pending_deleted
+                }
                 flush()
                 exit(found ? 0 : 1)
             }

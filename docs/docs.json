@@ -187,6 +187,7 @@
             "pages": [
               "guides/configuring-an-agent",
               "guides/harness-recipes",
+              "guides/local-omnigent",
               "guides/shareable-packs",
               "guides/registry-showcase",
               "guides/gastown-config-recipes",

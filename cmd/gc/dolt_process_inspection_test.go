@@ -66,20 +66,13 @@ dolt    %d user   12u  IPv4 0x1234      0t0  TCP *:3306 (LISTEN)
 	}
 }
 
-func TestProcessCWDFromLsofParsesNameRecord(t *testing.T) {
-	binDir := t.TempDir()
-	lsofPath := filepath.Join(binDir, "lsof")
-	if err := os.WriteFile(lsofPath, []byte("#!/bin/sh\nprintf 'p123\\nfcwd\\nn/private/var/folders/example/.beads/dolt\\n'\n"), 0o755); err != nil {
-		t.Fatalf("WriteFile(lsof): %v", err)
-	}
-	t.Setenv("PATH", strings.Join([]string{binDir, os.Getenv("PATH")}, string(os.PathListSeparator)))
-
-	cwd, ok := processCWDFromLsof(123)
+func TestCWDFromFormattedLsofOutputParsesNameRecord(t *testing.T) {
+	cwd, ok := cwdFromFormattedLsofOutput("p123\nfcwd\nn/private/var/folders/example/.beads/dolt\n")
 	if !ok {
-		t.Fatal("processCWDFromLsof did not find cwd")
+		t.Fatal("cwdFromFormattedLsofOutput did not find cwd")
 	}
 	if !samePath(cwd, "/var/folders/example/.beads/dolt") {
-		t.Fatalf("processCWDFromLsof = %q, want path equivalent to /var/folders/example/.beads/dolt", cwd)
+		t.Fatalf("cwdFromFormattedLsofOutput = %q, want path equivalent to /var/folders/example/.beads/dolt", cwd)
 	}
 }
 
@@ -109,15 +102,8 @@ dolt      123 user  cwd    DIR   1,4       96  42 /tmp/my city/.beads/dolt
 	}
 }
 
-func TestDeletedDataInodeTargetsFromLsofParsesNameRecords(t *testing.T) {
-	binDir := t.TempDir()
-	lsofPath := filepath.Join(binDir, "lsof")
-	if err := os.WriteFile(lsofPath, []byte("#!/bin/sh\nprintf 'p123\\nn/private/var/folders/example/.beads/dolt/held.db (deleted)\\nn/private/var/folders/example/.beads/dolt/hq/.dolt/noms/LOCK (deleted)\\n'\n"), 0o755); err != nil {
-		t.Fatalf("WriteFile(lsof): %v", err)
-	}
-	t.Setenv("PATH", strings.Join([]string{binDir, os.Getenv("PATH")}, string(os.PathListSeparator)))
-
-	targets := deletedDataInodeTargetsFromLsof(123)
+func TestDeletedDataInodeTargetsFromFormattedLsofParsesNameRecords(t *testing.T) {
+	targets := deletedDataInodeTargetsFromFormattedLsofOutput("p123\nn/private/var/folders/example/.beads/dolt/held.db (deleted)\nn/private/var/folders/example/.beads/dolt/hq/.dolt/noms/LOCK (deleted)\n")
 	if len(targets) != 2 {
 		t.Fatalf("deletedDataInodeTargetsFromLsof returned %d targets, want 2: %#v", len(targets), targets)
 	}
@@ -143,6 +129,16 @@ func TestDeletedDataInodeTargetsFromFormattedLsofUsesZeroLinkCount(t *testing.T)
 	}
 	if !samePath(targets[0], "/tmp/gc-city/.beads/dolt/held.db") {
 		t.Fatalf("target = %q, want held.db", targets[0])
+	}
+}
+
+func TestDeletedDataInodeTargetsFromFormattedLsofPreservesConsecutiveZeroLinkRecords(t *testing.T) {
+	targets := deletedDataInodeTargetsFromFormattedLsofOutput("p123\nk0\nn/private/var/tmp/heredoc\nk0\nn/private/tmp/gc-city/.beads/dolt/held.db\n")
+	if len(targets) != 2 {
+		t.Fatalf("deletedDataInodeTargetsFromFormattedLsofOutput returned %d targets, want 2: %#v", len(targets), targets)
+	}
+	if !samePath(targets[1], "/tmp/gc-city/.beads/dolt/held.db") {
+		t.Fatalf("second target = %q, want held.db", targets[1])
 	}
 }
 

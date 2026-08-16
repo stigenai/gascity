@@ -91,9 +91,7 @@ func hasActiveRoute(metadata map[string]string) bool {
 }
 
 func TestInstantiateRootMetadataIsDurableBeforeRouteActivation(t *testing.T) {
-	previous := IsGraphApplyEnabled()
-	SetGraphApplyEnabled(false)
-	t.Cleanup(func() { SetGraphApplyEnabled(previous) })
+	setGraphApplyModeForTest(t, false)
 
 	store := &admissionObservingStore{
 		MemStore:          beads.NewMemStore(),
@@ -221,9 +219,7 @@ func TestValidateExistingRootMetadataDistinguishesMissingFromExplicitEmpty(t *te
 }
 
 func TestInstantiateRejectsProtectedRootMetadataBeforeStoreMutation(t *testing.T) {
-	previous := IsGraphApplyEnabled()
-	SetGraphApplyEnabled(false)
-	t.Cleanup(func() { SetGraphApplyEnabled(previous) })
+	setGraphApplyModeForTest(t, false)
 
 	store := &admissionObservingStore{MemStore: beads.NewMemStore()}
 	_, err := Instantiate(context.Background(), store, admissionRecipe(), Options{
@@ -250,9 +246,7 @@ func TestInstantiateRejectsProtectedRootMetadataBeforeStoreMutation(t *testing.T
 }
 
 func TestInstantiateRootMetadataWriteFailureLeavesNoGraph(t *testing.T) {
-	previous := IsGraphApplyEnabled()
-	SetGraphApplyEnabled(false)
-	t.Cleanup(func() { SetGraphApplyEnabled(previous) })
+	setGraphApplyModeForTest(t, false)
 
 	store := &admissionObservingStore{
 		MemStore:          beads.NewMemStore(),
@@ -281,9 +275,7 @@ func TestInstantiateRootMetadataWriteFailureLeavesNoGraph(t *testing.T) {
 }
 
 func TestGraphApplyRootMetadataWriteFailureLeavesNoGraph(t *testing.T) {
-	previous := IsGraphApplyEnabled()
-	SetGraphApplyEnabled(true)
-	t.Cleanup(func() { SetGraphApplyEnabled(previous) })
+	setGraphApplyModeForTest(t, true)
 
 	store := &rejectingAdmissionGraphApplyStore{MemStore: beads.NewMemStore()}
 	_, err := Instantiate(context.Background(), store, admissionRecipe(), Options{

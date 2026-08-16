@@ -19,6 +19,7 @@ import (
 	workerpkg "github.com/gastownhall/gascity/internal/worker"
 	"github.com/gastownhall/gascity/internal/worker/workertest"
 	helpers "github.com/gastownhall/gascity/test/acceptance/helpers"
+	"github.com/gastownhall/gascity/test/tmuxtest"
 )
 
 func TestValidateClaudeCredentialsExpired(t *testing.T) {
@@ -809,14 +810,13 @@ func TestTmuxSessionLiveUsesCitySocket(t *testing.T) {
 
 	cityDir := filepath.Join(t.TempDir(), "at-test-socket")
 	require.NoError(t, os.MkdirAll(cityDir, 0o755))
+	guard := tmuxtest.NewGuardWithSocket(t, filepath.Base(cityDir))
 
 	sessionName := "worker-live"
 	cmd := exec.Command(tmuxPath, "-L", filepath.Base(cityDir), "new-session", "-d", "-s", sessionName, "sleep", "30")
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
-	t.Cleanup(func() {
-		exec.Command(tmuxPath, "-L", filepath.Base(cityDir), "kill-server").Run() //nolint:errcheck
-	})
+	require.NoError(t, guard.CaptureServer())
 
 	live, err := tmuxSessionLive(cityDir, sessionName)
 	require.NoError(t, err)
@@ -831,14 +831,13 @@ func TestTmuxSessionExistsOnCitySocketUsesCitySocket(t *testing.T) {
 
 	cityDir := filepath.Join(t.TempDir(), "at-test-socket")
 	require.NoError(t, os.MkdirAll(cityDir, 0o755))
+	guard := tmuxtest.NewGuardWithSocket(t, filepath.Base(cityDir))
 
 	sessionName := "worker-live"
 	cmd := exec.Command(tmuxPath, "-L", filepath.Base(cityDir), "new-session", "-d", "-s", sessionName, "sleep", "30")
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
-	t.Cleanup(func() {
-		exec.Command(tmuxPath, "-L", filepath.Base(cityDir), "kill-server").Run() //nolint:errcheck
-	})
+	require.NoError(t, guard.CaptureServer())
 
 	live, err := tmuxSessionExistsOnCitySocket(cityDir, sessionName)
 	require.NoError(t, err)
@@ -854,6 +853,7 @@ func TestTmuxHelpersUseConfiguredSocketName(t *testing.T) {
 	socketName := "worker-inference-sock"
 	cityDir := filepath.Join(t.TempDir(), "at-test-socket")
 	require.NoError(t, os.MkdirAll(cityDir, 0o755))
+	guard := tmuxtest.NewGuardWithSocket(t, socketName)
 	require.NoError(t, os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte(`
 [workspace]
 name = "worker-inference-name"
@@ -866,9 +866,7 @@ socket = "worker-inference-sock"
 	cmd := exec.Command(tmuxPath, "-L", socketName, "new-session", "-d", "-s", sessionName, "printf 'ready\\n'; sleep 30")
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
-	t.Cleanup(func() {
-		exec.Command(tmuxPath, "-L", socketName, "kill-server").Run() //nolint:errcheck
-	})
+	require.NoError(t, guard.CaptureServer())
 
 	exists, err := tmuxSessionExistsOnCitySocket(cityDir, sessionName)
 	require.NoError(t, err)
@@ -891,14 +889,13 @@ func TestCaptureTmuxPaneReturnsErrorForMissingSessionOnCitySocket(t *testing.T) 
 
 	cityDir := filepath.Join(t.TempDir(), "at-test-socket")
 	require.NoError(t, os.MkdirAll(cityDir, 0o755))
+	guard := tmuxtest.NewGuardWithSocket(t, filepath.Base(cityDir))
 
 	sessionName := "worker-live"
 	cmd := exec.Command(tmuxPath, "-L", filepath.Base(cityDir), "new-session", "-d", "-s", sessionName, "sleep", "30")
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
-	t.Cleanup(func() {
-		exec.Command(tmuxPath, "-L", filepath.Base(cityDir), "kill-server").Run() //nolint:errcheck
-	})
+	require.NoError(t, guard.CaptureServer())
 
 	_, err = captureTmuxPane(cityDir, "missing-session", 20)
 	require.Error(t, err)
@@ -944,13 +941,12 @@ func TestDetectLiveBlockedInteractionIgnoresMissingSessionOnLiveSocket(t *testin
 
 	cityDir := filepath.Join(t.TempDir(), "at-test-socket")
 	require.NoError(t, os.MkdirAll(cityDir, 0o755))
+	guard := tmuxtest.NewGuardWithSocket(t, filepath.Base(cityDir))
 
 	cmd := exec.Command(tmuxPath, "-L", filepath.Base(cityDir), "new-session", "-d", "-s", "worker-live", "sleep", "30")
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(out))
-	t.Cleanup(func() {
-		exec.Command(tmuxPath, "-L", filepath.Base(cityDir), "kill-server").Run() //nolint:errcheck
-	})
+	require.NoError(t, guard.CaptureServer())
 
 	blocked, err := detectLiveBlockedInteraction(cityDir, "missing-session")
 	require.NoError(t, err)

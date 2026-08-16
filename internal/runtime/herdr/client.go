@@ -49,6 +49,8 @@ type herdrError struct {
 	Message string `json:"message"`
 }
 
+var errIncompleteProcessSnapshot = errors.New("incomplete herdr process snapshot")
+
 // Error renders the herdr-reported failure as "<code>: <message>", matching the
 // text run() previously formatted inline; wrapping it with %w additionally lets
 // callers recover the typed error (and its Code) via errors.As.
@@ -305,7 +307,7 @@ func (c *client) processInfo(ctx context.Context, paneID string) (shellPID int, 
 		return 0, nil, runtimeUnavailableError("herdr pane process-info: decode", errors.New("invalid shell_pid"))
 	}
 	if wrap.ProcessInfo.ForegroundProcesses == nil {
-		return 0, nil, runtimeUnavailableError("herdr pane process-info: decode", errors.New("missing foreground_processes"))
+		return 0, nil, runtimeUnavailableError("herdr pane process-info: decode", fmt.Errorf("%w: missing foreground_processes with shell_pid=%d", errIncompleteProcessSnapshot, *wrap.ProcessInfo.ShellPID))
 	}
 	// An explicit empty list is a valid bare/initializing-shell observation.
 	// Missing/null is not: treating malformed process data as an empty list can
@@ -444,9 +446,9 @@ func (c *client) findWorkspace(ctx context.Context, label string) (string, error
 }
 
 // workspaceCreate makes a workspace labeled label whose root shell pane is
-// created with the given cwd and env, and returns the workspace id plus the
-// default tab and root pane (the agent's pane) herdr auto-spawns inside it.
-func (c *client) workspaceCreate(ctx context.Context, label, cwd string, env map[string]string) (wsID, tabID, paneID string, err error) {
+// created with the given cwd and env, and returns the default tab and root pane
+// (the agent's pane) herdr auto-spawns inside it.
+func (c *client) workspaceCreate(ctx context.Context, label, cwd string, env map[string]string) (tabID, paneID string, err error) {
 	args := []string{"workspace", "create", "--label", label, "--no-focus"}
 	if cwd != "" {
 		args = append(args, "--cwd", cwd)
@@ -456,7 +458,7 @@ func (c *client) workspaceCreate(ctx context.Context, label, cwd string, env map
 	}
 	res, err := c.run(ctx, args...)
 	if err != nil {
-		return "", "", "", err
+		return "", "", err
 	}
 	var wrap struct {
 		Workspace *struct {
@@ -470,13 +472,13 @@ func (c *client) workspaceCreate(ctx context.Context, label, cwd string, env map
 		} `json:"root_pane"`
 	}
 	if err := json.Unmarshal(res, &wrap); err != nil {
-		return "", "", "", runtimeUnavailableError("herdr workspace create: decode", err)
+		return "", "", runtimeUnavailableError("herdr workspace create: decode", err)
 	}
 	if wrap.Workspace == nil || wrap.Tab == nil || wrap.RootPane == nil ||
 		strings.TrimSpace(wrap.Workspace.WorkspaceID) == "" || strings.TrimSpace(wrap.Tab.TabID) == "" || strings.TrimSpace(wrap.RootPane.PaneID) == "" {
-		return "", "", "", runtimeUnavailableError("herdr workspace create: decode", errors.New("missing workspace_id, tab_id, or pane_id"))
+		return "", "", runtimeUnavailableError("herdr workspace create: decode", errors.New("missing workspace_id, tab_id, or pane_id"))
 	}
-	return wrap.Workspace.WorkspaceID, wrap.Tab.TabID, wrap.RootPane.PaneID, nil
+	return wrap.Tab.TabID, wrap.RootPane.PaneID, nil
 }
 
 // listTabs returns the tabs in wsID.
@@ -570,7 +572,7 @@ func (c *client) ensurePlacement(ctx context.Context, wsLabel, tabLabel, cwd str
 	}
 	if wsID == "" {
 		// New workspace: repurpose the default tab herdr spawns for this agent.
-		_, tabID, paneID, err = c.workspaceCreate(ctx, wsLabel, cwd, env)
+		tabID, paneID, err = c.workspaceCreate(ctx, wsLabel, cwd, env)
 		if err != nil {
 			return "", "", err
 		}
@@ -586,7 +588,20 @@ func (c *client) ensurePlacement(ctx context.Context, wsLabel, tabLabel, cwd str
 			_ = c.tabClose(ctx, tb.TabID) // best-effort: replaced below either way
 		}
 	}
-	return c.tabCreate(ctx, wsID, tabLabel, cwd, env)
+	tabID, paneID, err = c.tabCreate(ctx, wsID, tabLabel, cwd, env)
+	if herdrErrorCode(err) != "workspace_not_found" {
+		return tabID, paneID, err
+	}
+	// Herdr removes an empty workspace asynchronously when its last tab
+	// disappears. A list can therefore return a workspace that vanishes before
+	// tab create, especially while concurrent session cleanup is draining. The
+	// serialized placement operation can safely recreate that exact workspace
+	// once; a second failure remains visible to the caller.
+	tabID, paneID, err = c.workspaceCreate(ctx, wsLabel, cwd, env)
+	if err == nil {
+		_ = c.tabRename(ctx, tabID, tabLabel) // cosmetic; ignore failure
+	}
+	return tabID, paneID, err
 }
 
 // ── shared session-server lifecycle ──────────────────────────────────────────

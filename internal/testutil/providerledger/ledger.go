@@ -65,7 +65,7 @@ const (
 	// runtimeDoubleBoundaryPath is the designated runtime.Provider double source.
 	runtimeDoubleBoundaryPath = "internal/runtime/fake.go"
 	// runtimeContractWaiverOwner owns the remaining production-runtime gaps.
-	runtimeContractWaiverOwner = "ga-80po0c.3"
+	runtimeContractWaiverOwner = "ga-j4q"
 
 	// MarkdownStart begins the generated TESTING.md table.
 	MarkdownStart = "<!-- BEGIN CHECKED RUNTIME PROVIDER LEDGER -->"
@@ -207,8 +207,8 @@ func Catalog() []Entry {
 		builtin(
 			"herdr", "exact:herdr", nil,
 			waivedRuntime(
-				repoSymbol("internal/runtime/herdr", "New"),
-				"the existing full conformance run skips in short mode or when the herdr executable is absent",
+				repoSymbol("cmd/gc", "newHerdrProvider"),
+				"cmd/gc.newHerdrProvider is the selected production composition; the internal herdr.New conformance proof does not exercise its session-name and state-directory derivation",
 			),
 		),
 		builtin(
@@ -327,7 +327,7 @@ func waivedRuntime(constructor SymbolRef, reason string) ContractClaim {
 		Disposition: DispositionWaived,
 		Waiver: &Waiver{
 			Owner:   runtimeContractWaiverOwner,
-			Expires: time.Date(2026, time.August, 12, 0, 0, 0, 0, time.UTC),
+			Expires: time.Date(2026, time.October, 1, 0, 0, 0, 0, time.UTC),
 			Reason:  reason,
 		},
 	}

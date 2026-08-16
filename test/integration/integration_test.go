@@ -1141,11 +1141,15 @@ func newIsolatedEnvRoot(t *testing.T, useDolt bool) (string, string, []string) {
 	registerIntegrationDoltSQLServerCleanup(t, root)
 	gcHome := filepath.Join(root, "gc-home")
 	runtimeDir := filepath.Join(root, "runtime")
+	shellConfigDir := filepath.Join(root, "shell-config")
 	if err := os.MkdirAll(gcHome, 0o755); err != nil {
 		t.Fatalf("creating isolated GC_HOME: %v", err)
 	}
 	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
 		t.Fatalf("creating isolated runtime dir: %v", err)
+	}
+	if err := os.MkdirAll(shellConfigDir, 0o755); err != nil {
+		t.Fatalf("creating isolated shell config dir: %v", err)
 	}
 	port, err := reserveLoopbackPort()
 	if err != nil {
@@ -1159,7 +1163,33 @@ func newIsolatedEnvRoot(t *testing.T, useDolt bool) (string, string, []string) {
 		t.Fatalf("writing isolated dolt config: %v", err)
 	}
 	env := integrationEnvFor(gcHome, runtimeDir, useDolt)
+	// A tmux pane command is first interpreted by the server's configured
+	// shell. Keep host zsh/bash startup files from reordering the hermetic PATH
+	// (and bypassing the integration bd/gc shims) before the test agent starts.
+	env = filterEnvMany(env, "BASH_ENV", "ENV")
+	env = replaceEnv(env, "ZDOTDIR", shellConfigDir)
 	return gcHome, runtimeDir, env
+}
+
+func TestNewIsolatedEnvRootDisablesAmbientShellStartupFiles(t *testing.T) {
+	t.Setenv("ZDOTDIR", "/host/zsh")
+	t.Setenv("BASH_ENV", "/host/bash-env")
+	t.Setenv("ENV", "/host/sh-env")
+
+	gcHome, _, env := newIsolatedEnvRoot(t, false)
+	got := parseEnvList(env)
+	wantZDOTDIR := filepath.Join(filepath.Dir(gcHome), "shell-config")
+	if got["ZDOTDIR"] != wantZDOTDIR {
+		t.Fatalf("ZDOTDIR = %q, want isolated shell config dir %q", got["ZDOTDIR"], wantZDOTDIR)
+	}
+	if info, err := os.Stat(wantZDOTDIR); err != nil || !info.IsDir() {
+		t.Fatalf("isolated shell config dir: info=%v err=%v", info, err)
+	}
+	for _, key := range []string{"BASH_ENV", "ENV"} {
+		if _, ok := got[key]; ok {
+			t.Fatalf("%s leaked into isolated command env", key)
+		}
+	}
 }
 
 func seedDoltIdentityForRoot(gcHome string) error {

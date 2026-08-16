@@ -10061,6 +10061,11 @@ esac
 	if firstPID == "" {
 		t.Fatal("first pid file is empty")
 	}
+	firstPIDNum, err := strconv.Atoi(firstPID)
+	if err != nil {
+		t.Fatalf("parse first pid %q: %v", firstPID, err)
+	}
+	requireDeletedPathHeld(t, firstPIDNum, filepath.Join(cityPath, ".beads", "dolt", "stale-open.txt"))
 	initialStartCount := readDoltStartCountForTest(t, countFile)
 
 	runStart()
@@ -10076,6 +10081,36 @@ esac
 
 	if got := readDoltStartCountForTest(t, countFile); got <= initialStartCount {
 		t.Fatalf("dolt sql-server launch count = %d, want greater than initial %d", got, initialStartCount)
+	}
+}
+
+func TestGcBeadsBdShellDeletedInodeFallbackPreservesConsecutiveZeroLinkRecords(t *testing.T) {
+	embedded, err := bdpack.PackFS.ReadFile("assets/scripts/gc-beads-bd.sh")
+	if err != nil {
+		t.Fatalf("read gc-beads-bd.sh: %v", err)
+	}
+	prelude, _, found := strings.Cut(string(embedded), "\n# --- Main ---\n")
+	if !found {
+		t.Fatal("embedded gc-beads-bd.sh is missing the main boundary")
+	}
+
+	binDir := t.TempDir()
+	lsofPath := filepath.Join(binDir, "lsof")
+	if err := os.WriteFile(lsofPath, []byte("#!/bin/sh\nprintf 'p123\\nk0\\nn/private/var/tmp/heredoc\\nk0\\nn/private/tmp/gc-city/.beads/dolt/held.db\\n'\n"), 0o755); err != nil {
+		t.Fatalf("write fake lsof: %v", err)
+	}
+	harness := prelude + `
+DATA_DIR="$1"
+GC_BIN=""
+has_deleted_data_inodes 424242
+`
+	cmd := exec.Command("sh", "-s", "--", "/tmp/gc-city/.beads/dolt")
+	cmd.Stdin = strings.NewReader(harness)
+	cmd.Env = sanitizedBaseEnv(
+		"PATH=" + strings.Join([]string{binDir, os.Getenv("PATH")}, string(os.PathListSeparator)),
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("shell deleted-inode fallback missed consecutive zero-link record: %v\n%s", err, out)
 	}
 }
 

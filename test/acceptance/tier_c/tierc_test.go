@@ -175,9 +175,15 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 
 	helpers.RunGC(testEnvC, "", "supervisor", "stop", "--wait") //nolint:errcheck
+	tmuxtest.KillAllTestSessions(tierCMainTB{})
 	stopGuard()
 	os.Exit(code)
 }
+
+type tierCMainTB struct{ testing.TB }
+
+func (tierCMainTB) Helper()             {}
+func (tierCMainTB) Logf(string, ...any) {}
 
 // TestSwarm_SlingWorkCoderCommits verifies the swarm end-to-end:
 // sling a task → coder picks up → creates a file → committer commits.

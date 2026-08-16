@@ -704,6 +704,49 @@ func TestClientGetService(t *testing.T) {
 	}
 }
 
+func TestClientLocalServiceProxyTargetsCityPassThroughWithInternalHeader(t *testing.T) {
+	var gotMethod, gotPath, gotInternal string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotInternal = r.Header.Get("X-GC-Request")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer ts.Close()
+
+	target, err := NewCityScopedClient(ts.URL, "bright lights").LocalServiceProxy("omnigent")
+	if err != nil {
+		t.Fatalf("LocalServiceProxy: %v", err)
+	}
+	if target.Endpoint != ts.URL+"/v0/city/bright%20lights/svc/omnigent" {
+		t.Fatalf("endpoint = %q", target.Endpoint)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, target.Endpoint+"/v1/sessions", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := target.Client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if gotMethod != http.MethodPost || gotPath != "/v0/city/bright lights/svc/omnigent/v1/sessions" || gotInternal != "true" {
+		t.Fatalf("request = %s %q X-GC-Request=%q", gotMethod, gotPath, gotInternal)
+	}
+}
+
+func TestClientLocalServiceProxyRejectsInvalidScopeAndName(t *testing.T) {
+	if _, err := NewClient("http://127.0.0.1:8080").LocalServiceProxy("omnigent"); err == nil || !strings.Contains(err.Error(), "city-scoped") {
+		t.Fatalf("supervisor-scope error = %v", err)
+	}
+	if _, err := NewCityScopedClient("http://127.0.0.1:8080", "city").LocalServiceProxy("../other"); err == nil || !strings.Contains(err.Error(), "service name") {
+		t.Fatalf("invalid-name error = %v", err)
+	}
+	if _, err := NewCityScopedClient("https://example.com", "city").LocalServiceProxy("omnigent"); err == nil || !strings.Contains(err.Error(), "loopback") {
+		t.Fatalf("nonlocal error = %v", err)
+	}
+}
+
 func TestClientListCities(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v0/cities" {

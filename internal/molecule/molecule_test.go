@@ -14,6 +14,13 @@ import (
 	"github.com/gastownhall/gascity/internal/formulatest"
 )
 
+func setGraphApplyModeForTest(t *testing.T, enabled bool) {
+	t.Helper()
+	previous := IsGraphApplyEnabled()
+	SetGraphApplyEnabled(enabled)
+	t.Cleanup(func() { SetGraphApplyEnabled(previous) })
+}
+
 // TestBuildRecipeApplyPlanBugReportFlowV2 checks that the plan built
 // from the real bug-report-flow-v2 formula carries the retry→attempt
 // edge for the teardown step. If the edge is dropped here, the bd

@@ -1,0 +1,14 @@
+spec_version: 1
+name: gascity-claude-primary-worker
+description: Generic coding worker using the primary compatible provider.
+
+executor:
+  harness: claude-sdk
+  model: anthropic/claude-sonnet-4-20250514
+  auth:
+    type: provider
+    name: claude-primary
+
+prompt: |
+  Work only on the task assigned by Gas City in the current workspace. Report
+  the changes made and the exact verification performed.

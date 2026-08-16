@@ -1,0 +1,58 @@
+[pack]
+name = "omnigent-local"
+schema = 2
+
+# The controller owns one process per city. The adapter verifies and starts the
+# pinned Omnigent executable described by
+# .gc/services/omnigent/config/profiles.yaml, then binds only the Unix socket
+# assigned by proxy_process supervision.
+[[service]]
+name = "omnigent"
+kind = "proxy_process"
+
+[service.publication]
+visibility = "private"
+allow_websockets = false
+
+[service.process]
+command = ["gc", "omnigent", "serve"]
+health_path = "/health"
+
+[providers.omnigent]
+display_name = "Omnigent (local)"
+command = "gc"
+args = ["omnigent", "attach"]
+path_check = "gc"
+prompt_mode = "none"
+resume_flag = "--conversation"
+resume_style = "flag"
+resume_command = "gc omnigent attach --conversation {{.SessionKey}}"
+
+[[providers.omnigent.options_schema]]
+key = "profile"
+label = "Omnigent profile"
+type = "select"
+default = "offline-mock"
+
+  [[providers.omnigent.options_schema.choices]]
+  value = "offline-mock"
+  label = "Offline mock"
+  flag_args = ["--profile", "offline-mock"]
+
+  [[providers.omnigent.options_schema.choices]]
+  value = "codex"
+  label = "Codex"
+  flag_args = ["--profile", "codex"]
+
+  [[providers.omnigent.options_schema.choices]]
+  value = "claude-primary"
+  label = "Claude primary"
+  flag_args = ["--profile", "claude-primary"]
+
+  [[providers.omnigent.options_schema.choices]]
+  value = "claude-secondary"
+  label = "Claude secondary"
+  flag_args = ["--profile", "claude-secondary"]
+
+[providers.omnigent.option_defaults]
+profile = "offline-mock"

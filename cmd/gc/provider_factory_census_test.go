@@ -51,7 +51,11 @@ var canonicalProviderAliasBindings = map[string]int{
 // disposition. bind-error means the second result is a named local; the
 // forwarding shapes below are the only reviewed multi-result pass-throughs.
 var canonicalProviderCalls = map[string]int{
-	"cmd_citystatus.go:cmdCityStatus:newStatusSessionProviderForCityWithSnapshot:bind-error":                                                   1,
+	// cmdCityStatus still exists; the provider call was extracted into
+	// renderCityStatusLocal. Same file, same callee, same count — only the
+	// enclosing function changed, so this is a census re-attribution and not a
+	// new use of the factory.
+	"cmd_citystatus.go:renderCityStatusLocal:newStatusSessionProviderForCityWithSnapshot:bind-error":                                           1,
 	"cmd_convoy_dispatch.go:runControlDispatcherWithStoreAndConfig:dispatchControlSessionProvider:bind-error":                                  2,
 	"cmd_doctor.go:buildDoctorChecks:newSessionProvider:bind-error":                                                                            1,
 	"cmd_handoff.go:cmdHandoff:newSessionProvider:bind-error":                                                                                  1,

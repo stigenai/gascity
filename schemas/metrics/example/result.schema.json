@@ -205,7 +205,12 @@
               "login",
               "logout",
               "whoami",
-              "runtime-heartbeat"
+              "runtime-heartbeat",
+              "omnigent-attach",
+              "omnigent-doctor",
+              "omnigent-explain",
+              "omnigent-serve",
+              "omnigent-status"
             ]
           },
           "event_id": {

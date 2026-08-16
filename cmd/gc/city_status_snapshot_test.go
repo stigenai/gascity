@@ -202,11 +202,22 @@ func TestLoadStatusSessionSnapshotKillsBdChildOnTimeout(t *testing.T) {
 	}
 
 	oldTimeout := statusSessionSnapshotTimeout
-	statusSessionSnapshotTimeout = 200 * time.Millisecond
+	// Leave enough scheduling headroom for the fake bd process to start under
+	// the fully parallel process gate; the contract under test is cancellation
+	// of an already launched child, not pre-spawn deadline behavior.
+	statusSessionSnapshotTimeout = time.Second
 	t.Cleanup(func() { statusSessionSnapshotTimeout = oldTimeout })
 
 	cityDir := t.TempDir()
-	writeMinimalCityToml(t, cityDir)
+	if err := os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte(`[workspace]
+name = "demo"
+
+[beads]
+provider = "bd"
+backend = "doltlite"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	binDir := t.TempDir()
 	pidFile := filepath.Join(binDir, "bd-child.pid")

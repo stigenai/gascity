@@ -1,0 +1,45 @@
+version: 1
+omnigent:
+  commit: 2aba5079d4d3a2a84d8c9927884fc4b8ce0eeecc
+  package_version: 0.10.0.dev0
+  executable: omnigent
+  # This digest is the audited macOS source build. Replace it only when using
+  # a separately reviewed platform build, and keep the exact commit/version.
+  sha256: sha256:bbc878177989a0cbed7708451952e9332664aef95521c2bb9c7f8b3e78c4b7da
+
+profiles:
+  offline-mock:
+    display_name: Offline mock
+    blurb: Credential-free loopback backend for deterministic local verification.
+    harness: codex
+    backend: gascity-offline-mock
+    network: offline
+    agent: agents/offline-mock.yaml
+
+  codex:
+    display_name: Codex
+    blurb: Codex coding harness using the operator's local subscription profile.
+    harness: codex
+    backend: openai-subscription
+    network: external-model
+    agent: agents/codex.yaml
+    environment: [CODEX_HOME]
+
+  claude-primary:
+    display_name: Claude primary
+    blurb: Claude Code through the operator's primary Anthropic-compatible backend.
+    harness: claude-sdk
+    backend: primary-compatible-gateway
+    network: external-model
+    agent: agents/claude-primary.yaml
+    fallbacks: [claude-secondary]
+    environment: [CLAUDE_PRIMARY_TOKEN]
+
+  claude-secondary:
+    display_name: Claude secondary
+    blurb: Claude Code through an independently authenticated backup backend.
+    harness: claude-sdk
+    backend: secondary-compatible-gateway
+    network: external-model
+    agent: agents/claude-secondary.yaml
+    environment: [CLAUDE_SECONDARY_TOKEN]

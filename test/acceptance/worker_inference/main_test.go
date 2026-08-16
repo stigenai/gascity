@@ -97,9 +97,15 @@ func TestMain(m *testing.M) {
 	if liveEnv != nil {
 		helpers.RunGC(liveEnv, "", "supervisor", "stop") //nolint:errcheck
 	}
+	tmuxtest.KillAllTestSessions(workerInferenceMainTB{})
 	stopGuard()
 	os.Exit(code)
 }
+
+type workerInferenceMainTB struct{ testing.TB }
+
+func (workerInferenceMainTB) Helper()             {}
+func (workerInferenceMainTB) Logf(string, ...any) {}
 
 func prepareProviderSetup(gcHome string, env *helpers.Env) providerSetup {
 	setup := providerSetup{

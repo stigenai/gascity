@@ -61,6 +61,7 @@ gc [flags]
 | [gc mcp](#gc-mcp) | Inspect projected MCP config |
 | [gc metrics](#gc-metrics) | Inspect or control Gas City command usage metrics |
 | [gc nudge](#gc-nudge) | Inspect and deliver deferred nudges |
+| [gc omnigent](#gc-omnigent) | Run the opt-in local Omnigent compatibility adapter |
 | [gc order](#gc-order) | Manage orders (scheduled and event-driven dispatch) |
 | [gc pack](#gc-pack) | Manage remote pack sources |
 | [gc prime](#gc-prime) | Output the behavioral prompt for an agent |
@@ -1837,6 +1838,9 @@ Finds routed work using the agent's work_query config.
 Without --inject: prints normalized ready-only output, exits 0 if work exists, 1 if empty.
 With --inject: silent legacy Stop-hook compatibility; skips the work query and always exits 0.
 With --claim: runs the standard startup claim protocol for one work item.
+With --claim --json: the process exit code follows the JSON envelope — 0 iff
+ok:true (a no-work drain is ok:true); nonzero only on ok:false. Key on the
+envelope (or just rc==0) rather than special-casing the two.
 
 		The agent is determined from $GC_AGENT or a positional argument.
 
@@ -2596,6 +2600,91 @@ gc nudge status [session] [flags]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--json` | bool |  | Output as JSON |
+
+## gc omnigent
+
+Run the opt-in local Omnigent compatibility adapter
+
+```
+gc omnigent
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| [gc omnigent attach](#gc-omnigent-attach) | Attach this Gas City worker pane to an Omnigent conversation |
+| [gc omnigent doctor](#gc-omnigent-doctor) | Diagnose the pinned local Omnigent integration |
+| [gc omnigent explain](#gc-omnigent-explain) | Explain resolved local Omnigent configuration |
+| [gc omnigent serve](#gc-omnigent-serve) | Serve one Gas City-supervised local Omnigent sidecar |
+| [gc omnigent status](#gc-omnigent-status) | Show local Omnigent sidecar and attachment status |
+
+## gc omnigent attach
+
+Attach this Gas City worker pane to an Omnigent conversation
+
+```
+gc omnigent attach [flags]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--conversation` | string |  | exact opaque Omnigent conversation ID to resume |
+| `--profile` | string |  | opaque local Omnigent execution profile ID |
+| `--title` | string |  | non-secret conversation title |
+
+## gc omnigent doctor
+
+Diagnose the pinned local Omnigent integration
+
+```
+gc omnigent doctor [flags]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--json` | bool |  | emit stable JSON |
+| `--profile` | string |  | opaque local Omnigent profile ID to diagnose |
+| `--session` | string |  | Gas City session ID (default: GC_SESSION_ID) |
+
+## gc omnigent explain
+
+Explain resolved local Omnigent configuration
+
+```
+gc omnigent explain [flags]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--json` | bool |  | emit stable JSON |
+| `--profile` | string |  | opaque local Omnigent profile ID to explain |
+
+## gc omnigent serve
+
+Serve one Gas City-supervised local Omnigent sidecar
+
+```
+gc omnigent serve [flags]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--catalog` | string |  | absolute profile catalog path (default: &lt;service-root&gt;/config/profiles.yaml) |
+| `--shutdown-timeout` | duration | `0s` | override exact-child shutdown grace period |
+| `--startup-timeout` | duration | `0s` | override bounded child readiness timeout |
+
+## gc omnigent status
+
+Show local Omnigent sidecar and attachment status
+
+```
+gc omnigent status [flags]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--json` | bool |  | emit stable JSON |
+| `--profile` | string |  | opaque local Omnigent profile ID to explain |
+| `--session` | string |  | Gas City session ID (default: GC_SESSION_ID) |
 
 ## gc order
 

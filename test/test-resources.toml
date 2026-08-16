@@ -10,13 +10,13 @@ version = 2
 [[audit_baseline]]
 scope = "all"
 resource = "subprocess"
-baseline_calls = 535
-baseline_files = 163
+baseline_calls = 539
+baseline_files = 167
 reported_calls = 495
 reported_files = 135
-owner_bead = "ga-80po0c.2"
+owner_bead = "ga-dfk"
 invariant = "tracked test source totals remain visible as audit evidence"
-resource_owner = "ga-80po0c.2 owns this point-in-time source census"
+resource_owner = "ga-dfk owns the Omnigent process-fixture increment; ga-80po0c.2 owns the remaining source census"
 migration_target = "P0.4a"
 expires = "2026-10-01"
 
@@ -51,21 +51,21 @@ expires = "2026-10-01"
 [[debt]]
 scope = "untagged"
 resource = "subprocess"
-baseline_calls = 396
-baseline_files = 112
+baseline_calls = 402
+baseline_files = 114
 reported_calls = 380
 reported_files = 98
-owner_bead = "ga-80po0c.2"
+owner_bead = "ga-dfk"
 invariant = "untagged subprocess call/file totals cannot grow; reductions must lower this baseline"
-resource_owner = "each process-owning test removes or replaces its source call site"
+resource_owner = "ga-dfk replaces redundant Omnigent process fixtures; other owners remove their source call sites"
 migration_target = "D1/D2/D5/D6/E6"
 expires = "2026-10-01"
 
 [[debt]]
 scope = "untagged"
 resource = "fixed_sleep"
-baseline_calls = 292
-baseline_files = 113
+baseline_calls = 282
+baseline_files = 111
 reported_calls = 295
 reported_files = 114
 owner_bead = "ga-80po0c.2"
@@ -116,13 +116,13 @@ expires = "2026-10-01"
 [[debt]]
 scope = "untagged"
 resource = "http_test_server"
-baseline_calls = 317
-baseline_files = 66
+baseline_calls = 332
+baseline_files = 69
 reported_calls = 255
 reported_files = 56
-owner_bead = "ga-80po0c.2.2"
+owner_bead = "ga-dfk"
 invariant = "untagged HTTP test server call/file totals cannot grow; reductions must lower this baseline"
-resource_owner = "each owning test closes its loopback server and removes duplicate server-backed coverage"
+resource_owner = "ga-dfk replaces redundant Omnigent loopback fixtures; retained owners close every server"
 migration_target = "P0.4c"
 expires = "2026-10-01"
 
@@ -142,13 +142,13 @@ expires = "2026-10-01"
 [[debt]]
 scope = "untagged"
 resource = "net_listen"
-baseline_calls = 95
-baseline_files = 36
+baseline_calls = 101
+baseline_files = 39
 reported_calls = 92
 reported_files = 34
-owner_bead = "ga-80po0c.2.2.2"
+owner_bead = "ga-dfk"
 invariant = "untagged stream-listener call/file totals cannot grow; reductions must lower this baseline"
-resource_owner = "each owning test closes its stream listener and removes duplicate listener-backed coverage"
+resource_owner = "ga-dfk replaces redundant Omnigent listeners; retained owners close every stream listener"
 migration_target = "P0.4c-listener"
 expires = "2026-10-01"
 
@@ -194,7 +194,7 @@ expires = "2026-10-01"
 [[debt]]
 scope = "untagged"
 resource = "tmux"
-baseline_calls = 6
+baseline_calls = 7
 baseline_files = 2
 reported_calls = 6
 reported_files = 2
@@ -333,21 +333,21 @@ medium_reason = "package TestMain mutates process state"
 [[small_debt]]
 scope = "untagged"
 resource = "subprocess"
-baseline_calls = 391
-baseline_files = 109
+baseline_calls = 397
+baseline_files = 111
 reported_calls = 394
 reported_files = 105
-owner_bead = "ga-80po0c.2.1"
+owner_bead = "ga-dfk"
 invariant = "untagged Small subprocess call/file totals cannot grow; reductions must lower this baseline"
-resource_owner = "non-Medium lexical owners remove or replace each process call site"
+resource_owner = "ga-dfk replaces redundant Omnigent process fixtures; other non-Medium owners remove each call site"
 migration_target = "D1/D2/D5/D6/E6"
 expires = "2026-10-01"
 
 [[small_debt]]
 scope = "untagged"
 resource = "fixed_sleep"
-baseline_calls = 292
-baseline_files = 113
+baseline_calls = 282
+baseline_files = 111
 reported_calls = 287
 reported_files = 113
 owner_bead = "ga-80po0c.2.1"
@@ -398,13 +398,13 @@ expires = "2026-10-01"
 [[small_debt]]
 scope = "untagged"
 resource = "http_test_server"
-baseline_calls = 317
-baseline_files = 66
+baseline_calls = 332
+baseline_files = 69
 reported_calls = 300
 reported_files = 66
-owner_bead = "ga-80po0c.2.2"
+owner_bead = "ga-dfk"
 invariant = "untagged Small HTTP test server call/file totals cannot grow; reductions must lower this baseline"
-resource_owner = "non-Medium lexical owners move server-backed tests to exact Medium ownership or replace the listener"
+resource_owner = "ga-dfk replaces redundant Omnigent servers; other non-Medium owners move or replace listener coverage"
 migration_target = "P0.4c"
 expires = "2026-10-01"
 
@@ -424,13 +424,13 @@ expires = "2026-10-01"
 [[small_debt]]
 scope = "untagged"
 resource = "net_listen"
-baseline_calls = 93
-baseline_files = 35
+baseline_calls = 99
+baseline_files = 38
 reported_calls = 92
 reported_files = 34
-owner_bead = "ga-80po0c.2.2.2"
+owner_bead = "ga-dfk"
 invariant = "untagged Small stream-listener call/file totals cannot grow; reductions must lower this baseline"
-resource_owner = "non-Medium lexical owners move stream-listener tests to exact Medium ownership or replace the listener"
+resource_owner = "ga-dfk replaces redundant Omnigent listeners; other non-Medium owners move or replace listener coverage"
 migration_target = "P0.4c-listener"
 expires = "2026-10-01"
 

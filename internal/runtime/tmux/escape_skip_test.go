@@ -19,6 +19,7 @@ func TestProviderEnvSkipsEscapeBeforeEnter(t *testing.T) {
 		{provider: "gemini", want: true},
 		{provider: "grok", want: true},
 		{provider: "kimi", want: true},
+		{provider: "omnigent", want: true},
 		{provider: "opencode", want: true},
 		{provider: "pi", want: true},
 		{provider: "antigravity", want: true},

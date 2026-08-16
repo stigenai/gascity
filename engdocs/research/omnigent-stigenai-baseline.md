@@ -1,0 +1,117 @@
+# Omnigent integration baseline
+
+**Status:** Active research baseline
+
+**Bead:** `ga-ou2.1.7`
+**Captured:** 2026-08-15
+
+This note fixes the repository baseline and ownership assumptions for the
+Omnigent integration. It is evidence for the architecture work, not a promise
+that every current seam is the final implementation seam.
+
+## Repository identities
+
+| Name | Repository | Role | Captured revision |
+|---|---|---|---|
+| `origin` | `github.com/stigenai/gascity` | Integration and delivery target | `b0f06c135f3aa52f747178e3f6a269054b7bd7a6` |
+| `upstream` | `github.com/gastownhall/gascity` | Upstream mergeability reference | `b4ef85b8f42530fbe49e18a0a077d0a9f00c3ca1` |
+| merge base | both repositories | Last shared mainline revision | `dcee9b82ff0c3f12a8b3540e13a09ed92a209b0d` |
+| integration branch | `codex/omniagent-integration` | Omnigent work branch after baseline rebase | `cee3d85c49eecb01749c1dca7ea90d79fdedb815` |
+
+At capture time, `origin/main...upstream/main` reported 115 commits only on the
+StigenAI side and 298 commits only on the upstream side. The integration branch
+was rebased onto `origin/main` and reported one branch commit ahead and zero
+behind. That pre-existing branch commit records the managed-checkout
+`.gitignore` entries and is unrelated to Omnigent; it must remain intact.
+
+## Relevant fork history
+
+StigenAI already owns the deepest runtime-specific integration needed by this
+work: the production herdr provider. The current fork-only history includes:
+
+- `1f696d7a9` — initial herdr provider;
+- `92687e725`, `22a14b783`, `2d7b33d70`, `889370f36` — the herdr 0.7.5
+  pane-shell rewrite, provisional binding, name mapping, and exited-pane reaping;
+- `8afc675c9`, `f2fecf5d4`, `18ec726de`, `8749838de` — activity and stale-registry
+  liveness fences;
+- `7c98f09cd` — provider-native session identity persistence;
+- `a46030068` — retaining herdr as the hybrid local backend;
+- `0c2b91e5f` — fail-closed herdr runtime uncertainty.
+
+Relative to the shared merge base, the fork's herdr surface is concentrated in
+`internal/runtime/herdr/` plus the small registration seam in
+`cmd/gc/runtime_registry.go`. The scoped diff adds roughly 3,480 lines and
+removes roughly 260 lines, mostly tests and fork-owned provider files. This is
+the correct ownership boundary to preserve: Omnigent composition should reuse
+herdr rather than duplicate or replace it.
+
+Upstream has relevant post-divergence fixes that the integration must evaluate
+before landing:
+
+- `6fd8f97c4` — herdr 0.7.4/0.7.5 liveness and launch hardening;
+- `24bb1b70c` — confirmed first-turn submission and swallowed-submit recovery;
+- `fb4c42530` — worker transcript metadata retry;
+- newer runtime conformance and session-lifecycle changes visible under
+  `internal/runtime/`, `internal/worker/`, and `cmd/gc/`.
+
+These are candidates for a normal fork sync, not code to copy into an Omnigent
+adapter. Before porting any slice, compare it with the StigenAI equivalents and
+prefer the smallest proven change.
+
+## Ownership boundaries
+
+| Concern | Owner for this integration | Existing seam |
+|---|---|---|
+| Formulas, beads, routing, retries, pools | Gas City | orchestrator and domain packages |
+| Rig, checkout, worktree, working directory | Gas City | rig and worker staging |
+| Runtime placement and visible terminal | Gas City | herdr first, tmux fallback |
+| Omnigent daemon lifecycle | Gas City | city-scoped `[[service]]` supervision |
+| Harness, model, auth, tool policy | Omnigent | pinned local API/config contract |
+| Conversation and harness-specific lifecycle | Omnigent | opaque conversation identifier |
+| Profile failover | Omnigent | ordered, sticky profile chain |
+| Remote placement | Gas City | existing runtime concepts; out of the Omnigent MVP |
+| Durable session projection | Gas City | `worker.Handle` and session beads |
+
+Existing `[[service]]` support is city-scoped and already provides supervised
+long-lived process infrastructure. Existing agent providers carry harness/model
+configuration. Existing herdr and tmux providers own terminal placement and
+interaction. The architecture phase must prove that composing those seams is
+insufficient before adding a new primitive or an Omnigent runtime provider.
+
+## Sync procedure
+
+Run this before implementation starts and again before landing:
+
+```bash
+git fetch --prune origin
+git fetch --prune upstream
+git status --porcelain=v1
+git rev-parse HEAD origin/main upstream/main
+git merge-base origin/main upstream/main
+git rev-list --left-right --count HEAD...origin/main
+git rev-list --left-right --count origin/main...upstream/main
+git log --oneline upstream/main..origin/main -- \
+  internal/runtime/herdr internal/config internal/worker cmd/gc
+git log --oneline origin/main..upstream/main -- \
+  internal/runtime/herdr internal/config internal/worker cmd/gc
+```
+
+With a clean worktree, rebase the integration branch onto `origin/main`. Resolve
+conflicts in favor of newer StigenAI behavior unless the Omnigent design records
+a tested reason to change it. Inspect the final fork delta with scoped diffs and
+`git range-diff`, rerun all affected gates, then push the integration branch to
+`origin`. Never push this work to `upstream`, and never run a beads Dolt remote
+operation: this repository's beads store is local-only.
+
+## Current risks
+
+- The fork and upstream are substantially divergent, so an unscoped upstream
+  merge is not an implementation shortcut.
+- Herdr is a high-value, fork-owned integration surface with extensive
+  regression history. Omnigent must compose with it without changing herdr into
+  a conversation owner.
+- `[[service]]` is HTTP-oriented today. The Omnigent contract audit must verify
+  whether its local server fits that lifecycle directly or needs a small
+  fork-owned adapter.
+- The current integration branch contains one unrelated but intentional
+  `.gitignore` commit. Subsequent commits must not fold Omnigent work into it.

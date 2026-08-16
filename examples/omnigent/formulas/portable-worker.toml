@@ -1,0 +1,20 @@
+formula = "portable-worker"
+description = "Profile-neutral coding workflow for the local Omnigent example"
+version = 1
+
+[[steps]]
+id = "implement"
+title = "Implement the assigned change"
+description = "Complete the assigned bead in the Gas City-provided workspace."
+
+[[steps]]
+id = "verify"
+title = "Verify the change"
+description = "Run the relevant deterministic checks and report exact results."
+needs = ["implement"]
+
+[[steps]]
+id = "report"
+title = "Report completion"
+description = "Record the implementation and verification evidence on the bead."
+needs = ["verify"]

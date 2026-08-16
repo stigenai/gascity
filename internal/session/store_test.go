@@ -2,7 +2,9 @@ package session
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -329,6 +331,132 @@ func TestSetMarkerEmptyValueClears(t *testing.T) {
 	c := rec.CallsForOp("SetMetadata")
 	if len(c) != 1 || c[0].Key != "sleep_intent" || c[0].Value != "" {
 		t.Fatalf("SetMarker clear = %#v, want one SetMetadata(sleep_intent,\"\")", c)
+	}
+}
+
+func TestBindSessionKeyPersistsFirstValueAndReplaysIdempotently(t *testing.T) {
+	b := sessionBeadFixture("s-1", "open", map[string]string{"state": "active"})
+	mem := beads.NewMemStoreFrom(1, []beads.Bead{b}, nil)
+	store := NewStore(beads.SessionStore{Store: mem})
+
+	got, created, err := store.BindSessionKey("s-1", "conv-one")
+	if err != nil || got != "conv-one" || !created {
+		t.Fatalf("first BindSessionKey = (%q, %t, %v), want (conv-one, true, nil)", got, created, err)
+	}
+	got, created, err = store.BindSessionKey("s-1", "conv-one")
+	if err != nil || got != "conv-one" || created {
+		t.Fatalf("replay BindSessionKey = (%q, %t, %v), want (conv-one, false, nil)", got, created, err)
+	}
+	got, created, err = store.BindSessionKey("s-1", "conv-two")
+	if err != nil || got != "conv-one" || created {
+		t.Fatalf("different replay BindSessionKey = (%q, %t, %v), want first winner", got, created, err)
+	}
+	info, err := store.Get("s-1")
+	if err != nil || info.SessionKey != "conv-one" {
+		t.Fatalf("persisted session key = %q, error %v", info.SessionKey, err)
+	}
+	restartedStore := NewStore(beads.SessionStore{Store: mem})
+	got, created, err = restartedStore.BindSessionKey("s-1", "conv-after-restart")
+	if err != nil || got != "conv-one" || created {
+		t.Fatalf("post-restart BindSessionKey = (%q, %t, %v), want durable winner", got, created, err)
+	}
+}
+
+func TestBindSessionKeyConcurrentWritersConvergeWithoutOverwrite(t *testing.T) {
+	b := sessionBeadFixture("s-1", "open", map[string]string{"state": "active"})
+	mem := beads.NewMemStoreFrom(1, []beads.Bead{b}, nil)
+	store := NewStore(beads.SessionStore{Store: mem})
+
+	const writers = 32
+	results := make(chan string, writers)
+	errs := make(chan error, writers)
+	var ready sync.WaitGroup
+	ready.Add(writers)
+	start := make(chan struct{})
+	for i := 0; i < writers; i++ {
+		go func(i int) {
+			ready.Done()
+			<-start
+			got, _, err := store.BindSessionKey("s-1", fmt.Sprintf("conv-%02d", i))
+			results <- got
+			errs <- err
+		}(i)
+	}
+	ready.Wait()
+	close(start)
+
+	var winner string
+	for i := 0; i < writers; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("BindSessionKey: %v", err)
+		}
+		got := <-results
+		if winner == "" {
+			winner = got
+		} else if got != winner {
+			t.Fatalf("writers observed different winners %q and %q", winner, got)
+		}
+	}
+	info, err := store.Get("s-1")
+	if err != nil || info.SessionKey != winner {
+		t.Fatalf("persisted winner = %q, observed %q, error %v", info.SessionKey, winner, err)
+	}
+}
+
+func TestBindSessionKeyRejectsEmptyInputsAndMissingSession(t *testing.T) {
+	b := sessionBeadFixture("s-1", "open", nil)
+	store := NewStore(beads.SessionStore{Store: beads.NewMemStoreFrom(1, []beads.Bead{b}, nil)})
+	for _, tc := range []struct{ id, key string }{{"", "conv"}, {"s-1", ""}} {
+		if _, _, err := store.BindSessionKey(tc.id, tc.key); err == nil {
+			t.Fatalf("BindSessionKey(%q, %q) succeeded", tc.id, tc.key)
+		}
+	}
+	if _, _, err := store.BindSessionKey("missing", "conv"); err == nil {
+		t.Fatal("missing session bind succeeded")
+	}
+}
+
+type ambiguousSessionKeyStore struct {
+	*beads.MemStore
+}
+
+func (s *ambiguousSessionKeyStore) CompareAndSetMetadataKey(id, key, expected, next string) (bool, error) {
+	if _, err := s.MemStore.CompareAndSetMetadataKey(id, key, expected, next); err != nil {
+		return false, err
+	}
+	return false, errors.New("connection lost after commit")
+}
+
+func TestBindSessionKeyVerifiesAmbiguousCommittedWrite(t *testing.T) {
+	b := sessionBeadFixture("s-1", "open", nil)
+	backing := &ambiguousSessionKeyStore{MemStore: beads.NewMemStoreFrom(1, []beads.Bead{b}, nil)}
+	store := NewStore(beads.SessionStore{Store: backing})
+
+	got, created, err := store.BindSessionKey("s-1", "conv_committed")
+	if err != nil || got != "conv_committed" || created {
+		t.Fatalf("BindSessionKey after ambiguous commit = (%q, %t, %v)", got, created, err)
+	}
+	info, getErr := store.Get("s-1")
+	if getErr != nil || info.SessionKey != "conv_committed" {
+		t.Fatalf("verified key = %q, error %v", info.SessionKey, getErr)
+	}
+}
+
+func TestBindSessionKeyKeepsReplacementSessionInstancesIsolated(t *testing.T) {
+	first := sessionBeadFixture("s-1", "open", nil)
+	replacement := sessionBeadFixture("s-2", "open", nil)
+	store := NewStore(beads.SessionStore{Store: beads.NewMemStoreFrom(1, []beads.Bead{first, replacement}, nil)})
+	if got, _, err := store.BindSessionKey("s-1", "conv-original"); err != nil || got != "conv-original" {
+		t.Fatalf("bind original = (%q, %v)", got, err)
+	}
+	if got, _, err := store.BindSessionKey("s-2", "conv-replacement"); err != nil || got != "conv-replacement" {
+		t.Fatalf("bind replacement = (%q, %v)", got, err)
+	}
+	for id, want := range map[string]string{"s-1": "conv-original", "s-2": "conv-replacement"} {
+		info, err := store.Get(id)
+		if err != nil || info.SessionKey != want {
+			t.Fatalf("%s key = %q, error %v", id, info.SessionKey, err)
+		}
 	}
 }
 

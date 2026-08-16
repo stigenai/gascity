@@ -454,11 +454,23 @@ func (p *Provider) IsRunning(name string) bool {
 // IsAttached reports false: herdr 0.7.1 exposes no clean attach-state query.
 func (p *Provider) IsAttached(_ string) bool { return false }
 
-// Attach runs `herdr agent attach`, blocking until the user detaches.
+// Attach resolves the stable bound pane and runs `herdr agent attach`,
+// blocking until the user detaches. Pane identity is required for raw shell
+// sessions, which intentionally have no herdr agent registration.
 func (p *Provider) Attach(name string) error {
-	cmd := exec.Command(p.c.bin, "--session", p.c.session, "agent", "attach", herdrAgentName(name))
+	paneID, err := p.paneID(context.Background(), name)
+	if err != nil {
+		return fmt.Errorf("herdr attach %q: resolve pane: %w", name, err)
+	}
+	if paneID == "" {
+		return runtime.ErrSessionNotFound
+	}
+	cmd := exec.Command(p.c.bin, "--session", p.c.session, "agent", "attach", paneID)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return cmd.Run() // blocks until the user detaches
+	if err := cmd.Run(); err != nil { // blocks until the user detaches
+		return fmt.Errorf("herdr attach %q to pane %q: %w", name, paneID, err)
+	}
+	return nil
 }
 
 // ProcessAlive reports whether the agent's pane has a live foreground process,

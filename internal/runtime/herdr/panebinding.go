@@ -212,14 +212,33 @@ func readMetaFile(path string) (string, error) {
 // not-found is a confirmed-gone (zero probe, nil error); any other failure is
 // a transport error that proves nothing.
 func (p *Provider) probePane(ctx context.Context, paneID string) (paneProbe, error) {
-	shellPID, fg, err := p.c.processInfo(ctx, paneID)
-	if err != nil {
+	const snapshotAttempts = 3
+	var lastErr error
+	for attempt := 0; attempt < snapshotAttempts; attempt++ {
+		shellPID, fg, err := p.c.processInfo(ctx, paneID)
+		if err == nil {
+			return paneProbeFrom(shellPID, fg), nil
+		}
 		if herdrErrorCode(err) == "pane_not_found" {
 			return paneProbe{}, nil
 		}
-		return paneProbe{}, runtimeUnavailableError("herdr pane probe", err)
+		if !errors.Is(err, errIncompleteProcessSnapshot) {
+			return paneProbe{}, runtimeUnavailableError("herdr pane probe", err)
+		}
+		lastErr = err
+		if attempt+1 < snapshotAttempts {
+			timer := time.NewTimer(25 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return paneProbe{}, ctx.Err()
+			case <-timer.C:
+			}
+		}
 	}
-	return paneProbeFrom(shellPID, fg), nil
+	return paneProbe{}, runtimeUnavailableError("herdr pane probe", lastErr)
 }
 
 // interactiveShells are the interactive shells a fresh pane idles in; a pane

@@ -18,9 +18,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -331,6 +333,15 @@ type Client struct {
 	// request, never captured. nil means no grant is attached (a city that
 	// authenticates on X-GC-Request alone, or one fronted by a bearer edge).
 	grantSource GrantSource
+}
+
+var localServiceProxyNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$`)
+
+// LocalServiceProxyTarget is a loopback-only client and fixed city service
+// endpoint for the sanctioned /svc/* pass-through surface.
+type LocalServiceProxyTarget struct {
+	Endpoint string
+	Client   *http.Client
 }
 
 // IsRemote reports whether this client targets a remote city over the control
@@ -644,6 +655,58 @@ func NewClient(baseURL string) *Client {
 // paths natively — no prefix rewrite or path editor needed.
 func NewCityScopedClient(baseURL, cityName string) *Client {
 	return newClient(baseURL, cityName)
+}
+
+// LocalServiceProxy returns a loopback-only HTTP target for one private
+// workspace service. The returned transport stamps the internal-request
+// header required for service mutations and deliberately has no global
+// timeout so SSE calls are bounded by their request contexts.
+func (c *Client) LocalServiceProxy(name string) (LocalServiceProxyTarget, error) {
+	if c == nil {
+		return LocalServiceProxyTarget{}, errors.New("api: client is nil")
+	}
+	if c.initErr != nil {
+		return LocalServiceProxyTarget{}, c.initErr
+	}
+	if c.isRemote {
+		return LocalServiceProxyTarget{}, errors.New("api: local service proxy is unavailable for remote cities")
+	}
+	if strings.TrimSpace(c.cityName) == "" {
+		return LocalServiceProxyTarget{}, errors.New("api: local service proxy requires a city-scoped client")
+	}
+	if !localServiceProxyNamePattern.MatchString(name) {
+		return LocalServiceProxyTarget{}, fmt.Errorf("api: invalid service name %q", name)
+	}
+	base, err := url.Parse(c.baseURL)
+	if err != nil || base.Scheme != "http" || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
+		return LocalServiceProxyTarget{}, errors.New("api: local service proxy requires a plain loopback HTTP origin")
+	}
+	host := base.Hostname()
+	ip := net.ParseIP(host)
+	if !strings.EqualFold(host, "localhost") && (ip == nil || !ip.IsLoopback()) {
+		return LocalServiceProxyTarget{}, fmt.Errorf("api: local service proxy host %q is not loopback", host)
+	}
+	pathPrefix := strings.TrimSuffix(base.Path, "/") + "/v0/city/"
+	base.Path = pathPrefix + c.cityName + "/svc/" + name
+	base.RawPath = pathPrefix + url.PathEscape(c.cityName) + "/svc/" + url.PathEscape(name)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.ResponseHeaderTimeout = 30 * time.Second
+	return LocalServiceProxyTarget{
+		Endpoint: strings.TrimSuffix(base.String(), "/"),
+		Client:   &http.Client{Transport: internalServiceProxyTransport{base: transport}},
+	}, nil
+}
+
+type internalServiceProxyTransport struct {
+	base http.RoundTripper
+}
+
+func (t internalServiceProxyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	cloned := req.Clone(req.Context())
+	cloned.Header = req.Header.Clone()
+	cloned.Header.Set("X-GC-Request", "true")
+	return t.base.RoundTrip(cloned)
 }
 
 func newClient(baseURL, cityName string) *Client {

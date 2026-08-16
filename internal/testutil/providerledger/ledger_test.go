@@ -11,7 +11,7 @@ import (
 func TestValidateRejectsInvalidContractClaims(t *testing.T) {
 	now := time.Date(2026, time.July, 13, 12, 0, 0, 0, time.UTC)
 	validWaiver := &Waiver{
-		Owner:   "ga-80po0c.3",
+		Owner:   "ga-j4q",
 		Expires: now.Add(30 * 24 * time.Hour),
 		Reason:  "tracked legacy contract gap",
 	}
@@ -50,12 +50,12 @@ func TestValidateRejectsInvalidContractClaims(t *testing.T) {
 				Contract:    ContractRuntimeProvider,
 				Disposition: DispositionWaived,
 				Waiver: &Waiver{
-					Owner:   "ga-80po0c.3",
+					Owner:   "ga-j4q",
 					Expires: now.Add(-time.Hour),
 					Reason:  "expired gap",
 				},
 			},
-			want: "waiver owned by ga-80po0c.3 expired",
+			want: "waiver owned by ga-j4q expired",
 		},
 		{
 			name: "waiver has no owner",
@@ -75,12 +75,12 @@ func TestValidateRejectsInvalidContractClaims(t *testing.T) {
 				Contract:    ContractRuntimeProvider,
 				Disposition: DispositionWaived,
 				Waiver: &Waiver{
-					Owner:   "ga-80po0c.3",
+					Owner:   "ga-j4q",
 					Expires: now.Add(maxWaiverHorizon + time.Hour),
 					Reason:  "parked gap",
 				},
 			},
-			want: "waiver owned by ga-80po0c.3 exceeds",
+			want: "waiver owned by ga-j4q exceeds",
 		},
 		{
 			name: "not applicable has no reason",
@@ -565,8 +565,8 @@ func TestCatalogBindsFakeAndSubprocessWithDirAndDefersDefaultConstructor(t *test
 	if got, want := renderSymbolRefs(subprocessProof.AllowedCalls), "fmt.Sprintf, internal/testutil.ShortTempDir, sync/atomic.AddInt64"; got != want {
 		t.Errorf("subprocess WithDir allowed calls = %q, want %q", got, want)
 	}
-	if subprocessDefaultWaiver == nil || subprocessDefaultWaiver.Owner != "ga-80po0c.3" {
-		t.Errorf("subprocess default waiver = %+v, want ga-80po0c.3 ownership", subprocessDefaultWaiver)
+	if subprocessDefaultWaiver == nil || subprocessDefaultWaiver.Owner != "ga-j4q" {
+		t.Errorf("subprocess default waiver = %+v, want ga-j4q ownership", subprocessDefaultWaiver)
 	}
 }
 
@@ -603,8 +603,8 @@ func TestCatalogBindsACPWithDirAndDefersDefaultConstructor(t *testing.T) {
 	if got, want := renderSymbolRefs(withDirProof.AllowedCalls), "fmt.Sprintf, internal/runtime/acp.acpConformanceCommand, internal/runtime/acp.acpConformanceDir, sync/atomic.AddInt64"; got != want {
 		t.Errorf("ACP WithDir allowed calls = %q, want %q", got, want)
 	}
-	if defaultWaiver == nil || defaultWaiver.Owner != "ga-80po0c.3" {
-		t.Errorf("ACP default waiver = %+v, want ga-80po0c.3 ownership", defaultWaiver)
+	if defaultWaiver == nil || defaultWaiver.Owner != "ga-j4q" {
+		t.Errorf("ACP default waiver = %+v, want ga-j4q ownership", defaultWaiver)
 	}
 }
 
@@ -641,8 +641,8 @@ func TestCatalogBindsExecCompositionToSeamBackedContract(t *testing.T) {
 	if got, want := renderSymbolRefs(proof.AllowedCalls), "fmt.Sprintf, internal/runtime/exec.execConformanceScript, sync/atomic.AddInt64"; got != want {
 		t.Errorf("exec.NewSeamBacked allowed calls = %q, want %q", got, want)
 	}
-	if t3Waiver == nil || t3Waiver.Owner != "ga-80po0c.3" {
-		t.Errorf("legacy T3 exec-prefix waiver = %+v, want ga-80po0c.3 ownership", t3Waiver)
+	if t3Waiver == nil || t3Waiver.Owner != "ga-j4q" {
+		t.Errorf("legacy T3 exec-prefix waiver = %+v, want ga-j4q ownership", t3Waiver)
 	}
 }
 
@@ -1634,7 +1634,7 @@ func TestCatalogReturnsIndependentEntries(t *testing.T) {
 	if got := second[0].Claims[0].Proof.AllowedCalls[0].Name; got != "Sprintf" {
 		t.Errorf("Catalog() proof allowed call leaked mutation: %q", got)
 	}
-	if second[2].Claims[0].Waiver.Owner != "ga-80po0c.3" {
+	if second[2].Claims[0].Waiver.Owner != "ga-j4q" {
 		t.Errorf("Catalog() waiver leaked mutation: %q", second[2].Claims[0].Waiver.Owner)
 	}
 	if second[len(second)-1].Source.Function != "resolveSessionTransportProvider" {

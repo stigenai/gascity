@@ -1,9 +1,13 @@
+//go:build integration
+
 package tmux
 
 import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/gastownhall/gascity/test/tmuxtest"
 )
 
 // TestNudgePokeRealTmux dogfoods the nudge-path poke fix (residual of #3049) against a
@@ -26,11 +30,13 @@ func TestNudgePokeRealTmux(t *testing.T) {
 
 	t.Run("never-busy claude nudge burns full submitEnterAndConfirm budget, still stamps at completion", func(t *testing.T) {
 		tm := NewTmuxWithConfig(Config{SocketName: "gcdogfoodnudgea", NudgeReadyTimeout: 10 * time.Second, NudgeLockTimeout: 10 * time.Second})
+		guard := tmuxtest.NewGuardWithSocket(t, tm.cfg.SocketName)
 		const sess = "dogfood-neverbusy"
-		_, _ = tm.run("kill-server")
-		t.Cleanup(func() { _, _ = tm.run("kill-server") })
 		if _, err := tm.run("new-session", "-d", "-s", sess, "-x", "80", "-y", "24"); err != nil {
 			t.Skipf("cannot create tmux session (tmux unavailable?): %v", err)
+		}
+		if err := guard.CaptureServer(); err != nil {
+			t.Fatalf("capturing isolated tmux server: %v", err)
 		}
 		// GC_PROVIDER=claude routes through submitVerifyEligible ->
 		// submitEnterAndConfirm. The plain shell pane never shows Claude's busy
@@ -89,11 +95,13 @@ func TestNudgePokeRealTmux(t *testing.T) {
 
 	t.Run("non-claude fallback success path records a poke", func(t *testing.T) {
 		tm := NewTmuxWithConfig(Config{SocketName: "gcdogfoodnudgeb", NudgeReadyTimeout: 10 * time.Second, NudgeLockTimeout: 10 * time.Second})
+		guard := tmuxtest.NewGuardWithSocket(t, tm.cfg.SocketName)
 		const sess = "dogfood-plain"
-		_, _ = tm.run("kill-server")
-		t.Cleanup(func() { _, _ = tm.run("kill-server") })
 		if _, err := tm.run("new-session", "-d", "-s", sess, "-x", "80", "-y", "24"); err != nil {
 			t.Skipf("cannot create tmux session (tmux unavailable?): %v", err)
+		}
+		if err := guard.CaptureServer(); err != nil {
+			t.Fatalf("capturing isolated tmux server: %v", err)
 		}
 		time.Sleep(200 * time.Millisecond)
 
@@ -114,11 +122,13 @@ func TestNudgePokeRealTmux(t *testing.T) {
 
 	t.Run("genuine post-nudge turn is not discounted", func(t *testing.T) {
 		tm := NewTmuxWithConfig(Config{SocketName: "gcdogfoodnudgec", NudgeReadyTimeout: 10 * time.Second, NudgeLockTimeout: 10 * time.Second})
+		guard := tmuxtest.NewGuardWithSocket(t, tm.cfg.SocketName)
 		const sess = "dogfood-turn"
-		_, _ = tm.run("kill-server")
-		t.Cleanup(func() { _, _ = tm.run("kill-server") })
 		if _, err := tm.run("new-session", "-d", "-s", sess, "-x", "80", "-y", "24"); err != nil {
 			t.Skipf("cannot create tmux session (tmux unavailable?): %v", err)
+		}
+		if err := guard.CaptureServer(); err != nil {
+			t.Fatalf("capturing isolated tmux server: %v", err)
 		}
 		time.Sleep(200 * time.Millisecond)
 
@@ -155,10 +165,12 @@ func TestNudgePokeRealTmux(t *testing.T) {
 
 	t.Run("error, lock-timeout, and failed-send paths record no poke", func(t *testing.T) {
 		tm := NewTmuxWithConfig(Config{SocketName: "gcdogfoodnudged", NudgeReadyTimeout: 300 * time.Millisecond, NudgeLockTimeout: 300 * time.Millisecond})
-		_, _ = tm.run("kill-server")
-		t.Cleanup(func() { _, _ = tm.run("kill-server") })
+		guard := tmuxtest.NewGuardWithSocket(t, tm.cfg.SocketName)
 		if _, err := tm.run("new-session", "-d", "-s", "dogfood-anchor", "-x", "80", "-y", "24"); err != nil {
 			t.Skipf("cannot create tmux session (tmux unavailable?): %v", err)
+		}
+		if err := guard.CaptureServer(); err != nil {
+			t.Fatalf("capturing isolated tmux server: %v", err)
 		}
 
 		// (a) session-not-found: sendKeysLiteralWithRetry fails non-transiently.
@@ -196,11 +208,13 @@ func TestNudgePokeRealTmux(t *testing.T) {
 
 	t.Run("NudgePane success path records a poke", func(t *testing.T) {
 		tm := NewTmuxWithConfig(Config{SocketName: "gcdogfoodnudgee", NudgeReadyTimeout: 10 * time.Second, NudgeLockTimeout: 10 * time.Second})
+		guard := tmuxtest.NewGuardWithSocket(t, tm.cfg.SocketName)
 		const sess = "dogfood-pane"
-		_, _ = tm.run("kill-server")
-		t.Cleanup(func() { _, _ = tm.run("kill-server") })
 		if _, err := tm.run("new-session", "-d", "-s", sess, "-x", "80", "-y", "24"); err != nil {
 			t.Skipf("cannot create tmux session (tmux unavailable?): %v", err)
+		}
+		if err := guard.CaptureServer(); err != nil {
+			t.Fatalf("capturing isolated tmux server: %v", err)
 		}
 		time.Sleep(200 * time.Millisecond)
 

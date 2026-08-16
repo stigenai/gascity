@@ -161,6 +161,8 @@ func deletedDataInodeTargetsFromFormattedLsofOutput(output string) []string {
 	var targets []string
 	var currentName string
 	currentDeleted := false
+	pendingLinkCount := false
+	pendingDeleted := false
 	flush := func() {
 		if currentName != "" && currentDeleted {
 			targets = append(targets, currentName)
@@ -175,23 +177,36 @@ func deletedDataInodeTargetsFromFormattedLsofOutput(output string) []string {
 		}
 		switch line[0] {
 		case 'f':
+			if pendingLinkCount && currentName != "" {
+				currentDeleted = pendingDeleted
+			}
+			pendingLinkCount = false
+			pendingDeleted = false
 			flush()
 		case 'k':
+			// lsof normally emits k before n, but older variants can emit it
+			// after n. Defer attribution until the next record boundary so
+			// both orders remain unambiguous.
 			links := strings.TrimSpace(strings.TrimPrefix(line, "k"))
-			if links == "0" {
-				currentDeleted = true
-			}
+			pendingLinkCount = true
+			pendingDeleted = links == "0"
 		case 'n':
 			if currentName != "" {
 				flush()
 			}
 			target := strings.TrimSpace(strings.TrimPrefix(line, "n"))
+			currentDeleted = pendingLinkCount && pendingDeleted
+			pendingLinkCount = false
+			pendingDeleted = false
 			if strings.Contains(target, " (deleted)") {
 				currentDeleted = true
 				target = strings.TrimSuffix(target, " (deleted)")
 			}
 			currentName = normalizeLsofReportedPath(target)
 		}
+	}
+	if pendingLinkCount && currentName != "" {
+		currentDeleted = pendingDeleted
 	}
 	flush()
 	return targets

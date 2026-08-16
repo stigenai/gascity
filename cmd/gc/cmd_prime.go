@@ -669,25 +669,17 @@ func persistPrimeHookProviderSessionKey(hookProviderSessionID string, stderr io.
 		warn("resolving city for session %q: %v", gcSessionID, err)
 		return
 	}
-	store, err := openCityStoreAt(cityPath)
+	sessFront, err := citySessionFrontDoorAt(cityPath)
 	if err != nil {
-		warn("opening city store for session %q: %v", gcSessionID, err)
+		warn("opening city session store for session %q: %v", gcSessionID, err)
 		return
 	}
-	// Route the session_key write through the session coordination-class store so
-	// a [beads.classes.sessions] relocation reaches it — otherwise the provider
-	// resume key would silently land on the work store while the real session
-	// bead lives in the relocated store. No-refresh loader on this hot hook path
-	// (see primeHookSessionTemplate); nil cfg → cliSessionStore identity.
-	cfg, _ := loadCityConfigWithoutBuiltinPackRefresh(cityPath, io.Discard)
-	sessStore := cliSessionStore(store, cfg, cityPath)
 	// WI-6 R5: route the read through the session front door → Info. Get wraps
 	// absence as "loading session %q" and rejects non-session beads with
 	// ErrSessionNotFound; on this hook path both surface through the existing
 	// warn-and-return diagnostic (a foreign/absent bead never reaches the write),
 	// and the codex guard now resolves the family off Info (Provider precedence:
 	// builtin_ancestor → provider_kind → provider, all carried on Info).
-	sessFront := sessionFrontDoor(sessStore)
 	info, err := sessFront.Get(gcSessionID)
 	if err != nil {
 		// The front-door Get already wraps with `loading session %q`, carrying the
@@ -699,12 +691,22 @@ func persistPrimeHookProviderSessionKey(hookProviderSessionID string, stderr io.
 		warn("hook stdin provider session id is only accepted for codex session %q", gcSessionID)
 		return
 	}
-	if existing := strings.TrimSpace(info.SessionKey); existing != "" {
-		return
+	if _, _, err := sessFront.BindSessionKey(gcSessionID, providerSessionID); err != nil {
+		warn("binding session_key for session %q: %v", gcSessionID, err)
 	}
-	if err := sessFront.SetMarker(gcSessionID, "session_key", providerSessionID); err != nil {
-		warn("writing session_key for session %q: %v", gcSessionID, err)
+}
+
+// citySessionFrontDoorAt opens the configured session coordination-class store
+// without pack-refresh side effects and returns its typed domain front door.
+// Provider conversation identity must use this path so relocated session beads
+// are never split from their resume key.
+func citySessionFrontDoorAt(cityPath string) (*sessionpkg.Store, error) {
+	store, err := openCityStoreAt(cityPath)
+	if err != nil {
+		return nil, err
 	}
+	cfg, _ := loadCityConfigWithoutBuiltinPackRefresh(cityPath, io.Discard)
+	return sessionFrontDoor(cliSessionStore(store, cfg, cityPath)), nil
 }
 
 // isPoolInstance reports whether a resolved agent (with Pool=nil) originated

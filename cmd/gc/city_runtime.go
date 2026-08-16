@@ -499,6 +499,17 @@ func (cr *CityRuntime) run(ctx context.Context) {
 		return
 	}
 
+	// Verify the managed Dolt before the sweep below reads the session bead
+	// store. TestCityRuntimeRunStartupPreflightsManagedDoltBeforeSessionSnapshot
+	// pins that invariant, and it is the preflight that has to move, not the
+	// sweep: the sweep must stay ahead of order dispatch (see its comment), and
+	// the next preflight does not run until after orders have already gone out.
+	// Idempotent — this is the same call every tick makes.
+	cr.ensureManagedDoltPublishedForTick()
+	if ctx.Err() != nil {
+		return
+	}
+
 	// Reconcile write-ahead journals left by async provider Start calls before
 	// any desired-state construction or order dispatch can route work to those
 	// names. A journal survives the old standalone controller process; its mode
@@ -1018,22 +1029,6 @@ func (cr *CityRuntime) tick(
 	if ctx.Err() != nil {
 		return
 	}
-	// Retry durable completion journals that outlived their bounded callback
-	// retry. Entries still owned by an in-flight provider Start are skipped;
-	// their completion callback retains first responsibility.
-	resolvedAsyncJournals, _, asyncJournalErr := sweepAsyncStartCleanupObligationsSkipping(
-		cr.sp,
-		cr.sessionsBeadStore().Store,
-		time.Now(),
-		cr.stderr,
-		func(info sessionpkg.Info) bool { return cr.asyncStarts.ownsStartKey(info.ID) },
-		func(info sessionpkg.Info, raw string) { cr.asyncStarts.forgetStartJournal(info.ID, raw) },
-	)
-	if asyncJournalErr != nil {
-		fmt.Fprintf(cr.stderr, "%s: retrying durable async-start completion journals: %v\n", cr.logPrefix, asyncJournalErr) //nolint:errcheck
-	} else if resolvedAsyncJournals > 0 {
-		fmt.Fprintf(cr.stderr, "%s: reconciled %d deferred async-start completion journal(s)\n", cr.logPrefix, resolvedAsyncJournals) //nolint:errcheck
-	}
 	traceTrigger := trigger
 	traceDetail := "controller_tick"
 	cr.reloadMu.Lock()
@@ -1138,6 +1133,37 @@ func (cr *CityRuntime) tick(
 	phaseStart := time.Now()
 	cr.ensureManagedDoltPublishedForTick()
 	recordPhase(TraceSiteControllerTickPhase, "managed_dolt_preflight", phaseStart, nil)
+	if ctx.Err() != nil {
+		return
+	}
+
+	// Retry durable completion journals that outlived their bounded callback
+	// retry. Entries still owned by an in-flight provider Start are skipped;
+	// their completion callback retains first responsibility.
+	//
+	// AFTER the managed-Dolt preflight, not before it: this sweep reads the
+	// session bead store, and TestCityRuntimeTickPreflightsManagedDoltBefore-
+	// SessionSnapshot pins the invariant that nothing queries that store until
+	// the controller has verified its own database. Sweeping first meant a tick
+	// whose Dolt was unhealthy would fail the journal reconcile for a reason
+	// that had nothing to do with the journal. Still ahead of order dispatch and
+	// desired-state construction, so no work is routed to a name whose journal
+	// is unresolved.
+	phaseStart = time.Now()
+	resolvedAsyncJournals, _, asyncJournalErr := sweepAsyncStartCleanupObligationsSkipping(
+		cr.sp,
+		cr.sessionsBeadStore().Store,
+		time.Now(),
+		cr.stderr,
+		func(info sessionpkg.Info) bool { return cr.asyncStarts.ownsStartKey(info.ID) },
+		func(info sessionpkg.Info, raw string) { cr.asyncStarts.forgetStartJournal(info.ID, raw) },
+	)
+	if asyncJournalErr != nil {
+		fmt.Fprintf(cr.stderr, "%s: retrying durable async-start completion journals: %v\n", cr.logPrefix, asyncJournalErr) //nolint:errcheck
+	} else if resolvedAsyncJournals > 0 {
+		fmt.Fprintf(cr.stderr, "%s: reconciled %d deferred async-start completion journal(s)\n", cr.logPrefix, resolvedAsyncJournals) //nolint:errcheck
+	}
+	recordPhase(TraceSiteControllerTickPhase, "async_start_journal_sweep", phaseStart, nil)
 	if ctx.Err() != nil {
 		return
 	}

@@ -188,12 +188,16 @@ var testTempRootAliveSentinel *os.File
 var tmuxSocketAliveSentinel *os.File
 
 type cleanupTestingM struct {
-	m     testscript.TestingM
-	paths []string
+	m       testscript.TestingM
+	paths   []string
+	cleanup func()
 }
 
 func (m cleanupTestingM) Run() int {
 	code := m.m.Run()
+	if m.cleanup != nil {
+		m.cleanup()
+	}
 	for _, path := range m.paths {
 		if path != "" {
 			_ = os.RemoveAll(path)
@@ -201,6 +205,11 @@ func (m cleanupTestingM) Run() int {
 	}
 	return code
 }
+
+type tmuxMainCleanupTB struct{ testing.TB }
+
+func (tmuxMainCleanupTB) Helper()             {}
+func (tmuxMainCleanupTB) Logf(string, ...any) {}
 
 func TestMain(m *testing.M) {
 	maybeRunProductMetricsDirectChildEnvSpy()
@@ -303,8 +312,12 @@ func TestMain(m *testing.M) {
 	configureFSPressureForTests()
 	configureSupervisorHooksForTests()
 	var testRunner testscript.TestingM = newDoltLeakGuardedTestingM(m, testTempRoot, testTempRoot, gcHome, runtimeDir, providerStubDir, sharedTestFixtureRoot)
-	if tmuxSocketCleanupRoot != "" {
-		testRunner = cleanupTestingM{m: testRunner, paths: []string{tmuxSocketCleanupRoot}}
+	// Keep the cleanup call lexically in TestMain, its declared Medium resource
+	// owner. It must run before either socket root is removed so PID discovery
+	// can capture the server process group and its tmux configuration helpers.
+	testRunner = cleanupTestingM{
+		m: testRunner, paths: []string{tmuxSocketCleanupRoot},
+		cleanup: func() { tmuxtest.KillAllTestSessions(tmuxMainCleanupTB{}) },
 	}
 	testscript.Main(testRunner, map[string]func(){
 		"gc": func() {

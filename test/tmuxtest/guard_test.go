@@ -81,6 +81,30 @@ func TestListTestSocketPathsSkipsLiveSiblingRoots(t *testing.T) {
 	}
 }
 
+func TestListTestSocketPathsIncludesEverySocketInActiveIsolatedRoot(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv(tmuxTmpEnv, root)
+
+	uid := strconv.Itoa(os.Getuid())
+	for _, name := range []string{"gctest-owned", "test-city", "gc-omnigent-test-owned"} {
+		path := filepath.Join(root, "tmux-"+uid, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatalf("MkdirAll(%s): %v", filepath.Dir(path), err)
+		}
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatalf("WriteFile(%s): %v", path, err)
+		}
+	}
+
+	got := listTestSocketPaths()
+	for _, name := range []string{"gctest-owned", "test-city", "gc-omnigent-test-owned"} {
+		want := filepath.Join(root, "tmux-"+uid, name)
+		if !slices.Contains(got, want) {
+			t.Errorf("listTestSocketPaths() missing active-root socket %s in %v", want, got)
+		}
+	}
+}
+
 func TestTmuxSocketRootPatternsCoverKnownRuntimePrefixes(t *testing.T) {
 	namespace := t.TempDir()
 	tests := []struct {

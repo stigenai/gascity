@@ -1,9 +1,13 @@
+//go:build integration
+
 package tmux
 
 import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/gastownhall/gascity/test/tmuxtest"
 )
 
 // TestPokeActivityRealTmux dogfoods the #3049 fix against a REAL, isolated tmux
@@ -21,12 +25,14 @@ func TestPokeActivityRealTmux(t *testing.T) {
 		t.Skip("set GC_TMUX_INTEGRATION=1 to run this real-tmux dogfood (spins a throwaway tmux server)")
 	}
 	tm := NewTmuxWithConfig(Config{SocketName: "gcdogfood3049"})
+	guard := tmuxtest.NewGuardWithSocket(t, tm.cfg.SocketName)
 	const sess = "dogfood"
-	_, _ = tm.run("kill-server") // clean slate on this isolated socket; ignore if none
 	if _, err := tm.run("new-session", "-d", "-s", sess, "-x", "80", "-y", "24"); err != nil {
 		t.Skipf("cannot create tmux session (tmux unavailable?): %v", err)
 	}
-	t.Cleanup(func() { _, _ = tm.run("kill-server") })
+	if err := guard.CaptureServer(); err != nil {
+		t.Fatalf("capturing isolated tmux server: %v", err)
+	}
 
 	// A genuine "turn": pane output. Let #{window_activity} settle.
 	if _, err := tm.run("send-keys", "-t", sess, "-l", "echo genuine-turn"); err != nil {

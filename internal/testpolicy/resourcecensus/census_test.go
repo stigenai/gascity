@@ -1940,7 +1940,7 @@ func TestValidateUsesCodeOwnedBootstrapPolicy(t *testing.T) {
 	ledger := cloneLedger(bootstrapPolicy)
 	ledger.Debt[0].OwnerBead = "ga-rewritten"
 	err := Validate(ledger, Census{}, fixedNow())
-	requireErrorContains(t, err, `owner_bead = "ga-rewritten", bootstrap policy requires "ga-80po0c.2"`)
+	requireErrorContains(t, err, `owner_bead = "ga-rewritten", bootstrap policy requires "ga-dfk"`)
 	if strings.Contains(err.Error(), "source resource census") {
 		t.Fatalf("live census was compared before code-owned policy drift was rejected: %v", err)
 	}
@@ -1951,8 +1951,8 @@ func TestBootstrapPolicyOwnsHTTPTestServerDebt(t *testing.T) {
 
 	for _, rows := range [][]Baseline{bootstrapPolicy.Debt, bootstrapPolicy.SmallDebt} {
 		row := findRow(t, rows, ScopeUntagged, ResourceHTTPTestServer)
-		if row.OwnerBead != "ga-80po0c.2.2" || row.MigrationTarget != "P0.4c" {
-			t.Fatalf("HTTP test server owner = %q/%q, want ga-80po0c.2.2/P0.4c", row.OwnerBead, row.MigrationTarget)
+		if row.OwnerBead != "ga-dfk" || row.MigrationTarget != "P0.4c" {
+			t.Fatalf("HTTP test server owner = %q/%q, want ga-dfk/P0.4c", row.OwnerBead, row.MigrationTarget)
 		}
 	}
 }
@@ -1983,16 +1983,16 @@ func TestBootstrapPolicyOwnsNetListenDebtAndExactMediumOwners(t *testing.T) {
 	t.Parallel()
 
 	debt := findRow(t, bootstrapPolicy.Debt, ScopeUntagged, ResourceNetListen)
-	if debt.BaselineCalls != 95 || debt.BaselineFiles != 36 || debt.ReportedCalls != 92 || debt.ReportedFiles != 34 {
-		t.Fatalf("stream-listener source baseline/reported = %d/%d, %d/%d; want 95/36, 92/34", debt.BaselineCalls, debt.BaselineFiles, debt.ReportedCalls, debt.ReportedFiles)
+	if debt.BaselineCalls != 101 || debt.BaselineFiles != 39 || debt.ReportedCalls != 92 || debt.ReportedFiles != 34 {
+		t.Fatalf("stream-listener source baseline/reported = %d/%d, %d/%d; want 101/39, 92/34", debt.BaselineCalls, debt.BaselineFiles, debt.ReportedCalls, debt.ReportedFiles)
 	}
 	smallDebt := findRow(t, bootstrapPolicy.SmallDebt, ScopeUntagged, ResourceNetListen)
-	if smallDebt.BaselineCalls != 93 || smallDebt.BaselineFiles != 35 {
-		t.Fatalf("stream-listener Small baseline = %d/%d, want 93/35", smallDebt.BaselineCalls, smallDebt.BaselineFiles)
+	if smallDebt.BaselineCalls != 99 || smallDebt.BaselineFiles != 38 {
+		t.Fatalf("stream-listener Small baseline = %d/%d, want 99/38", smallDebt.BaselineCalls, smallDebt.BaselineFiles)
 	}
 	for _, row := range []*Baseline{debt, smallDebt} {
-		if row.OwnerBead != "ga-80po0c.2.2.2" || row.MigrationTarget != "P0.4c-listener" {
-			t.Fatalf("stream-listener owner = %q/%q, want ga-80po0c.2.2.2/P0.4c-listener", row.OwnerBead, row.MigrationTarget)
+		if row.OwnerBead != "ga-dfk" || row.MigrationTarget != "P0.4c-listener" {
+			t.Fatalf("stream-listener owner = %q/%q, want ga-dfk/P0.4c-listener", row.OwnerBead, row.MigrationTarget)
 		}
 	}
 
@@ -2063,8 +2063,8 @@ func TestBootstrapPolicyOwnsTmuxDebtAndExactMediumSetup(t *testing.T) {
 	t.Parallel()
 
 	debt := findRow(t, bootstrapPolicy.Debt, ScopeUntagged, ResourceTmux)
-	if debt.BaselineCalls != 6 || debt.BaselineFiles != 2 {
-		t.Fatalf("tmux source baseline = %d/%d, want 6/2", debt.BaselineCalls, debt.BaselineFiles)
+	if debt.BaselineCalls != 7 || debt.BaselineFiles != 2 {
+		t.Fatalf("tmux source baseline = %d/%d, want 7/2", debt.BaselineCalls, debt.BaselineFiles)
 	}
 	smallDebt := findRow(t, bootstrapPolicy.SmallDebt, ScopeUntagged, ResourceTmux)
 	if smallDebt.BaselineCalls != 0 || smallDebt.BaselineFiles != 0 {

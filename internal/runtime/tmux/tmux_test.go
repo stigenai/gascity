@@ -18,6 +18,7 @@ import (
 	"time"
 
 	runtimepkg "github.com/gastownhall/gascity/internal/runtime"
+	"github.com/gastownhall/gascity/test/tmuxtest"
 )
 
 // testSocketName is the dedicated tmux socket used by this integration test
@@ -710,22 +711,26 @@ func TestGetPaneCommand_MultiPane(t *testing.T) {
 	}
 	defer func() { _ = tm.KillSession(sessionName) }()
 
-	// Wait for tmux pane command to settle (CI runners may be slow).
+	// Wait for tmux pane command to settle on the launched non-shell process
+	// (CI runners may be slow). Nix coreutils reports "coreutils" for its
+	// sleep applet, so the stable command is intentionally discovered rather
+	// than hardcoded as "sleep".
 	var cmd string
 	var err error
 	for i := 0; i < 20; i++ {
 		time.Sleep(200 * time.Millisecond)
 		cmd, err = tm.GetPaneCommand(sessionName)
-		if err == nil && cmd == "sleep" {
+		if err == nil && !isSupportedShell(cmd) {
 			break
 		}
 	}
 	if err != nil {
 		t.Fatalf("GetPaneCommand before split: %v", err)
 	}
-	if cmd != "sleep" {
-		t.Fatalf("expected pane 0 command to be 'sleep', got %q", cmd)
+	if isSupportedShell(cmd) {
+		t.Fatalf("expected pane 0 to leave its startup shell, got %q", cmd)
 	}
+	pane0Command := cmd
 
 	// Capture pane 0's PID and working directory before the split
 	pidBefore, err := tm.GetPanePID(sessionName)
@@ -742,13 +747,13 @@ func TestGetPaneCommand_MultiPane(t *testing.T) {
 		t.Fatalf("split-window: %v", err)
 	}
 
-	// GetPaneCommand should still return "sleep" (pane 0), not the shell
+	// GetPaneCommand should still return pane 0's command, not the split shell.
 	cmd, err = tm.GetPaneCommand(sessionName)
 	if err != nil {
 		t.Fatalf("GetPaneCommand after split: %v", err)
 	}
-	if cmd != "sleep" {
-		t.Errorf("after split, GetPaneCommand should return pane 0 command 'sleep', got %q", cmd)
+	if cmd != pane0Command {
+		t.Errorf("after split, GetPaneCommand = %q, want pane 0 command %q", cmd, pane0Command)
 	}
 
 	// GetPanePID should return pane 0's PID, matching the pre-split value
@@ -3001,7 +3006,7 @@ func TestSharedServerContinuityAfterHandoffStop(t *testing.T) {
 	cfg.SocketName = socket
 	provider := NewProviderWithConfig(cfg)
 	tmux := provider.Tmux()
-	_ = provider.TeardownServer()
+	guard := tmuxtest.NewGuardWithSocket(t, socket)
 	t.Cleanup(func() { _ = provider.TeardownServer() })
 
 	const target = "handoff-target"
@@ -3013,6 +3018,9 @@ func TestSharedServerContinuityAfterHandoffStop(t *testing.T) {
 		}
 	}
 	start(target)
+	if err := guard.CaptureServer(); err != nil {
+		t.Fatalf("capture handoff server: %v", err)
+	}
 	start(sibling)
 
 	serverPID := mustTmuxServerPID(t, tmux)
@@ -3071,11 +3079,14 @@ func TestConfigureServerReappliesExitEmptyAfterReplacement(t *testing.T) {
 	cfg.SocketName = socket
 	provider := NewProviderWithConfig(cfg)
 	tmux := provider.Tmux()
-	_ = provider.TeardownServer()
+	guard := tmuxtest.NewGuardWithSocket(t, socket)
 	t.Cleanup(func() { _ = provider.TeardownServer() })
 
 	if err := provider.Start(context.Background(), "replacement-before", runtimepkg.Config{Command: "sleep 600"}); err != nil {
 		t.Fatalf("start before replacement: %v", err)
+	}
+	if err := guard.CaptureServer(); err != nil {
+		t.Fatalf("capture server before replacement: %v", err)
 	}
 	if got := mustExitEmpty(t, tmux); got != "off" {
 		t.Fatalf("initial exit-empty=%q, want off", got)
@@ -3085,6 +3096,9 @@ func TestConfigureServerReappliesExitEmptyAfterReplacement(t *testing.T) {
 	}
 	if err := provider.Start(context.Background(), "replacement-after", runtimepkg.Config{Command: "sleep 600"}); err != nil {
 		t.Fatalf("start after replacement: %v", err)
+	}
+	if err := guard.CaptureServer(); err != nil {
+		t.Fatalf("capture server after replacement: %v", err)
 	}
 	if got := mustExitEmpty(t, tmux); got != "off" {
 		t.Fatalf("replacement exit-empty=%q, want off", got)

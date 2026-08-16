@@ -65,8 +65,8 @@ work_query = "printf '[]'"
 
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"--city", cityDir, "hook", "worker", "--claim", "--json"}, &stdout, &stderr)
-	if code == 0 {
-		t.Fatal("run(hook worker --claim --json) = 0, want no-work exit")
+	if code != 0 {
+		t.Fatalf("run(hook worker --claim --json) = %d, want 0 for ok:true no-work drain", code)
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())

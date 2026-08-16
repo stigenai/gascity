@@ -1370,7 +1370,7 @@ esac
 // process-only interrupt would be deferred by the shell until the child
 // returned, so WaitDelay would force-kill the shell before its rollback trap
 // ran and the resource the adapter created would leak. Signaling the process
-// group unblocks the child so the trap runs inside the grace window.
+// group interrupts the child so the trap runs inside the grace window.
 func TestProvider_StartCancellationInterruptsForegroundChild(t *testing.T) {
 	dir := t.TempDir()
 	readyFile := filepath.Join(dir, "ready")
@@ -1379,8 +1379,12 @@ func TestProvider_StartCancellationInterruptsForegroundChild(t *testing.T) {
 case "$1" in
   start)
     trap 'printf "%%s\n" interrupted > "%s"; exit 0' INT
-    : > "%s"
-    sleep 30
+    # Put a second shell in the foreground and publish readiness from that
+    # child only after its interrupt trap is installed. A marker written by
+    # the parent immediately before spawning sleep leaves a race where the
+    # test can cancel before a foreground child exists, which does not prove
+    # the process-group contract and flakes under scheduler pressure.
+    sh -c 'trap "exit 130" INT; : > "%s"; while :; do :; done'
     ;;
   *) exit 2 ;;
 esac
@@ -1394,7 +1398,8 @@ esac
 		done <- p.Start(ctx, "test-sess", runtime.Config{})
 	}()
 
-	// Wait until the adapter is blocked in the foreground sleep.
+	// Wait until the adapter's foreground child has installed its trap and is
+	// blocking the adapter shell.
 	readyDeadline := time.NewTimer(5 * time.Second)
 	defer readyDeadline.Stop()
 	readyPoll := time.NewTicker(10 * time.Millisecond)

@@ -46,7 +46,7 @@ const pollInterval = 100 * time.Millisecond
 // GC_PROVIDER env var; mimocode's binary names differ from its provider
 // name ("mimo" wrapper, ".mimocode" compiled child), so both are listed
 // alongside the family name.
-var providersSkippingEscapeBeforeEnter = []string{"claude", "codex", "copilot", "gemini", "grok", "kimi", "mimocode", "mimo", ".mimocode", "opencode", "pi", "antigravity"}
+var providersSkippingEscapeBeforeEnter = []string{"claude", "codex", "copilot", "gemini", "grok", "kimi", "mimocode", "mimo", ".mimocode", "omnigent", "opencode", "pi", "antigravity"}
 
 // Config holds configurable timeouts and intervals for the tmux provider.
 // All fields have sensible defaults matching the original hardcoded values.
