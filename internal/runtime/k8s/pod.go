@@ -120,9 +120,13 @@ func agentCommandB64(cfg runtime.Config) string {
 func buildRespawnCommand(cfg runtime.Config) string {
 	cmdB64 := agentCommandB64(cfg)
 	if user := cfg.Env["LINUX_USERNAME"]; user != "" {
+		suMode := "-"
+		if hasK8sSecretEnvironment(cfg.SecretReferences) {
+			suMode = "-m"
+		}
 		return fmt.Sprintf(
-			`CMD=$(echo '%s' | base64 -d) && su - %s -c "cd %s && tmux respawn-pane -k -t %s \"$CMD\""`,
-			cmdB64, user, projectedPodWorkDir(cfg), tmuxSession,
+			`CMD=$(echo '%s' | base64 -d) && su %s %s -c "cd %s && tmux respawn-pane -k -t %s \"$CMD\""`,
+			cmdB64, suMode, user, projectedPodWorkDir(cfg), tmuxSession,
 		)
 	}
 	return fmt.Sprintf(
@@ -242,6 +246,10 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 	if err := validateK8sCapsuleLaunch(cfg); err != nil {
 		return nil, err
 	}
+	secretProjection, err := projectK8sSecretReferences(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("projecting Kubernetes secret references: %w", err)
+	}
 	podName := SanitizeName(name)
 	label := SanitizeLabel(name)
 	agentName := cfg.Env["GC_ALIAS"]
@@ -293,20 +301,30 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 				userSetup += fmt.Sprintf(`mkdir -p %q && chown -R %q %q; `, writablePath, linuxUsername, writablePath)
 			}
 		}
+		if secretProjection.hasFileMount {
+			userSetup += fmt.Sprintf(`usermod -a -G %d %q; `, agentUserGroupID, linuxUsername)
+		}
 	}
-	credCopy := `mkdir -p $HOME/.claude && cp -rL /tmp/claude-secret/. $HOME/.claude/ 2>/dev/null; git config --global --add safe.directory '*' 2>/dev/null; `
+	credCopy := `git config --global --add safe.directory '*' 2>/dev/null; `
+	if cfg.Capsule == nil {
+		credCopy = `mkdir -p $HOME/.claude && cp -rL /tmp/claude-secret/. $HOME/.claude/ 2>/dev/null; ` + credCopy
+	}
 	wsWait := ""
 	if !p.prebaked {
 		wsWait = `while [ ! -f /workspace/.gc-workspace-ready ]; do sleep 0.5; done; `
 	}
 	var tmuxCmd string
 	if linuxUsername != "" {
+		suMode := "-"
+		if len(secretProjection.environment) != 0 {
+			suMode = "-m"
+		}
 		// Run tmux session as the dynamic user via su.
 		tmuxCmd = fmt.Sprintf(
 			"%s%s%s%sCMD=$(echo '%s' | base64 -d) && "+
-				`su - %s -c "cd %s && tmux new-session -d -s %s \"$CMD\" && sleep infinity"`,
+				`su %s %s -c "cd %s && tmux new-session -d -s %s \"$CMD\" && sleep infinity"`,
 			userSetup, credCopy, wsWait, preStartCmds, cmdB64,
-			linuxUsername, podWorkDir, tmuxSession,
+			suMode, linuxUsername, podWorkDir, tmuxSession,
 		)
 	} else {
 		tmuxCmd = fmt.Sprintf(
@@ -319,6 +337,10 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 	env, err := buildPodEnv(cfg.Env, cfg.WorkDir, podWorkDir, p.managedServiceHost, p.managedServicePort)
 	if err != nil {
 		return nil, err
+	}
+	for _, projected := range secretProjection.environment {
+		env = removePodEnv(env, projected.Name)
+		env = append(env, projected)
 	}
 
 	// Build volume mounts for the main container.
@@ -358,18 +380,22 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 			}},
 		)
 	}
+	mainVolMounts = append(mainVolMounts, secretProjection.mounts...)
+	volumes = append(volumes, secretProjection.volumes...)
 
-	mainVolMounts = append(mainVolMounts, corev1.VolumeMount{
-		Name: "claude-config", MountPath: "/tmp/claude-secret", ReadOnly: true,
-	})
-	volumes = append(volumes, corev1.Volume{
-		Name: "claude-config", VolumeSource: corev1.VolumeSource{
-			Secret: &corev1.SecretVolumeSource{
-				SecretName: "claude-credentials",
-				Optional:   boolPtr(true),
+	if cfg.Capsule == nil {
+		mainVolMounts = append(mainVolMounts, corev1.VolumeMount{
+			Name: "claude-config", MountPath: "/tmp/claude-secret", ReadOnly: true,
+		})
+		volumes = append(volumes, corev1.Volume{
+			Name: "claude-config", VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: "claude-credentials",
+					Optional:   boolPtr(true),
+				},
 			},
-		},
-	})
+		})
+	}
 
 	// If GC_CITY differs from work_dir, add a city volume (not needed when prebaked).
 	if !p.prebaked && ctrlCity != "" && ctrlCity != cfg.WorkDir {
@@ -421,6 +447,11 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 			}},
 			Volumes: volumes,
 		},
+	}
+	if secretProjection.hasFileMount {
+		group := agentUserGroupID
+		policy := corev1.FSGroupChangeOnRootMismatch
+		pod.Spec.SecurityContext = &corev1.PodSecurityContext{FSGroup: &group, FSGroupChangePolicy: &policy}
 	}
 	if cfg.Capsule != nil {
 		capsule := cfg.Capsule
@@ -538,8 +569,8 @@ func agentSecurityContext(linuxUsername string) *corev1.SecurityContext {
 		}
 	}
 
-	agentUID := int64(1001)
-	agentGID := int64(1001)
+	agentUID := agentUserGroupID
+	agentGID := agentUserGroupID
 	runAsNonRoot := true
 	allowPrivilegeEscalation := false
 	return &corev1.SecurityContext{

@@ -147,8 +147,9 @@ func portableCapsuleHint(value string, limit int) string {
 // KubernetesSecretKeyReference identifies one Kubernetes Secret key without
 // resolving or serializing its value.
 type KubernetesSecretKeyReference struct {
-	Name string
-	Key  string
+	Name     string
+	Key      string
+	Optional bool
 }
 
 // SSHSecretPathReference identifies one pre-provisioned, owner-only SSH-host
@@ -276,6 +277,9 @@ func normalizedSecretReferenceIdentities(refs []SecretReference) []string {
 		}
 		if ref.SSH != nil {
 			sshPath = ref.SSH.Path
+		}
+		if ref.Kubernetes != nil && ref.Kubernetes.Optional {
+			k8sKey += "\x00optional"
 		}
 		identities = append(identities, strings.Join([]string{ref.ID, ref.Environment, ref.MountPath, k8sName, k8sKey, sshPath}, "\x00"))
 	}

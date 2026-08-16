@@ -501,6 +501,7 @@ KubernetesSecretKeyReference identifies one Kubernetes Secret key.
 |-------|------|----------|---------|-------------|
 | `name` | string | **yes** |  |  |
 | `key` | string | **yes** |  |  |
+| `optional` | boolean |  |  |  |
 
 ## LocalDoctorCheck
 

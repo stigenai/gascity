@@ -180,6 +180,14 @@ func TestSecretReferenceIdentityControlsProvisionFingerprintWithoutRotationValue
 	if ProvisionFingerprint(base) == ProvisionFingerprint(changed) {
 		t.Fatal("secret reference identity did not change provision fingerprint")
 	}
+	optional := base
+	optional.SecretReferences = append([]SecretReference(nil), base.SecretReferences...)
+	optionalSource := *base.SecretReferences[0].Kubernetes
+	optionalSource.Optional = true
+	optional.SecretReferences[0].Kubernetes = &optionalSource
+	if ProvisionFingerprint(base) == ProvisionFingerprint(optional) {
+		t.Fatal("secret optionality did not change provision fingerprint")
+	}
 	if LaunchFingerprint(base) != LaunchFingerprint(changed) {
 		t.Fatal("secret reference identity changed launch fingerprint; want provision-only")
 	}

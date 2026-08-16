@@ -1377,6 +1377,7 @@ export type InboundResult = {
 export type KubernetesSecretKeyReference = {
     Key: string;
     Name: string;
+    Optional: boolean;
 };
 
 export type ListBodyAgentPatch = {

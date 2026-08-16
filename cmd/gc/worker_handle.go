@@ -179,7 +179,7 @@ func runtimeSecretReferences(refs []config.SecretReference) []runtime.SecretRefe
 			ID: refs[i].ID, Environment: refs[i].Environment, MountPath: refs[i].MountPath,
 		}
 		if refs[i].Kubernetes != nil {
-			result[i].Kubernetes = &runtime.KubernetesSecretKeyReference{Name: refs[i].Kubernetes.Name, Key: refs[i].Kubernetes.Key}
+			result[i].Kubernetes = &runtime.KubernetesSecretKeyReference{Name: refs[i].Kubernetes.Name, Key: refs[i].Kubernetes.Key, Optional: refs[i].Kubernetes.Optional}
 		}
 		if refs[i].SSH != nil {
 			result[i].SSH = &runtime.SSHSecretPathReference{Path: refs[i].SSH.Path}

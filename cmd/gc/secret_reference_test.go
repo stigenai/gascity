@@ -11,11 +11,11 @@ func TestRuntimeSecretReferencesProjectsTypedIdentityWithoutValues(t *testing.T)
 	t.Parallel()
 	refs := []config.SecretReference{{
 		ID: "claude", Environment: "CLAUDE_AUTH_TOKEN",
-		Kubernetes: &config.KubernetesSecretKeyReference{Name: "claude-primary", Key: "token"},
+		Kubernetes: &config.KubernetesSecretKeyReference{Name: "claude-primary", Key: "token", Optional: true},
 		SSH:        &config.SSHSecretPathReference{Path: "/srv/secrets/claude-primary-token"},
 	}}
 	got := runtimeSecretReferences(refs)
-	if len(got) != 1 || got[0].ID != "claude" || got[0].Kubernetes.Name != "claude-primary" || got[0].SSH.Path != "/srv/secrets/claude-primary-token" {
+	if len(got) != 1 || got[0].ID != "claude" || got[0].Kubernetes.Name != "claude-primary" || !got[0].Kubernetes.Optional || got[0].SSH.Path != "/srv/secrets/claude-primary-token" {
 		t.Fatalf("runtimeSecretReferences = %+v", got)
 	}
 	got[0].Kubernetes.Name = "mutated"

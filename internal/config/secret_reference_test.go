@@ -79,6 +79,7 @@ environment = "CLAUDE_AUTH_TOKEN"
 [agent.secret.kubernetes]
 name = "claude-primary"
 key = "token"
+optional = true
 [agent.secret.ssh]
 path = "/srv/gc-secrets/claude-primary-token"
 `)
@@ -90,7 +91,7 @@ path = "/srv/gc-secrets/claude-primary-token"
 		t.Fatalf("parsed agents = %+v", city.Agents)
 	}
 	ref := city.Agents[0].SecretReferences[0]
-	if ref.ID != "claude-primary" || ref.Kubernetes == nil || ref.Kubernetes.Key != "token" || ref.SSH == nil || ref.SSH.Path != "/srv/gc-secrets/claude-primary-token" {
+	if ref.ID != "claude-primary" || ref.Kubernetes == nil || ref.Kubernetes.Key != "token" || !ref.Kubernetes.Optional || ref.SSH == nil || ref.SSH.Path != "/srv/gc-secrets/claude-primary-token" {
 		t.Fatalf("parsed secret reference = %+v", ref)
 	}
 	encoded, err := city.Marshal()
@@ -102,7 +103,7 @@ path = "/srv/gc-secrets/claude-primary-token"
 		t.Fatalf("Parse(Marshal(secret references)): %v\n%s", err, encoded)
 	}
 	got := roundTrip.Agents[0].SecretReferences[0]
-	if got.Kubernetes == nil || got.Kubernetes.Name != "claude-primary" || got.SSH == nil || got.SSH.Path != ref.SSH.Path {
+	if got.Kubernetes == nil || got.Kubernetes.Name != "claude-primary" || !got.Kubernetes.Optional || got.SSH == nil || got.SSH.Path != ref.SSH.Path {
 		t.Fatalf("round-trip secret reference = %+v", got)
 	}
 }

@@ -17,8 +17,9 @@ var (
 // KubernetesSecretKeyReference identifies one Kubernetes Secret key. It never
 // contains or resolves the key's value.
 type KubernetesSecretKeyReference struct {
-	Name string `toml:"name" jsonschema:"required"`
-	Key  string `toml:"key" jsonschema:"required"`
+	Name     string `toml:"name" jsonschema:"required"`
+	Key      string `toml:"key" jsonschema:"required"`
+	Optional bool   `toml:"optional,omitempty"`
 }
 
 // SSHSecretPathReference identifies an owner-only credential file or directory

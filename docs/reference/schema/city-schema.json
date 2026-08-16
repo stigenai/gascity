@@ -1839,6 +1839,9 @@
         },
         "key": {
           "type": "string"
+        },
+        "optional": {
+          "type": "boolean"
         }
       },
       "additionalProperties": false,

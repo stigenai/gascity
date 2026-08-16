@@ -3681,11 +3681,15 @@
           },
           "Name": {
             "type": "string"
+          },
+          "Optional": {
+            "type": "boolean"
           }
         },
         "required": [
           "Name",
-          "Key"
+          "Key",
+          "Optional"
         ],
         "type": "object"
       },

@@ -2102,8 +2102,9 @@ type InboundResult struct {
 
 // KubernetesSecretKeyReference defines model for KubernetesSecretKeyReference.
 type KubernetesSecretKeyReference struct {
-	Key  string `json:"Key"`
-	Name string `json:"Name"`
+	Key      string `json:"Key"`
+	Name     string `json:"Name"`
+	Optional bool   `json:"Optional"`
 }
 
 // ListBodyAgentPatch defines model for ListBodyAgentPatch.

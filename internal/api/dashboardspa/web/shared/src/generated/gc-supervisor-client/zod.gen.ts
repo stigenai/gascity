@@ -685,7 +685,8 @@ export const zInboundEventPayload = z.object({
 
 export const zKubernetesSecretKeyReference = z.object({
     Key: z.string(),
-    Name: z.string()
+    Name: z.string(),
+    Optional: z.boolean()
 });
 
 export const zListBodyBead = z.object({
