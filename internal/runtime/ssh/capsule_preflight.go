@@ -70,6 +70,9 @@ func (p *Provider) preflightCapsule(ctx context.Context, cfg runtime.Config) err
 	if err := capsule.Validate(); err != nil {
 		return &CapsulePreflightError{Kind: CapsulePreflightInvalidConfig, Requirement: "capsule launch plan", Err: err}
 	}
+	if err := rejectSSHCapsuleCredentialLiterals(cfg); err != nil {
+		return &CapsulePreflightError{Kind: CapsulePreflightInvalidConfig, Requirement: "typed SSH profile references", Err: err}
+	}
 	refs, err := runtime.SelectSecretReferences(runtime.SecretProviderSSH, cfg.SecretReferences)
 	if err != nil {
 		return &CapsulePreflightError{Kind: CapsulePreflightMissingProfileAuth, Requirement: "typed SSH profile references", Err: err}
@@ -157,10 +160,9 @@ func (p *Provider) preflightCapsule(ctx context.Context, cfg runtime.Config) err
 		}
 	}
 	for _, ref := range refs {
-		for _, args := range [][]string{{"test", "-f", ref.SSH.Path}, {"test", "-r", ref.SSH.Path}} {
-			if _, err := p.preflightCommand(ctx, CapsulePreflightMissingProfileAuth, fmt.Sprintf("secret reference %q", ref.ID), args); err != nil {
-				return err
-			}
+		args := []string{"sh", "-c", remoteCapsuleCredentialCheckScript, "gc-capsule-secret-check-v1", platform, ref.SSH.Path}
+		if _, err := p.preflightCommand(ctx, CapsulePreflightMissingProfileAuth, fmt.Sprintf("secret reference %q", ref.ID), args); err != nil {
+			return err
 		}
 	}
 	return nil

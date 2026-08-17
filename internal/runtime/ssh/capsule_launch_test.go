@@ -35,6 +35,7 @@ func TestSSHCapsuleStartUsesExactAllocatedStateAndCapsuleCommand(t *testing.T) {
 	}
 	statePath, runRoot, socketPath, catalogRoot := provider.capsulePhysicalPaths(cfg.Capsule)
 	wantCommand := []string{
+		"sh", filepath.Join(runRoot, capsuleCredentialLauncherName), "--",
 		"gc", "omnigent", "attach", "--mode", "capsule",
 		"--socket", socketPath, "--state-root", statePath,
 		"--catalog", filepath.Join(catalogRoot, "profiles.yaml"),

@@ -112,7 +112,7 @@ func TestProviderCapsulePreflightFailureMatrixNeverStartsTmux(t *testing.T) {
 		{
 			name: "missing profile auth", kind: CapsulePreflightMissingProfileAuth,
 			fail: func(argv []string) ([]byte, int, error, bool) {
-				return nil, 1, nil, slices.Equal(argv, []string{"test", "-f", "/srv/gascity/secrets/claude-primary"})
+				return nil, 44, nil, isCapsuleCredentialCheckCall(argv)
 			},
 		},
 	}

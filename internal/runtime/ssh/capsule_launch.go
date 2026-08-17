@@ -39,6 +39,10 @@ func (p *Provider) prepareCapsuleLaunch(ctx context.Context, name string, cfg ru
 	if err := p.stageCapsuleInputs(ctx, projected); err != nil {
 		return runtime.Config{}, err
 	}
+	projected, err = p.projectCapsuleCredentials(ctx, cfg, projected)
+	if err != nil {
+		return runtime.Config{}, err
+	}
 	// OpenCapsuleState already verified statePath. Keep this explicit so future
 	// path projection cannot silently point the command at the shared base root.
 	if statePath == cfg.Capsule.State.MountPath {
