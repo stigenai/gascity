@@ -14,6 +14,8 @@ description: The shortest path for new contributors to get productive in Gas Cit
 - [Reconciler Debugging](reconciler-debugging.md)
 - [Huma Usage Notes](huma-usage.md) when touching `internal/api/`,
   OpenAPI generation, or SSE registration
+- [Omnigent Capsule Test Harness](omnigent-capsule-test-harness.md) when adding
+  remote capsule, profile, fault-injection, or cleanup coverage
 - [Excalidraw Setup](excalidraw-setup.md) when authoring diagrams for the docs
 - [Hold and Blocked Label Conventions](hold-label-conventions.md) when a bead
   needs to pause on a specific actor or condition — only `hold:mayor` and
