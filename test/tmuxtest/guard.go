@@ -27,7 +27,11 @@ import (
 	"time"
 )
 
-const tmuxGuardCommandTimeout = 2 * time.Second
+const (
+	tmuxGuardCommandTimeout  = 2 * time.Second
+	tmuxServerCaptureTimeout = 20 * time.Second
+	tmuxServerCaptureRetry   = 20 * time.Millisecond
+)
 
 const tmuxSiblingSocketStaleAfter = 24 * time.Hour
 
@@ -120,7 +124,21 @@ func (g *Guard) SocketName() string {
 // recorded handle lets cleanup terminate the server and configuration-hook
 // helpers even if the socket directory disappears before t.Cleanup runs.
 func (g *Guard) CaptureServer() error {
-	handle, err := captureTestServerProcess(g.socketName, "")
+	// NewGuard registers a fallback cleanup before callers create their
+	// temporary socket root. Registering again here is intentional: Cleanup is
+	// LIFO, so this capture-time cleanup runs before those later TempDir
+	// cleanups can remove the socket needed by the exact tmux kill.
+	g.t.Cleanup(func() {
+		g.killGuardSessions()
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxServerCaptureTimeout)
+	defer cancel()
+	retry := time.NewTicker(tmuxServerCaptureRetry)
+	defer retry.Stop()
+	handle, err := captureTestServerProcessUntil(ctx, retry.C, func() (testServerProcess, error) {
+		return captureTestServerProcess(g.socketName, "")
+	})
 	if err != nil {
 		return err
 	}
@@ -131,13 +149,36 @@ func (g *Guard) CaptureServer() error {
 	g.servers[handle.pid] = handle
 	g.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), tmuxGuardCommandTimeout)
+	ctx, cancel = context.WithTimeout(context.Background(), tmuxGuardCommandTimeout)
 	defer cancel()
 	args := tmuxArgs(g.socketName, "set-option", "-s", "exit-empty", "on")
 	if out, err := exec.CommandContext(ctx, "tmux", args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("configuring isolated tmux server %d to exit when empty: %w: %s", handle.pid, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func captureTestServerProcessUntil(
+	ctx context.Context,
+	retry <-chan time.Time,
+	capture func() (testServerProcess, error),
+) (testServerProcess, error) {
+	var lastErr error
+	for {
+		handle, err := capture()
+		if err == nil {
+			return handle, nil
+		}
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			return testServerProcess{}, fmt.Errorf(
+				"waiting for isolated tmux server readiness: %w (last identity error: %w)",
+				ctx.Err(), lastErr,
+			)
+		case <-retry:
+		}
+	}
 }
 
 // SessionName returns the expected tmux session name for an agent.
@@ -254,7 +295,7 @@ func tmuxServerIdentity(socketName, socketPath string) (int, string, error) {
 	}
 	out, err := exec.CommandContext(ctx, "tmux", args...).CombinedOutput()
 	if err != nil {
-		return 0, "", fmt.Errorf("querying isolated tmux server identity: %w", err)
+		return 0, "", fmt.Errorf("querying isolated tmux server identity: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	parts := strings.SplitN(strings.TrimSpace(string(out)), "\t", 2)
 	if len(parts) != 2 {

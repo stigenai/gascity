@@ -1,15 +1,58 @@
 package tmuxtest
 
 import (
+	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestCaptureTestServerProcessUntilRetriesReadiness(t *testing.T) {
+	retry := make(chan time.Time, 2)
+	retry <- time.Time{}
+	retry <- time.Time{}
+	attempts := 0
+	want := testServerProcess{pid: 123, pgid: 123, socketPath: "/tmp/tmux-501/gctest-ready"}
+
+	got, err := captureTestServerProcessUntil(context.Background(), retry, func() (testServerProcess, error) {
+		attempts++
+		if attempts < 3 {
+			return testServerProcess{}, errors.New("server not ready")
+		}
+		return want, nil
+	})
+	if err != nil {
+		t.Fatalf("captureTestServerProcessUntil: %v", err)
+	}
+	if got != want {
+		t.Fatalf("captured process = %#v, want %#v", got, want)
+	}
+	if attempts != 3 {
+		t.Fatalf("attempts = %d, want 3", attempts)
+	}
+}
+
+func TestCaptureTestServerProcessUntilReportsLastReadinessError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := captureTestServerProcessUntil(ctx, make(chan time.Time), func() (testServerProcess, error) {
+		return testServerProcess{}, errors.New("identity unavailable")
+	})
+	if err == nil {
+		t.Fatal("expected readiness error")
+	}
+	if !strings.Contains(err.Error(), "identity unavailable") || !errors.Is(err, context.Canceled) {
+		t.Fatalf("readiness error = %v, want last error and context cancellation", err)
+	}
+}
 
 func TestConfigureProcessEnvIsolatesTmuxSocketRoot(t *testing.T) {
 	socketRoot := t.TempDir()

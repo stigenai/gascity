@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat >&2 <<'USAGE'
+usage: scripts/test-remote-shards <ssh-host> <fast|cmd-gc-process|integration|full> [remote-jobs]
+
+Synchronizes tracked and non-ignored workspace files to an isolated remote
+/var/tmp directory, runs the normal sharded test entrypoint there, retrieves
+the per-shard logs, and removes the remote directory. SSH is always
+non-interactive. remote-jobs defaults to the remote host's automatic limit.
+
+Environment:
+  GC_REMOTE_TEST_ARTIFACT_ROOT   local parent for retained logs (default /var/tmp)
+  GC_REMOTE_TEST_CGO_ENABLED    remote CGO_ENABLED value, 0 or 1 (default 0)
+USAGE
+}
+
+if [[ $# -lt 2 || $# -gt 3 ]]; then
+  usage
+  exit 2
+fi
+
+host="$1"
+mode="$2"
+remote_jobs="${3:-auto}"
+remote_cgo="${GC_REMOTE_TEST_CGO_ENABLED:-0}"
+
+if ! [[ "$host" =~ ^[A-Za-z0-9._@:-]+$ ]] || [[ "$host" == -* ]]; then
+  echo "invalid SSH host: $host" >&2
+  exit 2
+fi
+case "$mode" in
+  fast | cmd-gc-process | integration | full) ;;
+  *)
+    echo "invalid test mode: $mode" >&2
+    usage
+    exit 2
+    ;;
+esac
+if ! [[ "$remote_jobs" == auto || "$remote_jobs" =~ ^[1-9][0-9]*$ ]]; then
+  echo "remote-jobs must be 'auto' or a positive integer" >&2
+  exit 2
+fi
+if ! [[ "$remote_cgo" == 0 || "$remote_cgo" == 1 ]]; then
+  echo "GC_REMOTE_TEST_CGO_ENABLED must be 0 or 1" >&2
+  exit 2
+fi
+
+for dependency in git rsync ssh; do
+  if ! command -v "$dependency" >/dev/null 2>&1; then
+    echo "required command not found: $dependency" >&2
+    exit 1
+  fi
+done
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+artifact_root="${GC_REMOTE_TEST_ARTIFACT_ROOT:-/var/tmp}"
+remote_root=""
+ssh_cmd=(ssh -o BatchMode=yes -o ConnectTimeout=10)
+
+# shellcheck disable=SC2329 # Invoked by the EXIT trap.
+cleanup() {
+  local cleanup_status=0
+  if [[ -n "$remote_root" ]]; then
+    "${ssh_cmd[@]}" "$host" "rm -rf -- '$remote_root'" || cleanup_status=$?
+  fi
+  if [[ "$cleanup_status" -ne 0 ]]; then
+    echo "warning: could not remove remote test workspace $host:$remote_root" >&2
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+remote_root="$("${ssh_cmd[@]}" "$host" 'mktemp -d -p /var/tmp gascity-remote-tests.XXXXXX')"
+if ! [[ "$remote_root" =~ ^/var/tmp/gascity-remote-tests\.[A-Za-z0-9]+$ ]]; then
+  echo "remote host returned an unsafe workspace path: $remote_root" >&2
+  remote_root=""
+  exit 1
+fi
+
+mkdir -p "$artifact_root"
+artifact_dir="$(mktemp -d -p "$artifact_root" gascity-remote-results.XXXXXX)"
+manifest="$artifact_dir/source-files.zlist"
+
+while IFS= read -r -d '' path; do
+  if [[ -e "$repo_root/$path" || -L "$repo_root/$path" ]]; then
+    printf '%s\0' "$path" >>"$manifest"
+  fi
+done < <(git -C "$repo_root" ls-files -co --exclude-standard -z)
+
+echo "remote: $host:$remote_root"
+echo "mode: $mode; jobs: $remote_jobs; CGO_ENABLED=$remote_cgo"
+rsync -a --from0 --files-from="$manifest" --relative \
+  -e 'ssh -o BatchMode=yes -o ConnectTimeout=10' -- \
+  "$repo_root/" "$host:$remote_root/repo/"
+
+set +e
+"${ssh_cmd[@]}" "$host" bash -s -- \
+  "$remote_root" "$mode" "$remote_jobs" "$remote_cgo" <<'REMOTE'
+set -euo pipefail
+
+remote_root="$1"
+mode="$2"
+remote_jobs="$3"
+remote_cgo="$4"
+
+if ! [[ "$remote_root" =~ ^/var/tmp/gascity-remote-tests\.[A-Za-z0-9]+$ ]]; then
+  echo "unsafe remote workspace: $remote_root" >&2
+  exit 1
+fi
+cd "$remote_root/repo"
+mkdir -p "$remote_root/logs"
+
+for dependency in go git; do
+  if ! command -v "$dependency" >/dev/null 2>&1; then
+    echo "required remote command not found: $dependency" >&2
+    exit 1
+  fi
+done
+if [[ "$remote_jobs" == auto ]]; then
+  remote_jobs="$(./scripts/test-local-job-count)"
+fi
+
+echo "remote host: $(hostname)"
+echo "remote jobs: $remote_jobs"
+CGO_ENABLED="$remote_cgo" \
+  LOCAL_TEST_JOBS="$remote_jobs" \
+  LOCAL_TEST_LOG_DIR="$remote_root/logs" \
+  ./scripts/test-local-parallel "$mode"
+REMOTE
+test_status=$?
+set -e
+
+if ! rsync -a -e 'ssh -o BatchMode=yes -o ConnectTimeout=10' -- \
+  "$host:$remote_root/logs/" "$artifact_dir/"; then
+  echo "warning: remote logs could not be retrieved" >&2
+  if [[ "$test_status" -eq 0 ]]; then
+    test_status=1
+  fi
+fi
+
+printf 'host=%s\nmode=%s\nremote_jobs=%s\ncgo_enabled=%s\nstatus=%s\n' \
+  "$host" "$mode" "$remote_jobs" "$remote_cgo" "$test_status" \
+  >"$artifact_dir/run.env"
+echo "artifacts: $artifact_dir"
+exit "$test_status"

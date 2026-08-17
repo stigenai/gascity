@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+runner="$repo_root/scripts/test-remote-shards"
+
+fail() {
+  echo "test-remote-shards-test: $*" >&2
+  exit 1
+}
+
+test_root="$(mktemp -d -p /var/tmp gascity-remote-shards-test.XXXXXX)"
+trap 'rm -rf "$test_root"' EXIT
+fake_bin="$test_root/bin"
+mkdir -p "$fake_bin" "$test_root/artifacts"
+
+cat >"$fake_bin/ssh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'ssh:' >>"$FAKE_CALLS"
+printf ' <%s>' "$@" >>"$FAKE_CALLS"
+printf '\n' >>"$FAKE_CALLS"
+
+case " $* " in
+  *" mktemp -d -p /var/tmp gascity-remote-tests.XXXXXX "*)
+    printf '%s\n' "${FAKE_REMOTE_ROOT:-/var/tmp/gascity-remote-tests.ABC123}"
+    ;;
+  *" bash -s -- "*)
+    cat >/dev/null
+    printf '%s\n' '[remote] simulated shard output'
+    exit "${FAKE_REMOTE_STATUS:-0}"
+    ;;
+esac
+EOF
+
+cat >"$fake_bin/rsync" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'rsync:' >>"$FAKE_CALLS"
+printf ' <%s>' "$@" >>"$FAKE_CALLS"
+printf '\n' >>"$FAKE_CALLS"
+last="${*: -1}"
+if [[ "$last" == */ ]]; then
+  mkdir -p "$last"
+fi
+EOF
+
+chmod +x "$fake_bin/ssh" "$fake_bin/rsync"
+
+calls="$test_root/calls"
+output="$test_root/output"
+if ! PATH="$fake_bin:$PATH" FAKE_CALLS="$calls" \
+  GC_REMOTE_TEST_ARTIFACT_ROOT="$test_root/artifacts" \
+  "$runner" gtr integration 12 >"$output" 2>&1; then
+  fail "successful fake remote run failed: $(cat "$output")"
+fi
+
+grep -Fq 'ssh: <-o> <BatchMode=yes> <-o> <ConnectTimeout=10> <gtr> <mktemp -d -p /var/tmp gascity-remote-tests.XXXXXX>' "$calls" ||
+  fail "remote workspace was not allocated through gtr"
+grep -Fq '<gtr:/var/tmp/gascity-remote-tests.ABC123/repo/>' "$calls" ||
+  fail "workspace was not synchronized to the allocated root"
+grep -Fq 'ssh: <-o> <BatchMode=yes> <-o> <ConnectTimeout=10> <gtr> <bash> <-s> <--> </var/tmp/gascity-remote-tests.ABC123> <integration> <12> <0>' "$calls" ||
+  fail "remote mode and concurrency were not forwarded"
+grep -Fq "ssh: <-o> <BatchMode=yes> <-o> <ConnectTimeout=10> <gtr> <rm -rf -- '/var/tmp/gascity-remote-tests.ABC123'>" "$calls" ||
+  fail "allocated remote workspace was not cleaned"
+grep -Fq '[remote] simulated shard output' "$output" ||
+  fail "remote output was not streamed"
+grep -Fq 'artifacts:' "$output" || fail "artifact location was not reported"
+
+: >"$calls"
+if PATH="$fake_bin:$PATH" FAKE_CALLS="$calls" FAKE_REMOTE_STATUS=23 \
+  GC_REMOTE_TEST_ARTIFACT_ROOT="$test_root/artifacts" \
+  "$runner" gtr fast 4 >"$output" 2>&1; then
+  fail "remote failure status was swallowed"
+fi
+grep -Fq '<gtr:/var/tmp/gascity-remote-tests.ABC123/logs/>' "$calls" ||
+  fail "logs were not retrieved after a remote failure"
+grep -Fq "ssh: <-o> <BatchMode=yes> <-o> <ConnectTimeout=10> <gtr> <rm -rf -- '/var/tmp/gascity-remote-tests.ABC123'>" "$calls" ||
+  fail "remote workspace was not cleaned after a failure"
+
+: >"$calls"
+if PATH="$fake_bin:$PATH" FAKE_CALLS="$calls" \
+  FAKE_REMOTE_ROOT='/home/ztaylor' \
+  GC_REMOTE_TEST_ARTIFACT_ROOT="$test_root/artifacts" \
+  "$runner" gtr integration >"$output" 2>&1; then
+  fail "unsafe remote workspace was accepted"
+fi
+if grep -Fq 'rm -rf' "$calls"; then
+  fail "unsafe remote workspace was passed to cleanup"
+fi
+grep -Fq 'unsafe workspace path' "$output" ||
+  fail "unsafe remote workspace did not produce a diagnostic"
+
+: >"$calls"
+if PATH="$fake_bin:$PATH" FAKE_CALLS="$calls" \
+  GC_REMOTE_TEST_ARTIFACT_ROOT="$test_root/artifacts" \
+  "$runner" '-oProxyCommand=bad' fast >"$output" 2>&1; then
+  fail "option-shaped host was accepted"
+fi
+if [[ -s "$calls" ]]; then
+  fail "invalid host reached SSH or rsync"
+fi
+
+echo "test-remote-shards-test: ok"
