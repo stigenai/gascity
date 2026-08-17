@@ -357,3 +357,49 @@ func TestSessionTerminalGeneratedClientRoundTrip(t *testing.T) {
 		t.Fatalf("provider input = %q", provider.input)
 	}
 }
+
+func TestClientTerminalMethodsRoundTripAllLifecycleNeutralActions(t *testing.T) {
+	provider := &terminalTestProvider{Fake: runtime.NewFake(), data: []byte("client-output")}
+	generated, state := newRoundTripClient(t)
+	raw, ok := generated.ClientInterface.(*genclient.Client)
+	if !ok {
+		t.Fatalf("generated client implementation = %T", generated.ClientInterface)
+	}
+	client := NewCityScopedClient(raw.Server, state.CityName())
+	state.sessionProvider = provider
+	store := beads.NewMemStore()
+	state.cityBeadStore = store
+	state.sessionsBeadStore = store
+	info := createTestSession(t, store, provider.Fake, "client terminal")
+
+	snapshot, err := client.ReadSessionTerminal(context.Background(), info.ID, 128, "")
+	if err != nil {
+		t.Fatalf("ReadSessionTerminal: %v", err)
+	}
+	if string(snapshot.Data) != "client-output" || snapshot.Cursor == "" || snapshot.Unchanged {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	unchanged, err := client.ReadSessionTerminal(context.Background(), info.ID, 128, snapshot.Cursor)
+	if err != nil || !unchanged.Unchanged || len(unchanged.Data) != 0 {
+		t.Fatalf("unchanged = %#v, err %v", unchanged, err)
+	}
+	for _, step := range []struct {
+		name   string
+		action func() error
+	}{
+		{"input", func() error { return client.SendSessionTerminalInput(context.Background(), info.ID, []byte("hello")) }},
+		{"keys", func() error { return client.SendSessionTerminalKeys(context.Background(), info.ID, "Enter", "C-c") }},
+		{"resize", func() error { return client.ResizeSessionTerminal(context.Background(), info.ID, 40, 120) }},
+		{"interrupt", func() error { return client.InterruptSessionTerminal(context.Background(), info.ID) }},
+		{"detach", func() error { return client.DetachSessionTerminal(context.Background(), info.ID) }},
+	} {
+		if err := step.action(); err != nil {
+			t.Fatalf("%s: %v", step.name, err)
+		}
+	}
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if got, want := strings.Join(provider.actions, ","), "input,keys,resize,interrupt,detach"; got != want {
+		t.Fatalf("actions = %q, want %q", got, want)
+	}
+}

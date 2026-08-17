@@ -147,6 +147,54 @@ you are ready to isolate selected Kubernetes workers. Recommended path:
 - Once agents are on herdr, their workspaces and tabs are visible through
   herdr's own UI (`herdr` lists the per-rig/town workspaces and per-agent tabs).
 
+## View sessions across cities and runtimes
+
+Herdr can also act as a local operator console for sessions whose workers are
+owned by another Gas City runtime. This is useful when one fleet mixes local
+tmux sessions with Kubernetes and SSH workers: the worker stays where Gas City
+placed it, while Herdr presents a fully interactive local view.
+
+List every live session exposed by the selected local supervisor:
+
+```bash
+gc session view list
+gc session view list --transport kubernetes
+gc session view list --state suspended --json
+```
+
+The stable viewer ID is `city/session-id`. Use it when aliases repeat across
+cities. Rows include the rig, current state, runtime transport, and the safe
+profile display name when an Omnigent profile is active. Profile blurbs are
+operator-facing catalog metadata; credentials, secret references, conversation
+content, and raw runtime errors are never included.
+
+Open a view, attach interactively, and close only the view:
+
+```bash
+gc session view open production/ga-abc123
+gc session view attach production/ga-abc123
+gc session view close production/ga-abc123
+```
+
+Opening and closing a viewer is lifecycle-neutral. It never wakes, resumes,
+replaces, stops, or health-checks the worker. A sleeping, failed, or closed
+session remains visible in discovery, but its pane reports that no terminal is
+available. Viewer bindings help Herdr reconnect its own tabs; they are never
+used by the orchestrator to decide whether a worker should run.
+
+For a named remote context, use the same workflow with `--context`:
+
+```bash
+gc --context production session view list
+gc --context production session view open ga-abc123
+```
+
+The command queries only authorized API state and never falls back to a local
+City when a remote read fails. The Herdr pane launches a credential-free
+`gc --context ... session attach --no-resume` command; the context resolves its
+credential at runtime, so no bearer or grant is written into the pane command
+or viewer metadata.
+
 ## Layout
 
 Within the single per-city herdr session-server, gc places agents so the
@@ -158,5 +206,5 @@ workspace/tab structure mirrors the town:
   `polecat-<themed-name>` tabs; the placement is display-only and does not
   change agent identity.
 
-See `internal/runtime/herdr-provider-design.md` in the source tree for the
-provider's design notes, capabilities, and pilot rationale.
+The provider design notes in the contributor documentation describe its full
+capability and pilot rationale.

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gastownhall/gascity/internal/runtime"
+	"github.com/gastownhall/gascity/internal/shellquote"
 )
 
 func TestViewerProjectionReusesOneLifecycleNeutralPane(t *testing.T) {
@@ -56,6 +57,47 @@ func TestViewerProjectionReusesOneLifecycleNeutralPane(t *testing.T) {
 	}
 	if got, err := p.GetMeta("city--rig__worker", metaBoundPane); err != nil || got != "" {
 		t.Fatalf("worker pane metadata = %q, %v; viewer binding must be separate", got, err)
+	}
+}
+
+func TestViewerProjectionUsesPersistedShellSafeAttachCommand(t *testing.T) {
+	p, session, state := newFakeHerdrProvider(t)
+	listenHerdrSocket(t, session)
+	viewers := newViewerProjection(p.c, filepath.Join(p.metaDir, "viewers"), p.c.cityRoot)
+	const viewerID = "city with spaces/ga-hostile"
+	attach := []string{
+		"gc", "--city-url", "https://example.invalid/a path;$(touch nope)",
+		"--city-name", "city 'quoted'", "session", "attach", "--no-resume", "--", "ga-hostile",
+	}
+
+	binding, err := viewers.Open(context.Background(), ViewerSpec{
+		Session: viewerID, AttachCommand: attach,
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if got := binding.AttachCommand; strings.Join(got, "\x00") != strings.Join(attach, "\x00") {
+		t.Fatalf("AttachCommand = %#v, want %#v", got, attach)
+	}
+	calls := fakeCalls(t, state)
+	raw := "exec " + shellquote.Join(attach)
+	want := "exec /bin/sh -c " + shellquote.Quote(raw)
+	if !strings.Contains(calls, want) {
+		t.Fatalf("viewer command is not shell quoted:\n%s\nwant substring %q", calls, want)
+	}
+	for _, secret := range []string{"Authorization", "Bearer ", "GC_CITY_URL_TOKEN"} {
+		if strings.Contains(calls, secret) {
+			t.Fatalf("viewer command leaked credential material %q:\n%s", secret, calls)
+		}
+	}
+
+	// Close must validate against the persisted command, not reconstruct a
+	// local-city command from the viewer ID.
+	if err := os.WriteFile(filepath.Join(state, "rawcmd"), []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := viewers.Close(context.Background(), viewerID); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
 

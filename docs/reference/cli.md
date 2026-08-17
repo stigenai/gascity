@@ -3858,6 +3858,7 @@ gc session
 | [gc session submit](#gc-session-submit) | Submit a message with semantic delivery intent |
 | [gc session suspend](#gc-session-suspend) | Suspend a session (save state, free resources) |
 | [gc session unpin](#gc-session-unpin) | Remove a session awake pin |
+| [gc session view](#gc-session-view) | Discover and view local or remote sessions in Herdr |
 | [gc session wait](#gc-session-wait) | Register a dependency wait for a session |
 | [gc session wake](#gc-session-wake) | Wake a session (request start and clear holds) |
 
@@ -4162,6 +4163,60 @@ gc session unpin <session-id-or-alias> [flags]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--json` | bool |  | emit JSONL |
+
+## gc session view
+
+Discover and view local or remote sessions in Herdr
+
+```
+gc session view
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| [gc session view attach](#gc-session-view-attach) | Attach this terminal to an open Herdr viewer |
+| [gc session view close](#gc-session-view-close) | Close a Herdr viewer without stopping its worker |
+| [gc session view list](#gc-session-view-list) | List Herdr-viewable sessions across the selected fleet |
+| [gc session view open](#gc-session-view-open) | Open a lifecycle-neutral Herdr viewer |
+
+## gc session view attach
+
+Attach this terminal to an open Herdr viewer
+
+```
+gc session view attach <viewer-id-or-session>
+```
+
+## gc session view close
+
+Close a Herdr viewer without stopping its worker
+
+```
+gc session view close <viewer-id-or-session>
+```
+
+## gc session view list
+
+List Herdr-viewable sessions across the selected fleet
+
+```
+gc session view list [flags]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--json` | bool |  | JSON output |
+| `--provider` | string |  | filter by configured provider |
+| `--state` | string |  | filter by session state |
+| `--transport` | string |  | filter by runtime transport |
+
+## gc session view open
+
+Open a lifecycle-neutral Herdr viewer
+
+```
+gc session view open <viewer-id-or-session>
+```
 
 ## gc session wait
 

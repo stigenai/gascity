@@ -210,7 +210,11 @@
               "omnigent-doctor",
               "omnigent-explain",
               "omnigent-serve",
-              "omnigent-status"
+              "omnigent-status",
+              "session-view-attach",
+              "session-view-close",
+              "session-view-list",
+              "session-view-open"
             ]
           },
           "event_id": {

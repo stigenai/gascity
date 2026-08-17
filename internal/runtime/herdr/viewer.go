@@ -34,18 +34,22 @@ type ViewerSpec struct {
 	Session      string
 	Label        string
 	ProfileBlurb string
+	// AttachCommand, when set, is the exact non-secret argv launched in the
+	// viewer pane. An empty value preserves the local-city default.
+	AttachCommand []string
 }
 
 // ViewerBinding is the durable projection from a Gas City session to the
 // Herdr pane that observes it. It deliberately contains no worker ownership,
 // health, credentials, or conversation content.
 type ViewerBinding struct {
-	Version      int    `json:"version"`
-	Session      string `json:"session"`
-	PaneID       string `json:"pane_id"`
-	TabID        string `json:"tab_id"`
-	Label        string `json:"label,omitempty"`
-	ProfileBlurb string `json:"profile_blurb,omitempty"`
+	Version       int      `json:"version"`
+	Session       string   `json:"session"`
+	PaneID        string   `json:"pane_id"`
+	TabID         string   `json:"tab_id"`
+	Label         string   `json:"label,omitempty"`
+	ProfileBlurb  string   `json:"profile_blurb,omitempty"`
+	AttachCommand []string `json:"attach_command,omitempty"`
 }
 
 // ViewerResize changes one Herdr split edge. Herdr converts the layout change
@@ -99,6 +103,11 @@ func (v *ViewerProjection) Open(ctx context.Context, spec ViewerSpec) (ViewerBin
 	if strings.ContainsRune(spec.Session, 0) {
 		return ViewerBinding{}, errors.New("herdr viewer: session contains NUL")
 	}
+	for _, arg := range spec.AttachCommand {
+		if strings.ContainsRune(arg, 0) {
+			return ViewerBinding{}, errors.New("herdr viewer: attach command contains NUL")
+		}
+	}
 	if err := v.c.startServer(); err != nil {
 		return ViewerBinding{}, fmt.Errorf("herdr viewer: configure server: %w", err)
 	}
@@ -106,7 +115,7 @@ func (v *ViewerProjection) Open(ctx context.Context, spec ViewerSpec) (ViewerBin
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
-	rawCommand, argv := viewerAttachCommand(spec.Session)
+	rawCommand, argv := viewerAttachCommandForSpec(spec)
 	binding, present, err := v.readBinding(spec.Session)
 	if err != nil {
 		return ViewerBinding{}, err
@@ -145,7 +154,7 @@ func (v *ViewerProjection) Open(ctx context.Context, spec ViewerSpec) (ViewerBin
 		}
 		binding = ViewerBinding{
 			Version: viewerBindingVersion, Session: spec.Session, PaneID: paneID, TabID: tabID,
-			Label: spec.Label, ProfileBlurb: spec.ProfileBlurb,
+			Label: spec.Label, ProfileBlurb: spec.ProfileBlurb, AttachCommand: append([]string(nil), argv...),
 		}
 		if err := v.writeBinding(binding); err != nil {
 			return ViewerBinding{}, v.rollbackTab(ctx, spec.Session, tabID, err)
@@ -169,7 +178,7 @@ func (v *ViewerProjection) Close(ctx context.Context, session string) error {
 	if err != nil || !present {
 		return err
 	}
-	rawCommand, argv := viewerAttachCommand(session)
+	rawCommand, argv := viewerAttachCommandForBinding(binding)
 	shellPID, foreground, err := v.c.processInfo(ctx, binding.PaneID)
 	probe := paneProbeFrom(shellPID, foreground)
 	switch {
@@ -343,7 +352,7 @@ func (v *ViewerProjection) liveBindingLocked(ctx context.Context, session string
 	if err != nil {
 		return ViewerBinding{}, fmt.Errorf("herdr viewer %q: probe pane %q: %w", session, binding.PaneID, err)
 	}
-	rawCommand, argv := viewerAttachCommand(session)
+	rawCommand, argv := viewerAttachCommandForBinding(binding)
 	if viewerCommandMatches(foreground, rawCommand, argv) {
 		return binding, nil
 	}
@@ -373,6 +382,8 @@ func (v *ViewerProjection) refreshBinding(ctx context.Context, binding ViewerBin
 	}
 	binding.Label = spec.Label
 	binding.ProfileBlurb = spec.ProfileBlurb
+	_, argv := viewerAttachCommandForSpec(spec)
+	binding.AttachCommand = append([]string(nil), argv...)
 	if err := v.writeBinding(binding); err != nil {
 		return ViewerBinding{}, err
 	}
@@ -381,6 +392,22 @@ func (v *ViewerProjection) refreshBinding(ctx context.Context, binding ViewerBin
 
 func viewerAttachCommand(session string) (string, []string) {
 	argv := []string{"gc", "session", "attach", "--no-resume", "--", session}
+	return "exec " + shellquote.Join(argv), argv
+}
+
+func viewerAttachCommandForSpec(spec ViewerSpec) (string, []string) {
+	if len(spec.AttachCommand) == 0 {
+		return viewerAttachCommand(spec.Session)
+	}
+	argv := append([]string(nil), spec.AttachCommand...)
+	return "exec " + shellquote.Join(argv), argv
+}
+
+func viewerAttachCommandForBinding(binding ViewerBinding) (string, []string) {
+	if len(binding.AttachCommand) == 0 {
+		return viewerAttachCommand(binding.Session)
+	}
+	argv := append([]string(nil), binding.AttachCommand...)
 	return "exec " + shellquote.Join(argv), argv
 }
 

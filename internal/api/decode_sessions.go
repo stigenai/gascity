@@ -9,6 +9,8 @@ import "github.com/gastownhall/gascity/internal/api/genclient"
 type SessionView struct {
 	ID          string `json:"id"`
 	Template    string `json:"template"`
+	Provider    string `json:"provider"`
+	Rig         string `json:"rig,omitempty"`
 	State       string `json:"state"`
 	Reason      string `json:"reason"`
 	Title       string `json:"title"`
@@ -28,6 +30,7 @@ func sessionViewFromGen(g genclient.SessionResponse) SessionView {
 	out := SessionView{
 		ID:          g.Id,
 		Template:    g.Template,
+		Provider:    g.Provider,
 		State:       g.State,
 		Title:       g.Title,
 		SessionName: g.SessionName,
@@ -37,6 +40,9 @@ func sessionViewFromGen(g genclient.SessionResponse) SessionView {
 	}
 	if g.WorkDir != nil {
 		out.WorkDir = *g.WorkDir
+	}
+	if g.Rig != nil {
+		out.Rig = *g.Rig
 	}
 	if g.Reason != nil {
 		out.Reason = *g.Reason

@@ -45,7 +45,7 @@ continuity.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(_ *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				fmt.Fprintln(stderr, "gc session: missing subcommand (new, list, attach, submit, suspend, pin, unpin, reset, close, rename, prune, peek, kill, nudge, logs, wake, wait)") //nolint:errcheck // best-effort stderr
+				fmt.Fprintln(stderr, "gc session: missing subcommand (new, list, attach, view, submit, suspend, pin, unpin, reset, close, rename, prune, peek, kill, nudge, logs, wake, wait)") //nolint:errcheck // best-effort stderr
 			} else {
 				fmt.Fprintf(stderr, "gc session: unknown subcommand %q\n", args[0]) //nolint:errcheck // best-effort stderr
 			}
@@ -56,6 +56,7 @@ continuity.`,
 		newSessionNewCmd(stdout, stderr),
 		newSessionListCmd(stdout, stderr),
 		newSessionAttachCmd(stdout, stderr),
+		newSessionViewCmd(stdout, stderr),
 		newSessionSubmitCmd(stdout, stderr),
 		newSessionSuspendCmd(stdout, stderr),
 		newSessionPinCmd(stdout, stderr),
@@ -1460,8 +1461,8 @@ not already live. This mode never wakes, resumes, or restarts the session.
 
 Accepts a session ID (e.g., gc-42) or session alias (e.g., mayor).`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			if cmdSessionAttachWithOptions(args, noResume, stdout, stderr) != 0 {
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmdSessionAttachWithOptionsContext(cmd.Context(), args, noResume, stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
@@ -1478,6 +1479,28 @@ func cmdSessionAttach(args []string, stdout, stderr io.Writer) int {
 }
 
 func cmdSessionAttachWithOptions(args []string, noResume bool, stdout, stderr io.Writer) int {
+	return cmdSessionAttachWithOptionsContext(context.Background(), args, noResume, stdout, stderr)
+}
+
+func cmdSessionAttachWithOptionsContext(ctx context.Context, args []string, noResume bool, stdout, stderr io.Writer) int {
+	remoteClient, isRemote, _, err := resolveWriteTarget()
+	if err != nil {
+		fmt.Fprintf(stderr, "gc session attach: %v\n", err) //nolint:errcheck // best-effort stderr
+		return 1
+	}
+	if isRemote {
+		if !noResume {
+			fmt.Fprintln(stderr, "gc session attach: remote attachment requires --no-resume; a remote viewer cannot resume or replace a worker") //nolint:errcheck
+			return 1
+		}
+		fmt.Fprintf(stdout, "Attaching to remote session %s...\n", args[0]) //nolint:errcheck
+		if err := runRemoteSessionTerminal(ctx, remoteClient, args[0], stdout, stderr); err != nil {
+			fmt.Fprintf(stderr, "gc session attach: %v\n", err) //nolint:errcheck
+			return 1
+		}
+		return 0
+	}
+
 	cityPath, err := resolveCity()
 	if err != nil {
 		fmt.Fprintf(stderr, "gc session attach: %v\n", err) //nolint:errcheck // best-effort stderr

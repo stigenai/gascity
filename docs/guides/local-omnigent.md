@@ -106,6 +106,45 @@ preferred runtime; an isolated Gas City tmux socket is the fallback. Both send
 keystrokes, multiline paste, Unicode, and interrupts to the same attachment—no
 nested or default tmux server is used.
 
+The same local-config boundary applies when Gas City places the worker on SSH
+or Kubernetes. Omnigent runs inside that capsule on loopback with a private
+Unix socket; Gas City still owns placement, durable workspace and conversation
+state, secret projection, supervision, and cleanup. Omnigent does not become a
+second remote control plane.
+
+Discover local and remote sessions from one local Herdr console:
+
+```bash
+gc session view list
+gc session view open my-city/ga-abc123
+gc session view attach my-city/ga-abc123
+```
+
+Use a named context when the City itself is supervised elsewhere:
+
+```bash
+gc --context production session view list
+gc --context production session view open ga-abc123
+```
+
+The list joins live session state with non-secret Omnigent status. It shows the
+runtime transport and the active profile blurb, so `claude-primary` and
+`claude-secondary` remain distinguishable even when their backends are not
+Anthropic. Sessions and cities the context cannot read are absent. A remote
+error is surfaced and never falls back to local disk.
+
+The viewer is lifecycle-neutral. Opening a sleeping or failed session does not
+restart it, and closing the viewer does not stop it:
+
+```bash
+gc session view close my-city/ga-abc123
+```
+
+Gas City uses the typed terminal channel for input, resize, interruption,
+reconnect, and detach. The channel carries bounded terminal snapshots and
+never exposes the capsule's raw service socket, credentials, transcript, or
+host configuration.
+
 To attach directly to a known conversation:
 
 ```bash
