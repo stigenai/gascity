@@ -5,6 +5,10 @@ package tmuxtest
 import (
 	"errors"
 	"fmt"
+	"os/exec"
+	"sort"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -12,12 +16,13 @@ import (
 const testServerProcessStopWait = 500 * time.Millisecond
 
 type testServerProcess struct {
-	pid  int
-	pgid int
+	pid        int
+	pgid       int
+	socketPath string
 }
 
 func captureTestServerProcess(socketName, socketPath string) (testServerProcess, error) {
-	pid, err := tmuxServerPID(socketName, socketPath)
+	pid, capturedSocketPath, err := tmuxServerIdentity(socketName, socketPath)
 	if err != nil {
 		return testServerProcess{}, err
 	}
@@ -31,7 +36,7 @@ func captureTestServerProcess(socketName, socketPath string) (testServerProcess,
 	if pgid == syscall.Getpgrp() {
 		return testServerProcess{}, fmt.Errorf("refusing to capture current process group %d", pgid)
 	}
-	return testServerProcess{pid: pid, pgid: pgid}, nil
+	return testServerProcess{pid: pid, pgid: pgid, socketPath: capturedSocketPath}, nil
 }
 
 func terminateTestServerProcess(handle testServerProcess) error {
@@ -55,7 +60,14 @@ func terminateTestServerProcess(handle testServerProcess) error {
 	if err := syscall.Kill(-handle.pgid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("killing isolated tmux process group %d: %w", handle.pgid, err)
 	}
-	return nil
+	if waitForTestProcessGroupExit(handle.pgid, testServerProcessStopWait) {
+		return nil
+	}
+	members, listErr := testProcessGroupMembers(handle.pgid)
+	if listErr != nil {
+		return fmt.Errorf("isolated tmux process group %d survived SIGKILL; listing leaked PIDs: %w", handle.pgid, listErr)
+	}
+	return fmt.Errorf("isolated tmux process group %d survived SIGKILL; leaked PIDs: %v", handle.pgid, members)
 }
 
 func waitForTestProcessGroupExit(pgid int, timeout time.Duration) bool {
@@ -71,4 +83,29 @@ func waitForTestProcessGroupExit(pgid int, timeout time.Duration) bool {
 		}
 		<-ticker.C
 	}
+}
+
+func testProcessGroupMembers(pgid int) ([]int, error) {
+	out, err := exec.Command("ps", "-axo", "pid=,pgid=").Output()
+	if err != nil {
+		return nil, err
+	}
+	return parseTestProcessGroupMembers(string(out), pgid), nil
+}
+
+func parseTestProcessGroupMembers(output string, pgid int) []int {
+	var members []int
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		pid, pidErr := strconv.Atoi(fields[0])
+		group, groupErr := strconv.Atoi(fields[1])
+		if pidErr == nil && groupErr == nil && pid > 1 && group == pgid {
+			members = append(members, pid)
+		}
+	}
+	sort.Ints(members)
+	return members
 }

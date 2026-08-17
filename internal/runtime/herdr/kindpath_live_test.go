@@ -3,6 +3,7 @@ package herdr
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"testing"
 	"time"
@@ -15,8 +16,12 @@ import (
 // and has herdr launch + detect claude in it (native claude-detection), the
 // agent is registered under the session name, liveness holds across checks
 // (with a re-issued Start refusing), and Stop tears the pane down. Skipped
-// when herdr or claude is unavailable or in -short mode.
+// unless GC_LIVE_ANTHROPIC_TEST=1; also skipped when herdr or claude is
+// unavailable or in -short mode.
 func TestProviderLiveClaudeKindPath(t *testing.T) {
+	if os.Getenv("GC_LIVE_ANTHROPIC_TEST") != "1" {
+		t.Skip("set GC_LIVE_ANTHROPIC_TEST=1 to run the real Claude/Herdr smoke test")
+	}
 	if testing.Short() {
 		t.Skip("skipping live herdr+claude test in -short mode")
 	}

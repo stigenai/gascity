@@ -2388,6 +2388,10 @@ dir = "myrig"
 
 func TestCmdNudgeStatusJSON(t *testing.T) {
 	t.Setenv("GC_BEADS", "file")
+	// This is a JSON projection test. Keep provider resolution hermetic so
+	// materializing the configured alias cannot start a real tmux server and
+	// its tmux-claude-monitor helper.
+	t.Setenv("GC_SESSION", "fake")
 	cityDir := t.TempDir()
 	writeNamedSessionCityTOML(t, cityDir)
 	t.Setenv("GC_CITY", cityDir)

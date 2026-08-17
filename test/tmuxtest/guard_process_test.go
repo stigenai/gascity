@@ -3,6 +3,7 @@
 package tmuxtest
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -21,6 +22,21 @@ const (
 	tmuxCleanupMonitorHelperEnv  = "GC_TMUX_CLEANUP_MONITOR_HELPER"
 	tmuxCleanupMonitorPIDFileEnv = "GC_TMUX_CLEANUP_MONITOR_PID_FILE"
 )
+
+func testServerOption(socketName, option string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxGuardCommandTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "tmux", tmuxArgs(socketName, "show-options", "-sv", option)...).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("reading isolated tmux server option %q: %w: %s", option, err, strings.TrimSpace(string(out)))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func tmuxServerPID(socketName, socketPath string) (int, error) {
+	pid, _, err := tmuxServerIdentity(socketName, socketPath)
+	return pid, err
+}
 
 func TestTmuxCleanupMonitorHelper(t *testing.T) {
 	if os.Getenv(tmuxCleanupMonitorHelperEnv) != "1" {
@@ -61,6 +77,9 @@ func TestGuardCapturedServerCleanupReapsServerProcessGroup(t *testing.T) {
 	g := &Guard{t: t, cityName: socket, socketName: socket}
 	if err := g.CaptureServer(); err != nil {
 		t.Fatalf("CaptureServer: %v", err)
+	}
+	if out, err := testServerOption(socket, "exit-empty"); err != nil || out != "on" {
+		t.Fatalf("isolated server exit-empty = %q, err %v; want on", out, err)
 	}
 	serverPID, err := tmuxServerPID(socket, "")
 	if err != nil {
@@ -104,6 +123,68 @@ func TestGuardCapturedServerCleanupReapsServerProcessGroup(t *testing.T) {
 	g.killGuardSessions()
 	if err := waitForTestProcessExit(monitorPID, 3*time.Second); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestGuardCapturedServerCleanupRemovesStaleSocket(t *testing.T) {
+	RequireTmux(t)
+	t.Setenv(tmuxTmpEnv, "/tmp")
+	socket := fmt.Sprintf("gctest-stale-socket-%d", os.Getpid())
+	socketPath := filepath.Join("/tmp", "tmux-"+strconv.Itoa(os.Getuid()), socket)
+	startServer := func() {
+		t.Helper()
+		start := exec.Command("tmux", "-f", "/dev/null", "-L", socket, "new-session", "-d", "-s", "cleanup", "sleep", "300")
+		if out, err := start.CombinedOutput(); err != nil {
+			t.Fatalf("starting isolated tmux server: %v\n%s", err, out)
+		}
+	}
+	startServer()
+	t.Cleanup(func() {
+		_ = killTestSocketServerWithHandles(socket, nil)
+		_ = os.Remove(socketPath)
+	})
+
+	g := &Guard{t: t, cityName: socket, socketName: socket}
+	if err := g.CaptureServer(); err != nil {
+		t.Fatalf("CaptureServer: %v", err)
+	}
+	serverPID, err := tmuxServerPID(socket, "")
+	if err != nil {
+		t.Fatalf("tmuxServerPID: %v", err)
+	}
+	if err := syscall.Kill(-serverPID, syscall.SIGKILL); err != nil {
+		t.Fatalf("killing isolated server process group: %v", err)
+	}
+	if !waitForTestProcessGroupExit(serverPID, 3*time.Second) {
+		t.Fatalf("isolated server process group %d did not exit", serverPID)
+	}
+	if _, err := os.Lstat(socketPath); err != nil {
+		t.Fatalf("stale socket %s missing before guard cleanup: %v", socketPath, err)
+	}
+
+	g.killGuardSessions()
+	if _, err := os.Lstat(socketPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale socket survived guard cleanup: %v", err)
+	}
+
+	// The suite-wide pre/post sweep has no previously captured handle. It must
+	// still remove a dead socket after the server process is already gone.
+	startServer()
+	serverPID, err = tmuxServerPID(socket, "")
+	if err != nil {
+		t.Fatalf("tmuxServerPID for sweep fallback: %v", err)
+	}
+	if err := syscall.Kill(-serverPID, syscall.SIGKILL); err != nil {
+		t.Fatalf("killing isolated server before sweep fallback: %v", err)
+	}
+	if !waitForTestProcessGroupExit(serverPID, 3*time.Second) {
+		t.Fatalf("isolated sweep-fallback process group %d did not exit", serverPID)
+	}
+	if err := killTestSocketPath(socketPath); err != nil {
+		t.Fatalf("killTestSocketPath: %v", err)
+	}
+	if _, err := os.Lstat(socketPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale sweep socket survived cleanup: %v", err)
 	}
 }
 

@@ -164,8 +164,25 @@ func TestFixtureVolumeLossFailsClosedAndCleanupCensusIsExact(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			census := fixture.Census()
+			for name, count := range map[string]Count{
+				"process group": census.ProcessGroups, "Omnigent server": census.OmnigentServers,
+				"capsule host": census.CapsuleHosts, "harness": census.HarnessProcesses,
+				"model endpoint": census.ModelEndpoints, "tmux session": census.TmuxSessions,
+				"tmux monitor": census.TmuxMonitorProcesses, "Unix socket": census.UnixSockets,
+			} {
+				if !count.IsOne() {
+					t.Fatalf("%s census = %d, want 1: %#v", name, count, census)
+				}
+			}
+			if transport == TransportKubernetes && !census.KubectlProcesses.IsOne() {
+				t.Fatalf("kubectl census = %#v", census)
+			}
+			if transport == TransportSSH && !census.SSHClientProcesses.IsOne() {
+				t.Fatalf("SSH client census = %#v", census)
+			}
 			fixture.OpenHerdrViewer()
-			if !fixture.Census().HerdrViewers.IsOne() {
+			if !fixture.Census().HerdrViewers.IsOne() || !fixture.Census().HerdrProcesses.IsOne() {
 				t.Fatalf("viewer census = %#v", fixture.Census())
 			}
 			fixture.CloseHerdrViewer()

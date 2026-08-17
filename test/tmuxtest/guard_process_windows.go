@@ -8,15 +8,16 @@ import (
 )
 
 type testServerProcess struct {
-	pid int
+	pid        int
+	socketPath string
 }
 
 func captureTestServerProcess(socketName, socketPath string) (testServerProcess, error) {
-	pid, err := tmuxServerPID(socketName, socketPath)
+	pid, capturedSocketPath, err := tmuxServerIdentity(socketName, socketPath)
 	if err != nil {
 		return testServerProcess{}, err
 	}
-	return testServerProcess{pid: pid}, nil
+	return testServerProcess{pid: pid, socketPath: capturedSocketPath}, nil
 }
 
 func terminateTestServerProcess(handle testServerProcess) error {

@@ -72,8 +72,10 @@ type phase2RealTransportRun struct {
 func launchPhase2RealTransportSession(t *testing.T, tc phase2ProviderCase, materialized runtime.Config) phase2RealTransportRun {
 	t.Helper()
 
-	guard := tmuxtest.NewGuard(t)
 	dir := t.TempDir()
+	// Create temporary paths before the guard so its LIFO cleanup runs while
+	// every diagnostic and process marker is still available.
+	guard := tmuxtest.NewGuard(t)
 	startedPath := filepath.Join(dir, "started.txt")
 	providerPath := filepath.Join(dir, "provider.txt")
 	inputPath := filepath.Join(dir, "input.txt")
@@ -228,6 +230,7 @@ func launchPhase2RealTransportSession(t *testing.T, tc phase2ProviderCase, mater
 		}
 	}
 	startElapsed := time.Since(start)
+	captureErr := guard.CaptureServer()
 
 	observedStartupPrompt, startupPromptErr := waitForPhase2FileText(startupPromptPath, phase2RealTransportBound)
 	autonomousStarted := waitForPhase2FileExists(autonomousPath, phase2RealTransportMarkerBound)
@@ -240,6 +243,9 @@ func launchPhase2RealTransportSession(t *testing.T, tc phase2ProviderCase, mater
 	errorStage := ""
 	errorDetail := ""
 	switch {
+	case captureErr != nil:
+		errorStage = "capture_tmux_server"
+		errorDetail = captureErr.Error()
 	case startupPromptErr != nil:
 		errorStage = "startup_prompt_wait"
 		errorDetail = startupPromptErr.Error()

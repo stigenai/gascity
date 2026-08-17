@@ -125,11 +125,18 @@ func (g *Guard) CaptureServer() error {
 		return err
 	}
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	if g.servers == nil {
 		g.servers = make(map[int]testServerProcess)
 	}
 	g.servers[handle.pid] = handle
+	g.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), tmuxGuardCommandTimeout)
+	defer cancel()
+	args := tmuxArgs(g.socketName, "set-option", "-s", "exit-empty", "on")
+	if out, err := exec.CommandContext(ctx, "tmux", args...).CombinedOutput(); err != nil {
+		return fmt.Errorf("configuring isolated tmux server %d to exit when empty: %w: %s", handle.pid, err, strings.TrimSpace(string(out)))
+	}
 	return nil
 }
 
@@ -206,10 +213,11 @@ func killTestSocketServerWithHandles(socketName string, handles []testServerProc
 	args := tmuxArgs(socketName, "kill-server")
 	killErr := exec.CommandContext(ctx, "tmux", args...).Run()
 	processErr := terminateCapturedTestServers(handles)
-	if processErr == nil && (killErr == nil || hasHandle) {
+	socketErr := removeCapturedTestServerSockets(handles)
+	if processErr == nil && socketErr == nil && (killErr == nil || hasHandle) {
 		return nil
 	}
-	return errors.Join(killErr, processErr)
+	return errors.Join(killErr, processErr, socketErr)
 }
 
 func killTestSocketPath(socketPath string) error {
@@ -222,33 +230,51 @@ func killTestSocketPath(socketPath string) error {
 	defer cancel()
 	killErr := exec.CommandContext(ctx, "tmux", "-S", socketPath, "kill-server").Run()
 	processErr := terminateCapturedTestServers(handles)
-	if processErr == nil && (killErr == nil || hasHandle) {
+	socketErr := removeTestSocket(socketPath)
+	if processErr == nil && socketErr == nil {
 		return nil
 	}
-	return errors.Join(killErr, processErr)
+	if killErr == nil || hasHandle {
+		killErr = nil
+	}
+	return errors.Join(killErr, processErr, socketErr)
 }
 
-func tmuxServerPID(socketName, socketPath string) (int, error) {
+func tmuxServerIdentity(socketName, socketPath string) (int, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), tmuxGuardCommandTimeout)
 	defer cancel()
-	args := []string{"display-message", "-p", "#{pid}"}
+	args := []string{"display-message", "-p", "#{pid}\t#{socket_path}"}
 	switch {
 	case socketPath != "":
 		args = append([]string{"-S", socketPath}, args...)
 	case socketName != "":
 		args = tmuxArgs(socketName, args...)
 	default:
-		return 0, errors.New("refusing to inspect the default tmux server")
+		return 0, "", errors.New("refusing to inspect the default tmux server")
 	}
 	out, err := exec.CommandContext(ctx, "tmux", args...).CombinedOutput()
 	if err != nil {
-		return 0, fmt.Errorf("querying isolated tmux server PID: %w", err)
+		return 0, "", fmt.Errorf("querying isolated tmux server identity: %w", err)
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	parts := strings.SplitN(strings.TrimSpace(string(out)), "\t", 2)
+	if len(parts) != 2 {
+		return 0, "", fmt.Errorf("parsing isolated tmux server identity %q", strings.TrimSpace(string(out)))
+	}
+	pid, err := strconv.Atoi(parts[0])
 	if err != nil || pid <= 1 {
-		return 0, fmt.Errorf("parsing isolated tmux server PID %q", strings.TrimSpace(string(out)))
+		return 0, "", fmt.Errorf("parsing isolated tmux server PID %q", parts[0])
 	}
-	return pid, nil
+	reportedPath := filepath.Clean(parts[1])
+	if !filepath.IsAbs(reportedPath) {
+		return 0, "", fmt.Errorf("isolated tmux server %d reported non-absolute socket path %q", pid, parts[1])
+	}
+	if socketPath != "" && reportedPath != filepath.Clean(socketPath) {
+		return 0, "", fmt.Errorf("isolated tmux server %d reported socket path %q, want %q", pid, reportedPath, filepath.Clean(socketPath))
+	}
+	if socketName != "" && filepath.Base(reportedPath) != socketName {
+		return 0, "", fmt.Errorf("isolated tmux server %d reported socket name %q, want %q", pid, filepath.Base(reportedPath), socketName)
+	}
+	return pid, reportedPath, nil
 }
 
 func terminateCapturedTestServers(handles []testServerProcess) error {
@@ -264,6 +290,46 @@ func terminateCapturedTestServers(handles []testServerProcess) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func removeCapturedTestServerSockets(handles []testServerProcess) error {
+	seen := make(map[string]struct{}, len(handles))
+	var errs []error
+	for _, handle := range handles {
+		socketPath := filepath.Clean(handle.socketPath)
+		if handle.socketPath == "" || socketPath == "." {
+			continue
+		}
+		if _, ok := seen[socketPath]; ok {
+			continue
+		}
+		seen[socketPath] = struct{}{}
+		if err := removeTestSocket(socketPath); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func removeTestSocket(socketPath string) error {
+	socketPath = filepath.Clean(socketPath)
+	if !filepath.IsAbs(socketPath) {
+		return fmt.Errorf("refusing to remove non-absolute tmux socket path %q", socketPath)
+	}
+	info, err := os.Lstat(socketPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspecting isolated tmux socket %q: %w", socketPath, err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("refusing to remove non-socket tmux path %q", socketPath)
+	}
+	if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("removing isolated tmux socket %q: %w", socketPath, err)
+	}
+	return nil
 }
 
 // listTestSocketPaths returns tmux socket paths for orphaned gctest cities.

@@ -66,7 +66,13 @@ func setupGasTownCity(t *testing.T, guard *tmuxtest.Guard, agents []gasTownAgent
 		t.Fatalf("gc init --from failed: %v\noutput: %s", err, out)
 	}
 	registerCityCommandEnv(cityDir, env)
-	waitForExpectedTmuxSessions(t, cityDir, gasTownExpectedSessions(agents))
+	expectedSessions := gasTownExpectedSessions(agents)
+	if guard != nil && !usingSubprocess() && len(expectedSessions) > 0 {
+		if err := guard.CaptureServer(); err != nil {
+			t.Fatalf("capturing isolated tmux server: %v", err)
+		}
+	}
+	waitForExpectedTmuxSessions(t, cityDir, expectedSessions)
 
 	t.Cleanup(func() {
 		unregisterCityCommandEnv(cityDir)

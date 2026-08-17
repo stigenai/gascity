@@ -183,15 +183,23 @@ func (c Count) IsOne() bool { return c == 1 }
 
 // Census reports every lifecycle-relevant fixture resource.
 type Census struct {
-	ProcessGroups    Count
-	TmuxSessions     Count
-	UnixSockets      Count
-	HerdrViewers     Count
-	KubernetesPods   Count
-	NetworkPolicies  Count
-	PersistentClaims Count
-	SSHStateRoots    Count
-	StagedCatalogs   Count
+	ProcessGroups        Count
+	OmnigentServers      Count
+	CapsuleHosts         Count
+	HarnessProcesses     Count
+	ModelEndpoints       Count
+	TmuxSessions         Count
+	TmuxMonitorProcesses Count
+	UnixSockets          Count
+	HerdrViewers         Count
+	HerdrProcesses       Count
+	SSHClientProcesses   Count
+	KubectlProcesses     Count
+	KubernetesPods       Count
+	NetworkPolicies      Count
+	PersistentClaims     Count
+	SSHStateRoots        Count
+	StagedCatalogs       Count
 }
 
 // Snapshot is the durable worker projection. Viewer state is intentionally
@@ -472,6 +480,7 @@ func (f *Fixture) OpenHerdrViewer() {
 	defer f.mu.Unlock()
 	if f.census.HerdrViewers == 0 {
 		f.census.HerdrViewers = 1
+		f.census.HerdrProcesses = 1
 		f.emitLocked(EventHerdrViewerOpened, "")
 	}
 }
@@ -482,6 +491,7 @@ func (f *Fixture) CloseHerdrViewer() {
 	defer f.mu.Unlock()
 	if f.census.HerdrViewers != 0 {
 		f.census.HerdrViewers = 0
+		f.census.HerdrProcesses = 0
 		f.emitLocked(EventHerdrViewerClosed, "")
 	}
 }
@@ -557,13 +567,20 @@ func (f *Fixture) Census() Census {
 
 func (f *Fixture) startResourcesLocked() {
 	f.census.ProcessGroups = 1
+	f.census.OmnigentServers = 1
+	f.census.CapsuleHosts = 1
+	f.census.HarnessProcesses = 1
+	f.census.ModelEndpoints = 1
 	f.census.TmuxSessions = 1
+	f.census.TmuxMonitorProcesses = 1
 	f.census.UnixSockets = 1
 	if f.state.Config.Transport == TransportKubernetes {
+		f.census.KubectlProcesses = 1
 		f.census.KubernetesPods = 1
 		f.census.NetworkPolicies = 1
 		f.census.PersistentClaims = 1
 	} else {
+		f.census.SSHClientProcesses = 1
 		f.census.SSHStateRoots = 1
 		f.census.StagedCatalogs = 1
 	}

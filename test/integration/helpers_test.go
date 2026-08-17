@@ -81,6 +81,11 @@ func setupCity(t *testing.T, guard *tmuxtest.Guard, agents []agentConfig) string
 		t.Fatalf("gc init --file failed: %v\noutput: %s", err, out)
 	}
 	registerCityCommandEnv(cityDir, env)
+	if guard != nil && !usingSubprocess() && len(agents) > 0 {
+		if err := guard.CaptureServer(); err != nil {
+			t.Fatalf("capturing isolated tmux server: %v", err)
+		}
+	}
 
 	waitForExpectedTmuxSessions(t, cityDir, agentNames(agents))
 

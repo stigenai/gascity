@@ -27,7 +27,8 @@ implementation details.
 - Exact durable conversation identity across fixture reconstruction.
 - Kubernetes and SSH resource census projections, including pods, policies,
   retained state, tmux sessions, process groups, private sockets, staged
-  catalogs, and lifecycle-neutral Herdr viewers.
+  catalogs, capsule server/host/harness/model processes, tmux monitors, SSH and
+  kubectl clients, and lifecycle-neutral Herdr viewers/processes.
 - Synchronous fault triggers for primary-profile rate limiting, policy mail,
   transport loss, durable-volume loss, capsule server crash, host crash,
   harness crash, and model endpoint loss.
@@ -85,6 +86,17 @@ Do not multiply the full profile matrix across every real provider. The shared
 fixture owns profile semantics; each real boundary keeps one composition proof
 for the behavior unique to that boundary. Follow the repository testing policy
 for deadlines, process cleanup, resource-ledger changes, and release evidence.
+
+The Herdr-to-Claude kind-path smoke test is opt-in even when both binaries are
+installed:
+
+```bash
+GC_LIVE_ANTHROPIC_TEST=1 CGO_ENABLED=0 go test ./internal/runtime/herdr \
+  -run '^TestProviderLiveClaudeKindPath$' -count=1
+```
+
+Ordinary unit and fast-suite runs leave the variable unset and cannot launch a
+real Claude session.
 
 ## Volume and transport loss
 

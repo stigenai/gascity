@@ -422,6 +422,12 @@ func setupE2ECity(t *testing.T, guard *tmuxtest.Guard, city e2eCity) string {
 	// regress on macOS's /var→/private/var symlink.
 	configPath := filepath.Join(canonicalTempDir(t), city.Workspace.Name+".toml")
 	writeE2ETomlFile(t, configPath, city)
+	runningTmuxSessions := 0
+	for _, agentCfg := range city.Agents {
+		if agentCfg.Pool == nil && !agentCfg.Suspended && !strings.Contains(agentCfg.StartCommand, "e2e-report.sh") {
+			runningTmuxSessions++
+		}
+	}
 
 	// Stage scripts before the first controller launch so CopyFiles hashing is
 	// stable. If scripts appear only after init's startup, the second gc start
@@ -436,6 +442,11 @@ func setupE2ECity(t *testing.T, guard *tmuxtest.Guard, city e2eCity) string {
 		t.Fatalf("gc init failed: %v\noutput: %s", err, out)
 	}
 	registerCityCommandEnv(cityDir, env)
+	if guard != nil && !usingSubprocess() && runningTmuxSessions > 0 {
+		if err := guard.CaptureServer(); err != nil {
+			t.Fatalf("capturing isolated tmux server: %v", err)
+		}
+	}
 	for _, agentCfg := range city.Agents {
 		if agentCfg.Pool != nil || agentCfg.Suspended {
 			continue
