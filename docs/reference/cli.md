@@ -3869,11 +3869,18 @@ If the session is active with a live tmux session, reattaches.
 If the session is suspended or the tmux session died, resumes
 using the provider's resume mechanism (if supported) or restarts.
 
+Use --no-resume for a lifecycle-neutral view that fails when the runtime is
+not already live. This mode never wakes, resumes, or restarts the session.
+
 Accepts a session ID (e.g., gc-42) or session alias (e.g., mayor).
 
 ```
-gc session attach <session-id-or-alias>
+gc session attach <session-id-or-alias> [flags]
 ```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--no-resume` | bool |  | attach only if the session runtime is already live |
 
 ## gc session close
 

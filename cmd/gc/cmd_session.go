@@ -1445,7 +1445,8 @@ func cliPoolDesired(cfg *config.City) map[string]int {
 
 // newSessionAttachCmd creates the "gc session attach <id-or-alias>" command.
 func newSessionAttachCmd(stdout, stderr io.Writer) *cobra.Command {
-	return &cobra.Command{
+	var noResume bool
+	cmd := &cobra.Command{
 		Use:   "attach <session-id-or-alias>",
 		Short: "Attach to (or resume) a chat session",
 		Long: `Attach to a running session or resume a suspended one.
@@ -1454,20 +1455,29 @@ If the session is active with a live tmux session, reattaches.
 If the session is suspended or the tmux session died, resumes
 using the provider's resume mechanism (if supported) or restarts.
 
+Use --no-resume for a lifecycle-neutral view that fails when the runtime is
+not already live. This mode never wakes, resumes, or restarts the session.
+
 Accepts a session ID (e.g., gc-42) or session alias (e.g., mayor).`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			if cmdSessionAttach(args, stdout, stderr) != 0 {
+			if cmdSessionAttachWithOptions(args, noResume, stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
 		},
 		ValidArgsFunction: completeSessionIDs,
 	}
+	cmd.Flags().BoolVar(&noResume, "no-resume", false, "attach only if the session runtime is already live")
+	return cmd
 }
 
 // cmdSessionAttach is the CLI entry point for "gc session attach".
 func cmdSessionAttach(args []string, stdout, stderr io.Writer) int {
+	return cmdSessionAttachWithOptions(args, false, stdout, stderr)
+}
+
+func cmdSessionAttachWithOptions(args []string, noResume bool, stdout, stderr io.Writer) int {
 	cityPath, err := resolveCity()
 	if err != nil {
 		fmt.Fprintf(stderr, "gc session attach: %v\n", err) //nolint:errcheck // best-effort stderr
@@ -1488,7 +1498,12 @@ func cmdSessionAttach(args []string, stdout, stderr io.Writer) int {
 	// coordination-class store for relocation-safety.
 	sessStore := cliSessionStore(store, cfg, cityPath)
 
-	sessionID, err := resolveSessionIDMaterializingNamed(cityPath, cfg, sessStore, args[0])
+	var sessionID string
+	if noResume {
+		sessionID, err = resolveSessionIDWithConfig(cityPath, cfg, sessStore, args[0])
+	} else {
+		sessionID, err = resolveSessionIDMaterializingNamed(cityPath, cfg, sessStore, args[0])
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "gc session attach: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
@@ -1518,7 +1533,12 @@ func cmdSessionAttach(args []string, stdout, stderr io.Writer) int {
 	}
 
 	fmt.Fprintf(stdout, "Attaching to session %s (%s)...\n", sessionID, info.Template) //nolint:errcheck // best-effort stdout
-	if err := handle.Attach(context.Background()); err != nil {
+	if noResume {
+		err = handle.AttachExisting(context.Background())
+	} else {
+		err = handle.Attach(context.Background())
+	}
+	if err != nil {
 		fmt.Fprintf(stderr, "gc session attach: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
 	}

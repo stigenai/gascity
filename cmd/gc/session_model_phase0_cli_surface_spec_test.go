@@ -254,6 +254,37 @@ mode = "always"
 	}
 }
 
+func TestSessionAttachNoResumeDoesNotMaterializeConfiguredNamedSession(t *testing.T) {
+	cityDir := t.TempDir()
+	writePhase0InterfaceCity(t, cityDir, `[workspace]
+name = "test-city"
+
+[beads]
+provider = "file"
+
+[[agent]]
+name = "worker"
+start_command = "true"
+max_active_sessions = 1
+
+[[named_session]]
+template = "worker"
+mode = "always"
+`)
+	t.Setenv("GC_CITY", cityDir)
+	t.Setenv("GC_DIR", t.TempDir())
+	t.Setenv("GC_BEADS", "file")
+	t.Setenv("GC_SESSION", "fake")
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdSessionAttachWithOptions([]string{"worker"}, true, &stdout, &stderr); code == 0 {
+		t.Fatalf("no-resume attach to absent named session succeeded: stdout=%s stderr=%s", stdout.String(), stderr.String())
+	}
+	if count := phase0InterfaceSessionCount(t, cityDir); count != 0 {
+		t.Fatalf("no-resume attach materialized %d configured named session(s): stdout=%s stderr=%s", count, stdout.String(), stderr.String())
+	}
+}
+
 func TestPhase0MailRecipientIdentity_RejectsTemplateFactoryTarget(t *testing.T) {
 	t.Setenv("GC_SESSION", "fake")
 

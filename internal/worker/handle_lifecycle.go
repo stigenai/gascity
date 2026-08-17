@@ -71,6 +71,20 @@ func (h *SessionHandle) Attach(ctx context.Context) (err error) {
 	return err
 }
 
+// AttachExisting attaches only when the worker runtime is already live. It is
+// the lifecycle-neutral path used by passive terminal viewers.
+func (h *SessionHandle) AttachExisting(ctx context.Context) (err error) {
+	event := h.beginOperationEvent(ctx, workerOperationAttach)
+	defer func() { event.finish(err) }()
+
+	id, err := h.ensureSessionID()
+	if err != nil {
+		return err
+	}
+	err = h.manager.AttachExisting(ctx, id)
+	return err
+}
+
 // Create materializes the worker session without requiring API callers to
 // invoke session.Manager lifecycle methods directly.
 func (h *SessionHandle) Create(ctx context.Context, mode CreateMode) (info sessionpkg.Info, err error) {

@@ -1539,6 +1539,54 @@ func TestSuspendAndResume(t *testing.T) {
 	}
 }
 
+func TestAttachExistingNeverResumesInactiveSession(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := runtime.NewFake()
+	mgr := NewManagerWithOptions(store, sp)
+	info, err := mgr.CreateSession(context.Background(), CreateOptions{
+		Template: "helper", Command: "claude", WorkDir: "/tmp", Provider: "claude",
+		ExtraMeta: map[string]string{"session_origin": "manual"},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := mgr.AttachExisting(context.Background(), info.ID); err != nil {
+		t.Fatalf("AttachExisting(active): %v", err)
+	}
+	if got := countRuntimeCalls(sp.Calls, "Start"); got != 1 {
+		t.Fatalf("Start calls after active view = %d, want original create only: %#v", got, sp.Calls)
+	}
+	if err := mgr.Suspend(info.ID); err != nil {
+		t.Fatalf("Suspend: %v", err)
+	}
+	before := len(sp.Calls)
+	if err := mgr.AttachExisting(context.Background(), info.ID); !errors.Is(err, ErrSessionInactive) {
+		t.Fatalf("AttachExisting(suspended) error = %v, want %v", err, ErrSessionInactive)
+	}
+	for _, call := range sp.Calls[before:] {
+		if call.Method == "Start" || call.Method == "Attach" {
+			t.Fatalf("inactive view mutated or attached runtime: %#v", sp.Calls[before:])
+		}
+	}
+	got, err := mgr.Get(info.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != StateSuspended {
+		t.Fatalf("state after inactive view = %q, want %q", got.State, StateSuspended)
+	}
+}
+
+func countRuntimeCalls(calls []runtime.Call, method string) int {
+	count := 0
+	for _, call := range calls {
+		if call.Method == method {
+			count++
+		}
+	}
+	return count
+}
+
 func TestClose(t *testing.T) {
 	store := beads.NewMemStore()
 	sp := runtime.NewFake()

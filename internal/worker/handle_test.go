@@ -215,6 +215,30 @@ func TestSessionHandleAttachUsesWorkerBoundary(t *testing.T) {
 	}
 }
 
+func TestSessionHandleAttachExistingDoesNotStartDeferredWorker(t *testing.T) {
+	handle, store, sp, _ := newTestSessionHandle(t, SessionSpec{
+		Profile: ProfileClaudeTmuxCLI, Template: "probe", Title: "Probe",
+		Command: "claude", WorkDir: t.TempDir(), Provider: "claude",
+	})
+	info, err := handle.Create(context.Background(), CreateModeDeferred)
+	if err != nil {
+		t.Fatalf("Create(deferred): %v", err)
+	}
+	if err := handle.AttachExisting(context.Background()); !errors.Is(err, sessionpkg.ErrSessionInactive) {
+		t.Fatalf("AttachExisting error = %v, want %v", err, sessionpkg.ErrSessionInactive)
+	}
+	if call := firstCall(sp.Calls, "Start"); call != nil {
+		t.Fatalf("AttachExisting started deferred worker: %#v", sp.Calls)
+	}
+	bead, err := store.Get(info.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bead.Metadata["state"] != string(sessionpkg.StateStartPending) {
+		t.Fatalf("state = %q, want %q", bead.Metadata["state"], sessionpkg.StateStartPending)
+	}
+}
+
 func TestSessionHandleCreateDeferred(t *testing.T) {
 	handle, store, sp, _ := newTestSessionHandle(t, SessionSpec{
 		Profile:  ProfileClaudeTmuxCLI,

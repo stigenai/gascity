@@ -109,6 +109,12 @@ func (h *RuntimeHandle) Attach(ctx context.Context) (err error) {
 	return err
 }
 
+// AttachExisting is identical to Attach for a runtime-only handle: neither
+// path has bead-backed authority to start or resume a worker.
+func (h *RuntimeHandle) AttachExisting(ctx context.Context) error {
+	return h.Attach(ctx)
+}
+
 // Create reports unsupported because runtime-only handles have no bead-backed creation path.
 func (h *RuntimeHandle) Create(ctx context.Context, _ CreateMode) (info sessionpkg.Info, err error) {
 	event := h.beginOperationEvent(ctx, workerOperationCreate)

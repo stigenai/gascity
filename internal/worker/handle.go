@@ -32,6 +32,7 @@ type LifecycleHandle interface {
 	Start(context.Context) error
 	StartResolved(context.Context, string, runtime.Config) error
 	Attach(context.Context) error
+	AttachExisting(context.Context) error
 	Create(context.Context, CreateMode) (sessionpkg.Info, error)
 	Reset(context.Context) error
 	Stop(context.Context) error

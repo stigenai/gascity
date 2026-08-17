@@ -104,6 +104,20 @@ func TestFormatDuration(t *testing.T) {
 	}
 }
 
+func TestSessionAttachCommandOffersLifecycleNeutralNoResumeMode(t *testing.T) {
+	cmd := newSessionAttachCmd(io.Discard, io.Discard)
+	flag := cmd.Flags().Lookup("no-resume")
+	if flag == nil {
+		t.Fatal("session attach has no --no-resume flag")
+	}
+	if flag.DefValue != "false" {
+		t.Fatalf("--no-resume default = %q, want false", flag.DefValue)
+	}
+	if !strings.Contains(cmd.Long, "never wakes, resumes, or restarts") {
+		t.Fatalf("session attach help does not explain lifecycle-neutral mode:\n%s", cmd.Long)
+	}
+}
+
 func TestSessionExplicitNameForNewSessionTmuxAliasPrecedence(t *testing.T) {
 	agent := &config.Agent{
 		Name:              "worker",

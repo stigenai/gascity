@@ -1197,6 +1197,25 @@ func (m *Manager) Attach(ctx context.Context, id string, resumeCommand string, h
 	})
 }
 
+// AttachExisting attaches to an already-live session without waking,
+// resuming, restarting, or changing its persisted lifecycle state. It avoids
+// holding the lifecycle mutation lock for the duration of the interactive
+// attachment so an operator view cannot prevent autonomous stop or replacement.
+func (m *Manager) AttachExisting(_ context.Context, id string) error {
+	b, sessName, err := m.sessionBead(id)
+	if err != nil {
+		return err
+	}
+	state := canonicalLifecycleState(State(b.Metadata["state"]))
+	if b.Status == "closed" || (state != StateActive && state != StateDraining) || m.sp == nil || !m.sp.IsRunning(sessName) {
+		return fmt.Errorf("%w: %s", ErrSessionInactive, id)
+	}
+	if err := m.sp.Attach(sessName); err != nil {
+		return fmt.Errorf("attach existing session %q: %w", id, err)
+	}
+	return nil
+}
+
 // Suspend saves session state and kills the runtime session.
 func (m *Manager) Suspend(id string) error {
 	return withSessionMutationLock(id, func() error {

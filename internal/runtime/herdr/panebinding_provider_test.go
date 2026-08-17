@@ -181,7 +181,8 @@ pane_process-info)
   elif [ -e "$STATE/pane_zero_shell_with_foreground" ]; then
     printf '%s' '{"result":{"process_info":{"shell_pid":0,"foreground_processes":[{"pid":4243,"name":"claude"}]}}}'
   elif [ -e "$STATE/rawcmd" ]; then
-    printf '%s' '{"result":{"process_info":{"shell_pid":4242,"foreground_processes":[{"pid":4242,"name":"bash","argv":["/bin/sh","-c","'"$(cat "$STATE/rawcmd")"'"]}]}}}'
+    rawcmd_json=$(sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' "$STATE/rawcmd")
+    printf '%s' '{"result":{"process_info":{"shell_pid":4242,"foreground_processes":[{"pid":4242,"name":"bash","argv":["/bin/sh","-c","'"$rawcmd_json"'"]}]}}}'
   elif [ -e "$STATE/busy" ]; then
     printf '%s' '{"result":{"process_info":{"shell_pid":4242,"foreground_processes":[{"pid":4243,"name":"claude"}]}}}'
   else
