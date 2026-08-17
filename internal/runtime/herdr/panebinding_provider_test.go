@@ -149,6 +149,20 @@ pane_run)
     printf '%s' "$4" | sed -e 's|^exec /bin/sh -c ||' -e "s/^'//" -e "s/'\$//" > "$STATE/rawcmd"
     exit 0
   fi ;;
+pane_send-text)
+  printf '%s' "$4" >> "$STATE/viewer-input"
+  if [ -e "$STATE/viewer_input_lost_response" ]; then
+    printf '%s' 'viewer action response lost' >&2
+    exit 1
+  fi
+  printf '%s' '{"result":{}}' ;;
+pane_send-keys)
+  printf '%s' '{"result":{}}' ;;
+pane_resize)
+  printf '%s' '{"result":{}}' ;;
+pane_read)
+  printf '%s' 'VIEWER_OUTPUT_世界🙂
+' ;;
 pane_process-info)
   if [ -e "$STATE/pane_transport_not_found" ]; then
     printf '%s' 'transport endpoint not found' >&2

@@ -7,17 +7,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 
+	"github.com/gastownhall/gascity/internal/runtime"
 	"github.com/gastownhall/gascity/internal/shellquote"
 )
 
 const (
 	viewerBindingVersion = 1
 	viewerWorkspaceLabel = "Gas City viewers"
+	maxViewerActionBytes = 64 << 10
+	maxViewerKeys        = 32
+	maxViewerReadLines   = 2000
 )
 
 // ViewerSpec identifies one lifecycle-neutral Herdr view of a Gas City
@@ -41,6 +48,16 @@ type ViewerBinding struct {
 	ProfileBlurb string `json:"profile_blurb,omitempty"`
 }
 
+// ViewerResize changes one Herdr split edge. Herdr converts the layout change
+// into a PTY resize, which the running Gas City attachment forwards to the
+// authoritative remote terminal.
+type ViewerResize struct {
+	Direction string
+	Amount    float64
+}
+
+type viewerTTYRunner func(context.Context, string, []string, io.Reader, io.Writer, io.Writer) error
+
 // ViewerProjection owns only local Herdr viewer panes. The Gas City
 // controller and the selected runtime provider remain the sole lifecycle
 // owners of the sessions displayed inside those panes.
@@ -49,6 +66,11 @@ type ViewerProjection struct {
 	stateDir string
 	cityRoot string
 	mu       sync.Mutex
+
+	attachStdin      io.Reader
+	attachStdout     io.Writer
+	attachStderr     io.Writer
+	runAttachCommand viewerTTYRunner
 }
 
 // NewViewerProjection constructs a lifecycle-neutral viewer projection for a
@@ -172,6 +194,163 @@ func (v *ViewerProjection) Binding(session string) (ViewerBinding, bool, error) 
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	return v.readBinding(strings.TrimSpace(session))
+}
+
+// Attach connects the caller's terminal directly to the live Herdr viewer pane.
+// Stdin, stdout, and stderr are inherited without framing or text conversion;
+// returning from the Herdr client detaches only this viewer.
+func (v *ViewerProjection) Attach(ctx context.Context, session string) error {
+	v.mu.Lock()
+	binding, err := v.liveBindingLocked(ctx, session)
+	v.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	runner := v.runAttachCommand
+	if runner == nil {
+		runner = runViewerTTY
+	}
+	stdin, stdout, stderr := v.attachStdin, v.attachStdout, v.attachStderr
+	if stdin == nil {
+		stdin = os.Stdin
+	}
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+	if err := runner(ctx, v.c.bin, []string{"--session", v.c.session, binding.PaneID}, stdin, stdout, stderr); err != nil {
+		return fmt.Errorf("herdr viewer %q: attach pane %q: %w", binding.Session, binding.PaneID, err)
+	}
+	return nil
+}
+
+// SendText forwards literal text once to a live viewer pane without submitting
+// Enter. It performs no retry after an ambiguous transport failure, preventing
+// lost responses from duplicating terminal input.
+func (v *ViewerProjection) SendText(ctx context.Context, session, value string) error {
+	if strings.ContainsRune(value, 0) {
+		return errors.New("herdr viewer: send text contains NUL; use interactive attachment for raw bytes")
+	}
+	if len(value) > maxViewerActionBytes {
+		return fmt.Errorf("herdr viewer: send text exceeds %d-byte action limit", maxViewerActionBytes)
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	binding, err := v.liveBindingLocked(ctx, session)
+	if err != nil {
+		return err
+	}
+	if err := v.c.sendText(ctx, binding.PaneID, value); err != nil {
+		return fmt.Errorf("herdr viewer %q: send text: %w", binding.Session, err)
+	}
+	return nil
+}
+
+// SendKeys forwards logical terminal keys once to a live viewer pane. Herdr
+// validates and encodes keys such as enter and ctrl+c.
+func (v *ViewerProjection) SendKeys(ctx context.Context, session string, keys ...string) error {
+	if len(keys) == 0 {
+		return errors.New("herdr viewer: at least one key is required")
+	}
+	if len(keys) > maxViewerKeys {
+		return fmt.Errorf("herdr viewer: send keys exceeds %d-key action limit", maxViewerKeys)
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	binding, err := v.liveBindingLocked(ctx, session)
+	if err != nil {
+		return err
+	}
+	if err := v.c.sendKeys(ctx, binding.PaneID, keys...); err != nil {
+		return fmt.Errorf("herdr viewer %q: send keys: %w", binding.Session, err)
+	}
+	return nil
+}
+
+// Resize changes the live viewer's Herdr split and forwards the resulting PTY
+// resize through the Gas City attachment proxy.
+func (v *ViewerProjection) Resize(ctx context.Context, session string, resize ViewerResize) error {
+	direction := strings.ToLower(strings.TrimSpace(resize.Direction))
+	switch direction {
+	case "left", "right", "up", "down":
+	default:
+		return fmt.Errorf("herdr viewer: invalid resize direction %q", resize.Direction)
+	}
+	if resize.Amount <= 0 || math.IsNaN(resize.Amount) || math.IsInf(resize.Amount, 0) {
+		return errors.New("herdr viewer: resize amount must be finite and positive")
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	binding, err := v.liveBindingLocked(ctx, session)
+	if err != nil {
+		return err
+	}
+	if err := v.c.resizePane(ctx, binding.PaneID, direction, resize.Amount); err != nil {
+		return fmt.Errorf("herdr viewer %q: resize: %w", binding.Session, err)
+	}
+	return nil
+}
+
+// Read returns a fresh, bounded, unwrapped text snapshot from the live viewer.
+// Terminal output remains untrusted data and must not be reused as a control
+// event. Attach is the raw interactive byte path.
+func (v *ViewerProjection) Read(ctx context.Context, session string, lines int) (string, error) {
+	if lines < 0 || lines > maxViewerReadLines {
+		return "", fmt.Errorf("herdr viewer: read lines must be between 0 and %d", maxViewerReadLines)
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	binding, err := v.liveBindingLocked(ctx, session)
+	if err != nil {
+		return "", err
+	}
+	output, err := v.c.paneRead(ctx, binding.PaneID, "recent-unwrapped", lines)
+	if err != nil {
+		return "", fmt.Errorf("herdr viewer %q: read: %w", binding.Session, err)
+	}
+	return output, nil
+}
+
+func runViewerTTY(ctx context.Context, bin string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
+}
+
+func (v *ViewerProjection) liveBindingLocked(ctx context.Context, session string) (ViewerBinding, error) {
+	session = strings.TrimSpace(session)
+	if session == "" {
+		return ViewerBinding{}, errors.New("herdr viewer: session is required")
+	}
+	binding, present, err := v.readBinding(session)
+	if err != nil {
+		return ViewerBinding{}, err
+	}
+	if !present {
+		return ViewerBinding{}, fmt.Errorf("herdr viewer %q: %w", session, runtime.ErrSessionNotFound)
+	}
+	shellPID, foreground, err := v.c.processInfo(ctx, binding.PaneID)
+	if herdrErrorCode(err) == "pane_not_found" {
+		if removeErr := v.removeBinding(session); removeErr != nil {
+			return ViewerBinding{}, errors.Join(fmt.Errorf("herdr viewer %q: %w", session, runtime.ErrSessionNotFound), removeErr)
+		}
+		return ViewerBinding{}, fmt.Errorf("herdr viewer %q: %w", session, runtime.ErrSessionNotFound)
+	}
+	if err != nil {
+		return ViewerBinding{}, fmt.Errorf("herdr viewer %q: probe pane %q: %w", session, binding.PaneID, err)
+	}
+	rawCommand, argv := viewerAttachCommand(session)
+	if viewerCommandMatches(foreground, rawCommand, argv) {
+		return binding, nil
+	}
+	if paneProbeFrom(shellPID, foreground).Busy || paneHasShellCommand(foreground) {
+		return ViewerBinding{}, fmt.Errorf("herdr viewer %q: bound pane %q runs a different command: %w", session, binding.PaneID, runtime.ErrRuntimeUnavailable)
+	}
+	return ViewerBinding{}, fmt.Errorf("herdr viewer %q: attachment is not live: %w", session, runtime.ErrSessionNotFound)
 }
 
 func (v *ViewerProjection) launch(ctx context.Context, paneID, rawCommand string) error {

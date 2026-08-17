@@ -335,6 +335,19 @@ func (c *client) sendKeys(ctx context.Context, paneID string, keys ...string) er
 	return err
 }
 
+// sendText → `herdr pane send-text <paneID> <text>` (literal text, no Enter).
+func (c *client) sendText(ctx context.Context, paneID, value string) error {
+	_, err := c.run(ctx, "pane", "send-text", paneID, value)
+	return err
+}
+
+// resizePane → `herdr pane resize --pane <paneID> --direction <direction>
+// --amount <amount>`. Herdr owns translating the split change to a PTY resize.
+func (c *client) resizePane(ctx context.Context, paneID, direction string, amount float64) error {
+	_, err := c.run(ctx, "pane", "resize", "--pane", paneID, "--direction", direction, "--amount", strconv.FormatFloat(amount, 'g', -1, 64))
+	return err
+}
+
 // paneRun → `herdr pane run <paneID> <command>` (pastes text into the pane).
 func (c *client) paneRun(ctx context.Context, paneID, command string) error {
 	_, err := c.run(ctx, "pane", "run", paneID, command)
