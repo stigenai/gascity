@@ -2804,6 +2804,44 @@ export const zStatusNamedSessionDetail = z.object({
     status: z.string()
 });
 
+export const zStatusProfile = z.object({
+    backend: z.string(),
+    blurb: z.string(),
+    display_name: z.string(),
+    harness: z.string(),
+    id: z.string(),
+    network: z.string()
+});
+
+export const zRemoteSessionStatus = z.object({
+    active_index: z.coerce.bigint().min(BigInt('-9223372036854775808'), { error: 'Invalid value: Expected int64 to be >= -9223372036854775808' }).max(BigInt('9223372036854775807'), { error: 'Invalid value: Expected int64 to be <= 9223372036854775807' }),
+    active_profile: zStatusProfile.optional(),
+    active_profile_id: z.string(),
+    alias: z.string().optional(),
+    configured_profile: zStatusProfile.optional(),
+    configured_profile_id: z.string(),
+    conversation_present: z.boolean(),
+    degradation: z.string(),
+    exhausted: z.boolean(),
+    location: z.string(),
+    observed_at: z.iso.datetime(),
+    provider: z.string().optional(),
+    service_state: z.string(),
+    session_id: z.string(),
+    session_state: z.string().optional(),
+    stale: z.boolean(),
+    template: z.string().optional(),
+    transport: z.string().optional()
+});
+
+export const zListBodyRemoteSessionStatus = z.object({
+    items: z.array(zRemoteSessionStatus).nullable(),
+    next_cursor: z.string().optional(),
+    partial: z.boolean().optional(),
+    partial_errors: z.array(z.string()).nullish(),
+    total: z.coerce.bigint().min(BigInt('-9223372036854775808'), { error: 'Invalid value: Expected int64 to be >= -9223372036854775808' }).max(BigInt('9223372036854775807'), { error: 'Invalid value: Expected int64 to be <= 9223372036854775807' })
+});
+
 export const zStatusRigCounts = z.object({
     suspended: z.coerce.bigint().min(BigInt('-9223372036854775808'), { error: 'Invalid value: Expected int64 to be >= -9223372036854775808' }).max(BigInt('9223372036854775807'), { error: 'Invalid value: Expected int64 to be <= 9223372036854775807' }),
     total: z.coerce.bigint().min(BigInt('-9223372036854775808'), { error: 'Invalid value: Expected int64 to be >= -9223372036854775808' }).max(BigInt('9223372036854775807'), { error: 'Invalid value: Expected int64 to be <= 9223372036854775807' })
@@ -7589,6 +7627,20 @@ export const zGetV0CityByCityNameMaintenanceStatusPath = z.object({
  * OK
  */
 export const zGetV0CityByCityNameMaintenanceStatusResponse = zMaintenanceStatusBody;
+
+export const zGetV0CityByCityNameOmnigentStatusPath = z.object({
+    cityName: z.string().min(1).regex(/\S/)
+});
+
+export const zGetV0CityByCityNameOmnigentStatusQuery = z.object({
+    cursor: z.string().optional(),
+    limit: z.coerce.bigint().gte(BigInt(0)).lte(BigInt(1000)).optional().default(BigInt(100))
+});
+
+/**
+ * OK
+ */
+export const zGetV0CityByCityNameOmnigentStatusResponse = zListBodyRemoteSessionStatus;
 
 export const zGetV0CityByCityNameOrderHistoryByBeadIdPath = z.object({
     cityName: z.string().min(1).regex(/\S/),

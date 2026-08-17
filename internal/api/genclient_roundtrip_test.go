@@ -5,9 +5,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/api/genclient"
 	"github.com/gastownhall/gascity/internal/beads"
+	"github.com/gastownhall/gascity/internal/omnigent"
 )
 
 // TestGenClientRoundTripCitiesList exercises the supervisor-scope
@@ -39,6 +41,29 @@ func TestGenClientRoundTripCitiesList(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("cities list does not contain test-city; got %+v", *resp.JSON200.Items)
+	}
+}
+
+func TestGenClientRoundTripOmnigentStatus(t *testing.T) {
+	client, state := newRoundTripClient(t)
+	state.cityPath = writeOmnigentStatusCatalog(t)
+	store := beads.NewMemStore()
+	state.sessionsBeadStore = store
+	created, _ := store.Create(beads.Bead{Type: "session", Labels: []string{"gc:session"}, Metadata: map[string]string{"state": "active", "session_key": "secret"}})
+	if err := omnigent.NewSessionStatusStore(beads.SessionStore{Store: store}).Record(created.ID,
+		omnigent.NewSessionStatusSnapshot(omnigent.AttachmentLocationCapsule, "claude-primary", "claude-primary", 0, time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	limit := int64(1)
+	resp, err := client.GetV0CityByCityNameOmnigentStatusWithResponse(context.Background(), state.CityName(), &genclient.GetV0CityByCityNameOmnigentStatusParams{Limit: &limit})
+	if err != nil {
+		t.Fatalf("Get Omnigent status: %v", err)
+	}
+	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil || resp.JSON200.Items == nil || len(*resp.JSON200.Items) != 1 {
+		t.Fatalf("status=%d body=%s", resp.StatusCode(), resp.Body)
+	}
+	if got := (*resp.JSON200.Items)[0]; got.SessionId != created.ID || got.ConfiguredProfile == nil || got.ConfiguredProfile.Blurb != "Primary public blurb." {
+		t.Fatalf("item = %#v", got)
 	}
 }
 

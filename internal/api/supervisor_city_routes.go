@@ -358,6 +358,12 @@ func (sm *SupervisorMux) registerCityRoutes() {
 	cityGet(sm, "/service/{name}", (*Server).humaHandleServiceGet, errorStatuses(http.StatusNotFound))
 	cityPost(sm, "/service/{name}/restart", (*Server).humaHandleServiceRestart, errorStatuses(http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound))
 
+	// Omnigent. This is the only remotely reachable Omnigent projection; the
+	// raw private /svc/omnigent workspace-service proxy remains loopback-only.
+	cityGet(sm, "/omnigent/status", (*Server).humaHandleOmnigentStatusList,
+		errorStatuses(http.StatusBadRequest, http.StatusNotFound, http.StatusServiceUnavailable),
+		listOrder("(created_at DESC, id DESC) — newest Omnigent sessions first"))
+
 	// Sessions (non-stream — stream is the SSE registration below).
 	cityRegister(sm, huma.Operation{
 		OperationID:   "create-session",

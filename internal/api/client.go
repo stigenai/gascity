@@ -32,6 +32,7 @@ import (
 	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/extmsg"
 	"github.com/gastownhall/gascity/internal/mail"
+	"github.com/gastownhall/gascity/internal/omnigent"
 	"github.com/gastownhall/gascity/internal/session"
 	"github.com/gastownhall/gascity/internal/workspacesvc"
 )
@@ -807,6 +808,77 @@ func (c *Client) ListServices() ([]workspacesvc.Status, error) {
 		out = append(out, workspaceStatusFromGen(item))
 	}
 	return out, nil
+}
+
+// ListOmnigentStatus fetches every non-secret Omnigent session status through
+// the typed city endpoint. It walks keyset pages so fleet callers never
+// silently truncate a city with more than one server page.
+func (c *Client) ListOmnigentStatus() (CachedRead[[]omnigent.RemoteSessionStatus], error) {
+	if err := c.requireCityScope(); err != nil {
+		return CachedRead[[]omnigent.RemoteSessionStatus]{}, err
+	}
+	limit := int64(maxPaginationLimit)
+	var (
+		all        []omnigent.RemoteSessionStatus
+		cursor     string
+		ageSeconds float64
+	)
+	for page := 0; ; page++ {
+		params := &genclient.GetV0CityByCityNameOmnigentStatusParams{Limit: &limit}
+		if cursor != "" {
+			params.Cursor = &cursor
+		}
+		resp, err := c.cw.GetV0CityByCityNameOmnigentStatusWithResponse(context.Background(), c.cityName, params)
+		if err != nil {
+			return CachedRead[[]omnigent.RemoteSessionStatus]{}, &connError{err: fmt.Errorf("request failed: %w", err)}
+		}
+		if resp == nil {
+			return CachedRead[[]omnigent.RemoteSessionStatus]{}, &connError{err: fmt.Errorf("nil response")}
+		}
+		if err := apiErrorFromResponse(resp.StatusCode(), pdOf(resp)); err != nil {
+			return CachedRead[[]omnigent.RemoteSessionStatus]{}, err
+		}
+		if resp.JSON200 != nil && resp.JSON200.Items != nil {
+			for _, item := range *resp.JSON200.Items {
+				all = append(all, omnigentStatusFromGen(item))
+			}
+		}
+		if page == 0 {
+			ageSeconds = cacheAgeFromResponse(resp.HTTPResponse)
+		}
+		next := ""
+		if resp.JSON200 != nil && resp.JSON200.NextCursor != nil {
+			next = *resp.JSON200.NextCursor
+		}
+		if next == "" || next == cursor {
+			break
+		}
+		cursor = next
+	}
+	return CachedRead[[]omnigent.RemoteSessionStatus]{Body: all, AgeSeconds: ageSeconds}, nil
+}
+
+func omnigentStatusFromGen(in genclient.RemoteSessionStatus) omnigent.RemoteSessionStatus {
+	return omnigent.RemoteSessionStatus{
+		SessionID: in.SessionId, Alias: derefStr(in.Alias), Template: derefStr(in.Template),
+		Provider: derefStr(in.Provider), Transport: derefStr(in.Transport), SessionState: derefStr(in.SessionState),
+		Location: omnigent.AttachmentLocation(in.Location), ServiceState: omnigent.ServiceState(in.ServiceState),
+		ConfiguredProfileID: in.ConfiguredProfileId, ConfiguredProfile: omnigentProfileFromGen(in.ConfiguredProfile),
+		ActiveProfileID: in.ActiveProfileId, ActiveProfile: omnigentProfileFromGen(in.ActiveProfile),
+		ActiveIndex: int(in.ActiveIndex), ConversationPresent: in.ConversationPresent,
+		Degradation: omnigent.StatusDegradation(in.Degradation), Exhausted: in.Exhausted,
+		Stale: in.Stale, ObservedAt: in.ObservedAt,
+	}
+}
+
+func omnigentProfileFromGen(in *genclient.StatusProfile) *omnigent.StatusProfile {
+	if in == nil {
+		return nil
+	}
+	return &omnigent.StatusProfile{
+		ID: in.Id, DisplayName: in.DisplayName, Blurb: in.Blurb,
+		Harness: in.Harness, Backend: in.Backend, Network: in.Network,
+	}
 }
 
 // GetOrderHistory fetches order run history via

@@ -1564,6 +1564,29 @@ export type ListBodyProviderResponse = {
     total: number;
 };
 
+export type ListBodyRemoteSessionStatus = {
+    /**
+     * The list of items.
+     */
+    items: Array<RemoteSessionStatus> | null;
+    /**
+     * Cursor for the next page of results.
+     */
+    next_cursor?: string;
+    /**
+     * True when one or more backends failed and the list is incomplete.
+     */
+    partial?: boolean;
+    /**
+     * Human-readable errors from backends that failed during aggregation.
+     */
+    partial_errors?: Array<string> | null;
+    /**
+     * Total number of items matching the query.
+     */
+    total: number;
+};
+
 export type ListBodyRigPatch = {
     /**
      * The list of items.
@@ -2565,6 +2588,27 @@ export type Record = {
     severity: string;
     source_path?: string;
     source_pid?: number;
+};
+
+export type RemoteSessionStatus = {
+    active_index: number;
+    active_profile?: StatusProfile;
+    active_profile_id: string;
+    alias?: string;
+    configured_profile?: StatusProfile;
+    configured_profile_id: string;
+    conversation_present: boolean;
+    degradation: string;
+    exhausted: boolean;
+    location: string;
+    observed_at: string;
+    provider?: string;
+    service_state: string;
+    session_id: string;
+    session_state?: string;
+    stale: boolean;
+    template?: string;
+    transport?: string;
 };
 
 export type RequestFailedPayload = {
@@ -4788,6 +4832,15 @@ export type StatusNamedSessionDetail = {
      * Lifecycle status string (materialized, reserved-unmaterialized, etc.).
      */
     status: string;
+};
+
+export type StatusProfile = {
+    backend: string;
+    blurb: string;
+    display_name: string;
+    harness: string;
+    id: string;
+    network: string;
 };
 
 export type StatusRigCounts = {
@@ -13541,6 +13594,61 @@ export type GetV0CityByCityNameMaintenanceStatusResponses = {
 };
 
 export type GetV0CityByCityNameMaintenanceStatusResponse = GetV0CityByCityNameMaintenanceStatusResponses[keyof GetV0CityByCityNameMaintenanceStatusResponses];
+
+export type GetV0CityByCityNameOmnigentStatusData = {
+    body?: never;
+    path: {
+        /**
+         * City name.
+         */
+        cityName: string;
+    };
+    query?: {
+        /**
+         * Opaque keyset pagination token from a previous response's next_cursor field. Invalid or legacy tokens are rejected with a typed 400 (invalid-cursor); re-fetch the first page.
+         */
+        cursor?: string;
+        /**
+         * Maximum number of results to return. Omitted or 0 = server default (100). Values above 1000 are rejected.
+         */
+        limit?: number;
+    };
+    url: '/v0/city/{cityName}/omnigent/status';
+};
+
+export type GetV0CityByCityNameOmnigentStatusErrors = {
+    /**
+     * Bad Request
+     */
+    400: ErrorModel;
+    /**
+     * Not Found
+     */
+    404: ErrorModel;
+    /**
+     * Unprocessable Entity
+     */
+    422: ErrorModel;
+    /**
+     * Internal Server Error
+     */
+    500: ErrorModel;
+    /**
+     * Service Unavailable
+     */
+    503: ErrorModel;
+};
+
+export type GetV0CityByCityNameOmnigentStatusError = GetV0CityByCityNameOmnigentStatusErrors[keyof GetV0CityByCityNameOmnigentStatusErrors];
+
+export type GetV0CityByCityNameOmnigentStatusResponses = {
+    /**
+     * OK
+     */
+    200: ListBodyRemoteSessionStatus;
+};
+
+export type GetV0CityByCityNameOmnigentStatusResponse = GetV0CityByCityNameOmnigentStatusResponses[keyof GetV0CityByCityNameOmnigentStatusResponses];
 
 export type GetV0CityByCityNameOrderHistoryByBeadIdData = {
     body?: never;

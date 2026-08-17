@@ -2251,6 +2251,24 @@ type ListBodyProviderResponse struct {
 	Total int64 `json:"total"`
 }
 
+// ListBodyRemoteSessionStatus defines model for ListBodyRemoteSessionStatus.
+type ListBodyRemoteSessionStatus struct {
+	// Items The list of items.
+	Items *[]RemoteSessionStatus `json:"items"`
+
+	// NextCursor Cursor for the next page of results.
+	NextCursor *string `json:"next_cursor,omitempty"`
+
+	// Partial True when one or more backends failed and the list is incomplete.
+	Partial *bool `json:"partial,omitempty"`
+
+	// PartialErrors Human-readable errors from backends that failed during aggregation.
+	PartialErrors *[]string `json:"partial_errors,omitempty"`
+
+	// Total Total number of items matching the query.
+	Total int64 `json:"total"`
+}
+
 // ListBodyRigPatch defines model for ListBodyRigPatch.
 type ListBodyRigPatch struct {
 	// Items The list of items.
@@ -3099,6 +3117,28 @@ type Record struct {
 	Severity   string             `json:"severity"`
 	SourcePath *string            `json:"source_path,omitempty"`
 	SourcePid  *int64             `json:"source_pid,omitempty"`
+}
+
+// RemoteSessionStatus defines model for RemoteSessionStatus.
+type RemoteSessionStatus struct {
+	ActiveIndex         int64          `json:"active_index"`
+	ActiveProfile       *StatusProfile `json:"active_profile,omitempty"`
+	ActiveProfileId     string         `json:"active_profile_id"`
+	Alias               *string        `json:"alias,omitempty"`
+	ConfiguredProfile   *StatusProfile `json:"configured_profile,omitempty"`
+	ConfiguredProfileId string         `json:"configured_profile_id"`
+	ConversationPresent bool           `json:"conversation_present"`
+	Degradation         string         `json:"degradation"`
+	Exhausted           bool           `json:"exhausted"`
+	Location            string         `json:"location"`
+	ObservedAt          time.Time      `json:"observed_at"`
+	Provider            *string        `json:"provider,omitempty"`
+	ServiceState        string         `json:"service_state"`
+	SessionId           string         `json:"session_id"`
+	SessionState        *string        `json:"session_state,omitempty"`
+	Stale               bool           `json:"stale"`
+	Template            *string        `json:"template,omitempty"`
+	Transport           *string        `json:"transport,omitempty"`
 }
 
 // RequestFailedPayload defines model for RequestFailedPayload.
@@ -4916,6 +4956,16 @@ type StatusNamedSessionDetail struct {
 
 	// Status Lifecycle status string (materialized, reserved-unmaterialized, etc.).
 	Status string `json:"status"`
+}
+
+// StatusProfile defines model for StatusProfile.
+type StatusProfile struct {
+	Backend     string `json:"backend"`
+	Blurb       string `json:"blurb"`
+	DisplayName string `json:"display_name"`
+	Harness     string `json:"harness"`
+	Id          string `json:"id"`
+	Network     string `json:"network"`
 }
 
 // StatusRigCounts defines model for StatusRigCounts.
@@ -8655,6 +8705,15 @@ type TriggerMaintenanceDoltGcParams struct {
 
 	// XGCRequest Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.
 	XGCRequest string `json:"X-GC-Request"`
+}
+
+// GetV0CityByCityNameOmnigentStatusParams defines parameters for GetV0CityByCityNameOmnigentStatus.
+type GetV0CityByCityNameOmnigentStatusParams struct {
+	// Cursor Opaque keyset pagination token from a previous response's next_cursor field. Invalid or legacy tokens are rejected with a typed 400 (invalid-cursor); re-fetch the first page.
+	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Maximum number of results to return. Omitted or 0 = server default (100). Values above 1000 are rejected.
+	Limit *int64 `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
 // GetV0CityByCityNameOrderHistoryByBeadIdParams defines parameters for GetV0CityByCityNameOrderHistoryByBeadId.
@@ -17294,6 +17353,9 @@ type ClientInterface interface {
 	// GetV0CityByCityNameMaintenanceStatus request
 	GetV0CityByCityNameMaintenanceStatus(ctx context.Context, cityName string, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetV0CityByCityNameOmnigentStatus request
+	GetV0CityByCityNameOmnigentStatus(ctx context.Context, cityName string, params *GetV0CityByCityNameOmnigentStatusParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetV0CityByCityNameOrderHistoryByBeadId request
 	GetV0CityByCityNameOrderHistoryByBeadId(ctx context.Context, cityName string, beadId string, params *GetV0CityByCityNameOrderHistoryByBeadIdParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -18879,6 +18941,18 @@ func (c *Client) TriggerMaintenanceDoltGc(ctx context.Context, cityName string, 
 
 func (c *Client) GetV0CityByCityNameMaintenanceStatus(ctx context.Context, cityName string, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetV0CityByCityNameMaintenanceStatusRequest(c.Server, cityName)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetV0CityByCityNameOmnigentStatus(ctx context.Context, cityName string, params *GetV0CityByCityNameOmnigentStatusParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetV0CityByCityNameOmnigentStatusRequest(c.Server, cityName, params)
 	if err != nil {
 		return nil, err
 	}
@@ -25705,6 +25779,78 @@ func NewGetV0CityByCityNameMaintenanceStatusRequest(server string, cityName stri
 	return req, nil
 }
 
+// NewGetV0CityByCityNameOmnigentStatusRequest generates requests for GetV0CityByCityNameOmnigentStatus
+func NewGetV0CityByCityNameOmnigentStatusRequest(server string, cityName string, params *GetV0CityByCityNameOmnigentStatusParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "cityName", cityName, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v0/city/%s/omnigent/status", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", false, "cursor", *params.Cursor, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", false, "limit", *params.Limit, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: "int64"}); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewGetV0CityByCityNameOrderHistoryByBeadIdRequest generates requests for GetV0CityByCityNameOrderHistoryByBeadId
 func NewGetV0CityByCityNameOrderHistoryByBeadIdRequest(server string, cityName string, beadId string, params *GetV0CityByCityNameOrderHistoryByBeadIdParams) (*http.Request, error) {
 	var err error
@@ -30828,6 +30974,9 @@ type ClientWithResponsesInterface interface {
 	// GetV0CityByCityNameMaintenanceStatusWithResponse request
 	GetV0CityByCityNameMaintenanceStatusWithResponse(ctx context.Context, cityName string, reqEditors ...RequestEditorFn) (*GetV0CityByCityNameMaintenanceStatusResponse, error)
 
+	// GetV0CityByCityNameOmnigentStatusWithResponse request
+	GetV0CityByCityNameOmnigentStatusWithResponse(ctx context.Context, cityName string, params *GetV0CityByCityNameOmnigentStatusParams, reqEditors ...RequestEditorFn) (*GetV0CityByCityNameOmnigentStatusResponse, error)
+
 	// GetV0CityByCityNameOrderHistoryByBeadIdWithResponse request
 	GetV0CityByCityNameOrderHistoryByBeadIdWithResponse(ctx context.Context, cityName string, beadId string, params *GetV0CityByCityNameOrderHistoryByBeadIdParams, reqEditors ...RequestEditorFn) (*GetV0CityByCityNameOrderHistoryByBeadIdResponse, error)
 
@@ -33377,6 +33526,33 @@ func (r GetV0CityByCityNameMaintenanceStatusResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetV0CityByCityNameMaintenanceStatusResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetV0CityByCityNameOmnigentStatusResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *ListBodyRemoteSessionStatus
+	ApplicationproblemJSON400 *ErrorModel
+	ApplicationproblemJSON404 *ErrorModel
+	ApplicationproblemJSON422 *ErrorModel
+	ApplicationproblemJSON500 *ErrorModel
+	ApplicationproblemJSON503 *ErrorModel
+}
+
+// Status returns HTTPResponse.Status
+func (r GetV0CityByCityNameOmnigentStatusResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetV0CityByCityNameOmnigentStatusResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -36501,6 +36677,15 @@ func (c *ClientWithResponses) GetV0CityByCityNameMaintenanceStatusWithResponse(c
 		return nil, err
 	}
 	return ParseGetV0CityByCityNameMaintenanceStatusResponse(rsp)
+}
+
+// GetV0CityByCityNameOmnigentStatusWithResponse request returning *GetV0CityByCityNameOmnigentStatusResponse
+func (c *ClientWithResponses) GetV0CityByCityNameOmnigentStatusWithResponse(ctx context.Context, cityName string, params *GetV0CityByCityNameOmnigentStatusParams, reqEditors ...RequestEditorFn) (*GetV0CityByCityNameOmnigentStatusResponse, error) {
+	rsp, err := c.GetV0CityByCityNameOmnigentStatus(ctx, cityName, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetV0CityByCityNameOmnigentStatusResponse(rsp)
 }
 
 // GetV0CityByCityNameOrderHistoryByBeadIdWithResponse request returning *GetV0CityByCityNameOrderHistoryByBeadIdResponse
@@ -42533,6 +42718,67 @@ func ParseGetV0CityByCityNameMaintenanceStatusResponse(rsp *http.Response) (*Get
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetV0CityByCityNameOmnigentStatusResponse parses an HTTP response from a GetV0CityByCityNameOmnigentStatusWithResponse call
+func ParseGetV0CityByCityNameOmnigentStatusResponse(rsp *http.Response) (*GetV0CityByCityNameOmnigentStatusResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetV0CityByCityNameOmnigentStatusResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ListBodyRemoteSessionStatus
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
 		var dest ErrorModel

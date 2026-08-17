@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/mail"
 	"github.com/gastownhall/gascity/internal/omnigent"
 	"github.com/spf13/cobra"
@@ -66,6 +67,15 @@ var omnigentBindSessionKey = func(cityPath, sessionID, conversationID string) (s
 	}
 	winner, _, err := front.BindSessionKey(sessionID, conversationID)
 	return winner, err
+}
+
+var omnigentRecordSessionStatus = func(cityPath, sessionID string, snapshot omnigent.SessionStatusSnapshot) error {
+	store, err := openCityStoreAt(cityPath)
+	if err != nil {
+		return err
+	}
+	cfg, _ := loadCityConfigWithoutBuiltinPackRefresh(cityPath, io.Discard)
+	return omnigent.NewSessionStatusStore(beads.SessionStore{Store: cliSessionStore(store, cfg, cityPath)}).Record(sessionID, snapshot)
 }
 
 func newOmnigentAttachCmd(stdout, stderr io.Writer) *cobra.Command {
@@ -136,9 +146,11 @@ func newOmnigentAttachCmd(stdout, stderr io.Writer) *cobra.Command {
 			defer signal.Stop(interrupts)
 			attachErr := runOmnigentAttach(cmd.Context(), client, omnigent.AttachmentOpenInput{
 				ProfileID: selection.ID, ConversationID: requestedConversationID,
-				Workspace: workspace, Title: title, Identity: identity,
+				Workspace: workspace, Title: title, Identity: identity, Location: omnigent.AttachmentLocation(location.Mode),
 			}, func(candidate string) (string, error) {
 				return omnigentBindSessionKey(resolved.CityPath, identity.SessionID, candidate)
+			}, func(snapshot omnigent.SessionStatusSnapshot) error {
+				return omnigentRecordSessionStatus(resolved.CityPath, identity.SessionID, snapshot)
 			}, policyBridge, cmd.InOrStdin(), stdout, stderr, interrupts)
 			policyBridge.Close()
 			stopErr := stopSupervisor()
@@ -295,12 +307,15 @@ const (
 	omnigentOperationTimeout = 30 * time.Second
 )
 
-func runOmnigentAttach(ctx context.Context, client *omnigent.APIClient, input omnigent.AttachmentOpenInput, bindConversation func(string) (string, error), policyBridge *omnigentPolicyMailBridge, stdin io.Reader, stdout, stderr io.Writer, interrupts <-chan os.Signal) (returnErr error) {
+func runOmnigentAttach(ctx context.Context, client *omnigent.APIClient, input omnigent.AttachmentOpenInput, bindConversation func(string) (string, error), recordStatus func(omnigent.SessionStatusSnapshot) error, policyBridge *omnigentPolicyMailBridge, stdin io.Reader, stdout, stderr io.Writer, interrupts <-chan os.Signal) (returnErr error) {
 	if client == nil {
 		return errors.New("omnigent client is required")
 	}
 	if bindConversation == nil {
 		return errors.New("omnigent conversation persistence is required")
+	}
+	if input.Location == "" {
+		input.Location = omnigent.AttachmentLocationController
 	}
 	operationCtx, cancel := context.WithTimeout(ctx, omnigentOperationTimeout)
 	rootProfile, err := client.ResolveProfile(operationCtx, input.ProfileID)
@@ -357,6 +372,12 @@ func runOmnigentAttach(ctx context.Context, client *omnigent.APIClient, input om
 			return fmt.Errorf("resolve active profile %q: %w", attachment.State.ActiveProfileID, err)
 		}
 	}
+	status := omnigent.NewSessionStatusSnapshot(input.Location, input.ProfileID, attachment.State.ActiveProfileID, attachment.State.ActiveIndex, time.Now())
+	if recordStatus != nil {
+		if err := recordStatus(status); err != nil {
+			return fmt.Errorf("record Omnigent attachment status: %w", err)
+		}
+	}
 	if _, err := fmt.Fprintf(stderr, "[omnigent] conversation=%s profile=%s active_index=%d blurb=%q fallback_chain=%s\n",
 		attachment.ConversationID, attachment.State.ActiveProfileID, attachment.State.ActiveIndex,
 		activeProfile.Blurb, strings.Join(rootProfile.Chain, ",")); err != nil {
@@ -395,11 +416,31 @@ func runOmnigentAttach(ctx context.Context, client *omnigent.APIClient, input om
 					return fmt.Errorf("observe Omnigent profile failover: %w", err)
 				}
 				if result.Exhausted {
+					status.ActiveProfileID = result.ActiveProfileID
+					status.ActiveIndex = result.ActiveIndex
+					status.Degradation = omnigent.DegradationExhausted
+					status.Exhausted = true
+					status.ObservedAt = time.Now().UTC()
+					if recordStatus != nil {
+						if err := recordStatus(status); err != nil {
+							return fmt.Errorf("record exhausted Omnigent attachment status: %w", err)
+						}
+					}
 					return fmt.Errorf("omnigent profile failover exhausted at profile %q", result.ActiveProfileID)
 				}
 				if result.Transition != nil {
 					activeIndex = result.ActiveIndex
 					transition := result.Transition
+					status.ActiveProfileID = result.ActiveProfileID
+					status.ActiveIndex = result.ActiveIndex
+					status.Degradation = omnigent.DegradationFromFailoverReason(transition.Reason)
+					status.Exhausted = false
+					status.ObservedAt = time.Now().UTC()
+					if recordStatus != nil {
+						if err := recordStatus(status); err != nil {
+							return fmt.Errorf("record Omnigent failover status: %w", err)
+						}
+					}
 					if _, err := fmt.Fprintf(stderr,
 						"[omnigent] failover from=%s to=%s reason=%s at=%s from_blurb=%q to_blurb=%q\n",
 						transition.FromProfileID, transition.ToProfileID, transition.Reason,

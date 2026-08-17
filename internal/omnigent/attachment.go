@@ -16,6 +16,9 @@ type AttachmentOpenInput struct {
 	Workspace      string          `json:"workspace"`
 	Title          string          `json:"title,omitempty"`
 	Identity       GasCityIdentity `json:"identity,omitempty"`
+	// Location is Gas City attachment metadata and never crosses the private
+	// sidecar wire. The attach command uses it for its public status snapshot.
+	Location AttachmentLocation `json:"-"`
 }
 
 // GasCityIdentity is the explicit, non-secret worker context bound to one

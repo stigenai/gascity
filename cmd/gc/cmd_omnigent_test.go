@@ -252,16 +252,23 @@ func TestRunOmnigentAttachPreservesInputAndOrderedLiveOutput(t *testing.T) {
 		}
 	}()
 	var stdout, stderr bytes.Buffer
+	var statusMu sync.Mutex
+	var statuses []omnigent.SessionStatusSnapshot
 	done := make(chan error, 1)
 	go func() {
 		done <- runOmnigentAttach(context.Background(), client, omnigent.AttachmentOpenInput{
-			ProfileID: "claude-primary", Workspace: "/work/assigned", Title: "worker",
+			ProfileID: "claude-primary", Workspace: "/work/assigned", Title: "worker", Location: omnigent.AttachmentLocationController,
 		}, func(candidate string) (string, error) {
 			if candidate != "conv_attach" {
 				t.Errorf("persist candidate = %q", candidate)
 			}
 			close(persisted)
 			return candidate, nil
+		}, func(snapshot omnigent.SessionStatusSnapshot) error {
+			statusMu.Lock()
+			defer statusMu.Unlock()
+			statuses = append(statuses, snapshot)
+			return nil
 		}, nil, reader, &stdout, &stderr, make(chan os.Signal))
 	}()
 	select {
@@ -300,6 +307,17 @@ func TestRunOmnigentAttachPreservesInputAndOrderedLiveOutput(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "failover from=claude-primary") || !strings.Contains(stderr.String(), "to=claude-secondary") || !strings.Contains(stderr.String(), "Backup local profile.") {
 		t.Fatalf("failover status missing from stderr = %q", stderr.String())
+	}
+	statusMu.Lock()
+	defer statusMu.Unlock()
+	if len(statuses) != 2 {
+		t.Fatalf("status snapshots = %#v, want initial and failover", statuses)
+	}
+	if statuses[0].ConfiguredProfileID != "claude-primary" || statuses[0].ActiveProfileID != "claude-primary" || statuses[0].Degradation != omnigent.DegradationNone {
+		t.Fatalf("initial status = %#v", statuses[0])
+	}
+	if statuses[1].ActiveProfileID != "claude-secondary" || statuses[1].ActiveIndex != 1 || statuses[1].Degradation != omnigent.DegradationRateLimit {
+		t.Fatalf("failover status = %#v", statuses[1])
 	}
 }
 
@@ -354,7 +372,7 @@ func TestRunOmnigentAttachConcurrentFreshLaunchConvergesOnPersistedWinner(t *tes
 			t.Fatalf("candidate = %q", candidate)
 		}
 		return "conv_winner", nil
-	}, nil, strings.NewReader(""), io.Discard, io.Discard, make(chan os.Signal))
+	}, nil, nil, strings.NewReader(""), io.Discard, io.Discard, make(chan os.Signal))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,7 +411,7 @@ func TestRunOmnigentAttachPersistenceFailureStopsFreshConversationBeforeStreamin
 	}
 	err = runOmnigentAttach(context.Background(), client, omnigent.AttachmentOpenInput{
 		ProfileID: "profile", Workspace: "/work/assigned",
-	}, func(string) (string, error) { return "", errors.New("store unavailable") }, nil,
+	}, func(string) (string, error) { return "", errors.New("store unavailable") }, nil, nil,
 		strings.NewReader(""), io.Discard, io.Discard, make(chan os.Signal))
 	if err == nil || !strings.Contains(err.Error(), "persist") || !stopped || streamed {
 		t.Fatalf("error=%v stopped=%t streamed=%t", err, stopped, streamed)
@@ -454,7 +472,7 @@ func TestRunOmnigentAttachSIGTERMStopsDurableConversationWithoutClearingIdentity
 		}, func(candidate string) (string, error) {
 			bindCalls++
 			return candidate, nil
-		}, nil, inputReader, io.Discard, io.Discard, interrupts)
+		}, nil, nil, inputReader, io.Discard, io.Discard, interrupts)
 	}()
 	select {
 	case <-streamOpened:

@@ -240,6 +240,24 @@ func TestServiceProxyPrivateRejectsExternalRequests(t *testing.T) {
 	}
 }
 
+func TestOmnigentRawServiceProxyRemainsUnavailableToRemoteClients(t *testing.T) {
+	state := newFakeState(t)
+	state.services = &fakeServiceRegistry{
+		items: []workspacesvc.Status{{ServiceName: "omnigent", PublishMode: "private", Visibility: "private"}},
+		serve: func(http.ResponseWriter, *http.Request) bool {
+			t.Fatal("remote request reached private Omnigent service")
+			return false
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, cityURL(state, "/svc/omnigent/gascity/v1/status"), nil)
+	req.RemoteAddr = "198.51.100.10:9000"
+	rec := httptest.NewRecorder()
+	newTestCityHandler(t, state).ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
 func TestServiceProxyPrivateAllowsExternalReadWithInternalHeader(t *testing.T) {
 	state := newFakeState(t)
 	state.services = &fakeServiceRegistry{
