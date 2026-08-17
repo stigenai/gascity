@@ -10,13 +10,13 @@ version = 2
 [[audit_baseline]]
 scope = "all"
 resource = "subprocess"
-baseline_calls = 546
-baseline_files = 171
+baseline_calls = 550
+baseline_files = 173
 reported_calls = 495
 reported_files = 135
-owner_bead = "ga-xgv.5.4"
+owner_bead = "ga-xgv.5.5"
 invariant = "tracked test source totals remain visible as audit evidence"
-resource_owner = "ga-xgv.5.4 owns the isolated SSH credential-profile fixture; ga-xgv.5.3, ga-xgv.5.2, ga-xgv.4.5, ga-dfk, and ga-80po0c.2 own the remaining source census"
+resource_owner = "ga-xgv.5.5 owns the isolated SSH attach/cleanup fixtures; ga-xgv.5.4, ga-xgv.5.3, ga-xgv.5.2, ga-xgv.4.5, ga-dfk, and ga-80po0c.2 own the remaining source census"
 migration_target = "P0.4a"
 expires = "2026-10-01"
 

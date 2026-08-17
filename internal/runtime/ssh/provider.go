@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,11 +42,17 @@ var ErrInvalidSessionName = errors.New("invalid session name")
 // AcceptStartupDialogs), live SessionLive re-apply via RunLive (a no-op, like
 // k8s). CopyTo supports contained atomic regular-file staging.
 type Provider struct {
-	conn             *Conn
-	postStartSettle  time.Duration // settle before the post-start liveness recheck
-	capsuleStateRoot string
-	mu               sync.RWMutex
-	workDirs         map[string]string
+	conn               *Conn
+	postStartSettle    time.Duration // settle before the post-start liveness recheck
+	capsuleStateRoot   string
+	capsuleRunRoot     string
+	capsuleCatalogRoot string
+	attachStdin        io.Reader
+	attachStdout       io.Writer
+	attachStderr       io.Writer
+	runAttachCommand   sshAttachCommandRunner
+	mu                 sync.RWMutex
+	workDirs           map[string]string
 }
 
 var (
@@ -63,7 +70,9 @@ const defaultPostStartSettle = time.Second
 func NewProvider(ep Endpoint) *Provider {
 	return &Provider{
 		conn: New(ep), postStartSettle: defaultPostStartSettle,
-		capsuleStateRoot: defaultCapsuleStateRoot, workDirs: make(map[string]string),
+		capsuleStateRoot: defaultCapsuleStateRoot,
+		attachStdin:      os.Stdin, attachStdout: os.Stdout, attachStderr: os.Stderr,
+		workDirs: make(map[string]string),
 	}
 }
 
@@ -164,7 +173,7 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 	}
 	if cfg.Capsule != nil {
 		if err := p.markCapsuleStateAttached(ctx, name, cfg.Capsule.State); err != nil {
-			_ = p.Stop(name)
+			_ = p.stopCapsule(context.Background(), name, cfg.Capsule.State)
 			return fmt.Errorf("ssh start %q: %w", name, err)
 		}
 	}
@@ -321,8 +330,31 @@ func (p *Provider) requiresPostStartLiveness(cfg runtime.Config) bool {
 // error would let the seam adapter drop tracking while the remote tmux session
 // and the agent inside it keep running untracked, leaking the remote box.
 func (p *Provider) Stop(name string) error {
-	if _, _, err := p.tmux(context.Background(), name, "kill-session", "-t", name); err != nil {
+	ctx := context.Background()
+	stateUID, optionCode, err := p.tmux(ctx, name, "show-options", "-qv", "-t", name, capsuleStateTMUXOption)
+	if err != nil {
+		return fmt.Errorf("ssh stop %q: %w", name, errors.Join(runtime.ErrRuntimeUnavailable, err))
+	}
+	tmuxAlive := optionCode == 0
+	if !tmuxAlive {
+		stateUID = ""
+		tmuxAlive = p.hasSession(ctx, name)
+		if tmuxAlive {
+			return fmt.Errorf("ssh stop %q: %w: tmux session identity is unreadable", name, runtime.ErrRuntimeUnavailable)
+		}
+	}
+	ref, capsule, err := p.capsuleStateForStop(ctx, name, strings.TrimSpace(stateUID), tmuxAlive)
+	if err != nil {
 		return fmt.Errorf("ssh stop %q: %w", name, err)
+	}
+	if capsule {
+		if err := p.stopCapsule(ctx, name, ref); err != nil {
+			return err
+		}
+	} else {
+		if _, _, err := p.tmux(ctx, name, "kill-session", "-t", name); err != nil {
+			return fmt.Errorf("ssh stop %q: %w", name, err)
+		}
 	}
 	p.mu.Lock()
 	delete(p.workDirs, name)
@@ -350,13 +382,55 @@ func (p *Provider) IsAttached(name string) bool {
 	return strings.TrimSpace(out) == "1"
 }
 
+type sshAttachCommandRunner func(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error
+
+func runSSHAttach(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	cmd := exec.CommandContext(ctx, "ssh", args...)
+	cmd.Stdin = stdin
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	return cmd.Run()
+}
+
 // Attach connects the local terminal to the remote tmux session over ssh -t.
 func (p *Provider) Attach(name string) error {
-	cmd := exec.Command("ssh", attachArgs(p.conn.ep, name)...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	return p.attach(context.Background(), name)
+}
+
+func (p *Provider) attach(ctx context.Context, name string) error {
+	if !validTmuxName.MatchString(name) {
+		return fmt.Errorf("%w %q: must match %s", ErrInvalidSessionName, name, validTmuxName.String())
+	}
+	stateUID, code, err := p.tmux(ctx, name, "show-options", "-qv", "-t", name, capsuleStateTMUXOption)
+	if err != nil {
+		return fmt.Errorf("ssh attach %q: %w", name, errors.Join(runtime.ErrRuntimeUnavailable, err))
+	}
+	if code != 0 {
+		return fmt.Errorf("ssh attach %q: %w", name, runtime.ErrSessionNotFound)
+	}
+	runner := p.runAttachCommand
+	if runner == nil {
+		runner = runSSHAttach
+	}
+	stdin, stdout, stderr := p.attachStdin, p.attachStdout, p.attachStderr
+	if stdin == nil {
+		stdin = os.Stdin
+	}
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+	err = runner(ctx, attachArgs(p.conn.ep, name, strings.TrimSpace(stateUID)), stdin, stdout, stderr)
+	var exitErr interface{ ExitCode() int }
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 75 {
+		return fmt.Errorf("ssh attach %q: %w", name, runtime.ErrCapsuleStateConflict)
+	}
+	if err != nil {
+		return fmt.Errorf("ssh attach %q: %w", name, errors.Join(runtime.ErrRuntimeUnavailable, err))
+	}
+	return nil
 }
 
 // ProcessAlive reports whether any of processNames is running on the box.
@@ -529,7 +603,7 @@ func (p *Provider) SleepCapability(string) runtime.SessionSleepCapability {
 // post-destination args to the remote shell as one unquoted string). BatchMode
 // is deliberately omitted (unlike the non-interactive [sshArgs]) so an
 // operator-initiated attach can still answer a key-passphrase or host-key prompt.
-func attachArgs(ep Endpoint, name string) []string {
+func attachArgs(ep Endpoint, name, stateUID string) []string {
 	args := []string{"-t", "-o", "StrictHostKeyChecking=accept-new"}
 	if ep.KnownHostsPath != "" {
 		args = append(args, "-o", "UserKnownHostsFile="+ep.KnownHostsPath)
@@ -540,7 +614,15 @@ func attachArgs(ep Endpoint, name string) []string {
 	if ep.Port != 0 {
 		args = append(args, "-p", strconv.Itoa(ep.Port))
 	}
-	return append(args, "--", ep.target(), shellQuote([]string{"tmux", "attach", "-t", name}))
+	remote := []string{"tmux", "attach", "-t", name}
+	if stateUID != "" {
+		remote = []string{
+			"sh", "-c",
+			`actual=$(tmux show-options -qv -t "$1" ` + capsuleStateTMUXOption + `) || exit 44; [ "$actual" = "$2" ] || exit 75; exec tmux attach -t "$1"`,
+			"gc-ssh-attach", name, stateUID,
+		}
+	}
+	return append(args, "--", ep.target(), shellQuote(remote))
 }
 
 // setupPrelude builds a sh prefix that cd's into the session WorkDir and

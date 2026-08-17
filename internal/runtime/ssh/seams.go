@@ -199,8 +199,8 @@ func (t *sshTransport) Open(ctx context.Context, place runtime.Place, name strin
 
 // Attach connects the local terminal to the remote tmux session over ssh -t
 // (←Attach).
-func (t *sshTransport) Attach(_ context.Context, _ runtime.Place, name string) error {
-	return t.p.Attach(name)
+func (t *sshTransport) Attach(ctx context.Context, _ runtime.Place, name string) error {
+	return t.p.attach(ctx, name)
 }
 
 func (t *sshTransport) Name() string { return "tmux" }

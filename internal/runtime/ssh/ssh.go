@@ -3,13 +3,13 @@
 // SSH, so [runtime.NewTmuxCarrier] drives a remote tmux-in-a-box session the
 // same way it drives a Kubernetes pod (Nudge/Peek/SendKeys/Interrupt/
 // ClearScrollback become tmux commands shipped over ssh). This is the Exec
-// realization of the connection backend; the Stream (ssh -T) and AttachTTY
-// (ssh -t) primitives are deferred.
+// realization of the connection backend; interactive AttachTTY uses ssh -t,
+// while a persistent Stream (ssh -T) remains deferred.
 //
 // It is selectable via the "ssh:" runtime prefix (ssh:[user@]host[:port]; key and
 // known_hosts resolve from ~/.ssh/config). The backend serves the direct-ssh
-// topology — gc dials a reachable box — carrying exec today and a future stream
-// (ssh -T) / attach (ssh -t) over one connection. It does NOT subsume a sandbox
+// topology — gc dials a reachable box — carrying exec and attach today, with a
+// future stream (ssh -T) over one connection. It does NOT subsume a sandbox
 // runtime's controller reach-back (the reverse, sandbox-to-controller env.ledger
 // path, e.g. an in-sandbox tunnel bootstrap): a separate concern.
 //

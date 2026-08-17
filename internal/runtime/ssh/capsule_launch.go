@@ -21,6 +21,9 @@ func (p *Provider) prepareCapsuleLaunch(ctx context.Context, name string, cfg ru
 	if cfg.Capsule == nil {
 		return cfg, nil
 	}
+	if err := p.rememberCapsuleCleanupRoots(cfg.Capsule); err != nil {
+		return runtime.Config{}, err
+	}
 	projected, err := p.projectCapsulePaths(ctx, name, cfg)
 	if err != nil {
 		return runtime.Config{}, err

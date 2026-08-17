@@ -518,7 +518,7 @@ func TestProvider_StartSendsInitialNudgeWhenAlive(t *testing.T) {
 func TestProvider_AttachArgsQuotesRemoteCommand(t *testing.T) {
 	// A session name with shell metacharacters must be confined to a single
 	// shell-quoted remote-command argument — no remote command injection.
-	args := attachArgs(Endpoint{User: "u", Host: "box"}, "x; rm -rf ~")
+	args := attachArgs(Endpoint{User: "u", Host: "box"}, "x; rm -rf ~", "")
 	if last := args[len(args)-1]; last != `'tmux' 'attach' '-t' 'x; rm -rf ~'` {
 		t.Errorf("remote command arg = %q, want it shell-quoted as one token", last)
 	}
