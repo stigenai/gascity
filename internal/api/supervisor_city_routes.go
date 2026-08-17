@@ -414,6 +414,22 @@ func (sm *SupervisorMux) registerCityRoutes() {
 	cityGet(sm, "/session/{id}/agents", (*Server).humaHandleSessionAgentList, errorStatuses(http.StatusNotFound, http.StatusConflict, http.StatusServiceUnavailable))
 	cityGet(sm, "/session/{id}/agents/{agentId}", (*Server).humaHandleSessionAgentGet, errorStatuses(http.StatusBadRequest, http.StatusNotFound, http.StatusConflict, http.StatusServiceUnavailable))
 
+	// Generic terminal broker. These typed, bounded operations are shared by
+	// local tmux, SSH, Kubernetes, Omnigent, Codex, and Claude sessions without
+	// exposing provider credentials or endpoints.
+	cityGet(sm, "/session/{id}/terminal", (*Server).humaHandleSessionTerminalSnapshot,
+		errorStatuses(http.StatusNotFound, http.StatusConflict, http.StatusNotImplemented, http.StatusServiceUnavailable))
+	cityPost(sm, "/session/{id}/terminal/input", (*Server).humaHandleSessionTerminalInput,
+		errorStatuses(http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict, http.StatusNotImplemented, http.StatusServiceUnavailable))
+	cityPost(sm, "/session/{id}/terminal/keys", (*Server).humaHandleSessionTerminalKeys,
+		errorStatuses(http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict, http.StatusNotImplemented, http.StatusServiceUnavailable))
+	cityPost(sm, "/session/{id}/terminal/resize", (*Server).humaHandleSessionTerminalResize,
+		errorStatuses(http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict, http.StatusNotImplemented, http.StatusServiceUnavailable))
+	cityPost(sm, "/session/{id}/terminal/interrupt", (*Server).humaHandleSessionTerminalInterrupt,
+		errorStatuses(http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict, http.StatusNotImplemented, http.StatusServiceUnavailable))
+	cityPost(sm, "/session/{id}/terminal/detach", (*Server).humaHandleSessionTerminalDetach,
+		errorStatuses(http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict, http.StatusNotImplemented, http.StatusServiceUnavailable))
+
 	// Durable session waits (session coordination-class).
 	cityGet(sm, "/waits", (*Server).humaHandleWaitList, errorStatuses(http.StatusNotFound, http.StatusServiceUnavailable))
 	cityGet(sm, "/wait/{id}", (*Server).humaHandleWaitGet, errorStatuses(http.StatusNotFound, http.StatusServiceUnavailable))

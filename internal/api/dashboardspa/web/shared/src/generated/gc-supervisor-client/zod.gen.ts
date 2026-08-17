@@ -2632,6 +2632,39 @@ export const zSessionSubmitSucceededPayload = z.object({
     session_id: z.string()
 });
 
+export const zSessionTerminalActionBody = z.object({
+    action: z.enum([
+        'input',
+        'keys',
+        'resize',
+        'interrupt',
+        'detach'
+    ]),
+    session_id: z.string(),
+    status: z.string()
+});
+
+export const zSessionTerminalInputBody = z.object({
+    data: z.string()
+});
+
+export const zSessionTerminalKeysBody = z.object({
+    keys: z.array(z.string()).min(1).max(32).nullable()
+});
+
+export const zSessionTerminalResizeBody = z.object({
+    columns: z.coerce.bigint().gte(BigInt(1)).lte(BigInt(1000)),
+    rows: z.coerce.bigint().gte(BigInt(1)).lte(BigInt(1000))
+});
+
+export const zSessionTerminalSnapshotBody = z.object({
+    cursor: z.string(),
+    data: z.string().optional(),
+    session_id: z.string(),
+    truncated: z.boolean(),
+    unchanged: z.boolean()
+});
+
 export const zSessionTranscriptConversationResponse = z.object({
     format: z.enum(['conversation', 'text']),
     id: z.string(),
@@ -8535,6 +8568,97 @@ export const zPostV0CityByCityNameSessionByIdSuspendPath = z.object({
  * OK
  */
 export const zPostV0CityByCityNameSessionByIdSuspendResponse = zOkResponseBody;
+
+export const zGetV0CityByCityNameSessionByIdTerminalPath = z.object({
+    cityName: z.string().min(1).regex(/\S/),
+    id: z.string()
+});
+
+export const zGetV0CityByCityNameSessionByIdTerminalQuery = z.object({
+    max_bytes: z.coerce.bigint().gte(BigInt(0)).lte(BigInt(262144)).optional(),
+    if_snapshot: z.string().max(64).regex(/^$|^[0-9a-f]{64}$/).optional()
+});
+
+/**
+ * OK
+ */
+export const zGetV0CityByCityNameSessionByIdTerminalResponse = zSessionTerminalSnapshotBody;
+
+export const zPostV0CityByCityNameSessionByIdTerminalDetachHeaders = z.object({
+    'X-GC-Request': z.string().min(1)
+});
+
+export const zPostV0CityByCityNameSessionByIdTerminalDetachPath = z.object({
+    cityName: z.string().min(1).regex(/\S/),
+    id: z.string()
+});
+
+/**
+ * OK
+ */
+export const zPostV0CityByCityNameSessionByIdTerminalDetachResponse = zSessionTerminalActionBody;
+
+export const zPostV0CityByCityNameSessionByIdTerminalInputBody = zSessionTerminalInputBody;
+
+export const zPostV0CityByCityNameSessionByIdTerminalInputHeaders = z.object({
+    'X-GC-Request': z.string().min(1)
+});
+
+export const zPostV0CityByCityNameSessionByIdTerminalInputPath = z.object({
+    cityName: z.string().min(1).regex(/\S/),
+    id: z.string()
+});
+
+/**
+ * OK
+ */
+export const zPostV0CityByCityNameSessionByIdTerminalInputResponse = zSessionTerminalActionBody;
+
+export const zPostV0CityByCityNameSessionByIdTerminalInterruptHeaders = z.object({
+    'X-GC-Request': z.string().min(1)
+});
+
+export const zPostV0CityByCityNameSessionByIdTerminalInterruptPath = z.object({
+    cityName: z.string().min(1).regex(/\S/),
+    id: z.string()
+});
+
+/**
+ * OK
+ */
+export const zPostV0CityByCityNameSessionByIdTerminalInterruptResponse = zSessionTerminalActionBody;
+
+export const zPostV0CityByCityNameSessionByIdTerminalKeysBody = zSessionTerminalKeysBody;
+
+export const zPostV0CityByCityNameSessionByIdTerminalKeysHeaders = z.object({
+    'X-GC-Request': z.string().min(1)
+});
+
+export const zPostV0CityByCityNameSessionByIdTerminalKeysPath = z.object({
+    cityName: z.string().min(1).regex(/\S/),
+    id: z.string()
+});
+
+/**
+ * OK
+ */
+export const zPostV0CityByCityNameSessionByIdTerminalKeysResponse = zSessionTerminalActionBody;
+
+export const zPostV0CityByCityNameSessionByIdTerminalResizeBody = zSessionTerminalResizeBody;
+
+export const zPostV0CityByCityNameSessionByIdTerminalResizeHeaders = z.object({
+    'X-GC-Request': z.string().min(1)
+});
+
+export const zPostV0CityByCityNameSessionByIdTerminalResizePath = z.object({
+    cityName: z.string().min(1).regex(/\S/),
+    id: z.string()
+});
+
+/**
+ * OK
+ */
+export const zPostV0CityByCityNameSessionByIdTerminalResizeResponse = zSessionTerminalActionBody;
 
 export const zGetV0CityByCityNameSessionByIdTranscriptPath = z.object({
     cityName: z.string().min(1).regex(/\S/),

@@ -59,7 +59,56 @@ var (
 	_ runtime.Provider                = (*Provider)(nil)
 	_ runtime.ExecProvider            = (*Provider)(nil)
 	_ runtime.SleepCapabilityProvider = (*Provider)(nil)
+	_ runtime.TerminalProvider        = (*Provider)(nil)
 )
+
+func (p *Provider) terminalCarrier(name string) (runtime.TerminalCarrier, error) {
+	carrier, ok := p.carrier(name).(runtime.TerminalCarrier)
+	if !ok {
+		return nil, runtime.ErrTerminalUnsupported
+	}
+	return carrier, nil
+}
+
+// ReadTerminal returns a bounded remote tmux pane snapshot.
+func (p *Provider) ReadTerminal(ctx context.Context, name string, maxBytes int) (runtime.TerminalRead, error) {
+	output, err := p.carrier(name).Peek(ctx, name, 2000)
+	if err != nil {
+		return runtime.TerminalRead{}, err
+	}
+	return runtime.BoundTerminalRead([]byte(output), maxBytes), nil
+}
+
+// SendTerminalInput forwards literal bytes once over SSH.
+func (p *Provider) SendTerminalInput(ctx context.Context, name string, data []byte) error {
+	carrier, err := p.terminalCarrier(name)
+	if err != nil {
+		return err
+	}
+	return carrier.SendText(ctx, name, data)
+}
+
+// SendTerminalKeys forwards logical keys once over SSH.
+func (p *Provider) SendTerminalKeys(ctx context.Context, name string, keys ...string) error {
+	return p.carrier(name).SendKeys(ctx, name, keys...)
+}
+
+// ResizeTerminal forwards PTY geometry to the remote tmux session.
+func (p *Provider) ResizeTerminal(ctx context.Context, name string, size runtime.TerminalSize) error {
+	carrier, err := p.terminalCarrier(name)
+	if err != nil {
+		return err
+	}
+	return carrier.Resize(ctx, name, size)
+}
+
+// InterruptTerminal sends one remote Ctrl-C.
+func (p *Provider) InterruptTerminal(ctx context.Context, name string) error {
+	return p.carrier(name).Interrupt(ctx, name)
+}
+
+// DetachTerminal is lifecycle-neutral because requests hold no SSH process.
+func (p *Provider) DetachTerminal(ctx context.Context, _ string) error { return ctx.Err() }
 
 // defaultPostStartSettle is how long Start waits before re-checking that a
 // managed session survived startup (the box already exists, so a short settle

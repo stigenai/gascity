@@ -4384,6 +4384,57 @@ export type SessionSubmitSucceededPayload = {
     session_id: string;
 };
 
+export type SessionTerminalActionBody = {
+    action: 'input' | 'keys' | 'resize' | 'interrupt' | 'detach';
+    /**
+     * Resolved Gas City session ID.
+     */
+    session_id: string;
+    status: string;
+};
+
+export type SessionTerminalInputBody = {
+    /**
+     * Literal terminal bytes, base64 encoded on JSON wire. Maximum decoded size is 65536 bytes.
+     */
+    data: string;
+};
+
+export type SessionTerminalKeysBody = {
+    /**
+     * Logical keys such as Enter, Escape, arrows, or C-c.
+     */
+    keys: Array<string> | null;
+};
+
+export type SessionTerminalResizeBody = {
+    columns: number;
+    rows: number;
+};
+
+export type SessionTerminalSnapshotBody = {
+    /**
+     * Opaque cursor for the returned bounded snapshot.
+     */
+    cursor: string;
+    /**
+     * Newest terminal bytes, base64 encoded on JSON wire. Empty when unchanged=true.
+     */
+    data?: string;
+    /**
+     * Resolved Gas City session ID.
+     */
+    session_id: string;
+    /**
+     * Whether older terminal bytes were omitted to honor max_bytes.
+     */
+    truncated: boolean;
+    /**
+     * Whether cursor already identifies the current bounded snapshot.
+     */
+    unchanged: boolean;
+};
+
 export type SessionTranscriptConversationResponse = {
     /**
      * Conversation or text transcript format.
@@ -17241,6 +17292,409 @@ export type PostV0CityByCityNameSessionByIdSuspendResponses = {
 };
 
 export type PostV0CityByCityNameSessionByIdSuspendResponse = PostV0CityByCityNameSessionByIdSuspendResponses[keyof PostV0CityByCityNameSessionByIdSuspendResponses];
+
+export type GetV0CityByCityNameSessionByIdTerminalData = {
+    body?: never;
+    path: {
+        /**
+         * City name.
+         */
+        cityName: string;
+        /**
+         * Session ID, alias, or runtime session_name.
+         */
+        id: string;
+    };
+    query?: {
+        /**
+         * Maximum newest terminal bytes to return. Zero defaults to 65536.
+         */
+        max_bytes?: number;
+        /**
+         * Opaque cursor from the preceding terminal snapshot. Matching content returns unchanged=true with no data.
+         */
+        if_snapshot?: string;
+    };
+    url: '/v0/city/{cityName}/session/{id}/terminal';
+};
+
+export type GetV0CityByCityNameSessionByIdTerminalErrors = {
+    /**
+     * Not Found
+     */
+    404: ErrorModel;
+    /**
+     * Conflict
+     */
+    409: ErrorModel;
+    /**
+     * Unprocessable Entity
+     */
+    422: ErrorModel;
+    /**
+     * Internal Server Error
+     */
+    500: ErrorModel;
+    /**
+     * Not Implemented
+     */
+    501: ErrorModel;
+    /**
+     * Service Unavailable
+     */
+    503: ErrorModel;
+};
+
+export type GetV0CityByCityNameSessionByIdTerminalError = GetV0CityByCityNameSessionByIdTerminalErrors[keyof GetV0CityByCityNameSessionByIdTerminalErrors];
+
+export type GetV0CityByCityNameSessionByIdTerminalResponses = {
+    /**
+     * OK
+     */
+    200: SessionTerminalSnapshotBody;
+};
+
+export type GetV0CityByCityNameSessionByIdTerminalResponse = GetV0CityByCityNameSessionByIdTerminalResponses[keyof GetV0CityByCityNameSessionByIdTerminalResponses];
+
+export type PostV0CityByCityNameSessionByIdTerminalDetachData = {
+    body?: never;
+    headers: {
+        /**
+         * Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.
+         */
+        'X-GC-Request': string;
+    };
+    path: {
+        /**
+         * City name.
+         */
+        cityName: string;
+        /**
+         * Session ID, alias, or runtime session_name.
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/v0/city/{cityName}/session/{id}/terminal/detach';
+};
+
+export type PostV0CityByCityNameSessionByIdTerminalDetachErrors = {
+    /**
+     * Unauthorized
+     */
+    401: ErrorModel;
+    /**
+     * Forbidden
+     */
+    403: ErrorModel;
+    /**
+     * Not Found
+     */
+    404: ErrorModel;
+    /**
+     * Conflict
+     */
+    409: ErrorModel;
+    /**
+     * Unprocessable Entity
+     */
+    422: ErrorModel;
+    /**
+     * Internal Server Error
+     */
+    500: ErrorModel;
+    /**
+     * Not Implemented
+     */
+    501: ErrorModel;
+    /**
+     * Service Unavailable
+     */
+    503: ErrorModel;
+};
+
+export type PostV0CityByCityNameSessionByIdTerminalDetachError = PostV0CityByCityNameSessionByIdTerminalDetachErrors[keyof PostV0CityByCityNameSessionByIdTerminalDetachErrors];
+
+export type PostV0CityByCityNameSessionByIdTerminalDetachResponses = {
+    /**
+     * OK
+     */
+    200: SessionTerminalActionBody;
+};
+
+export type PostV0CityByCityNameSessionByIdTerminalDetachResponse = PostV0CityByCityNameSessionByIdTerminalDetachResponses[keyof PostV0CityByCityNameSessionByIdTerminalDetachResponses];
+
+export type PostV0CityByCityNameSessionByIdTerminalInputData = {
+    body: SessionTerminalInputBody;
+    headers: {
+        /**
+         * Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.
+         */
+        'X-GC-Request': string;
+    };
+    path: {
+        /**
+         * City name.
+         */
+        cityName: string;
+        /**
+         * Session ID, alias, or runtime session_name.
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/v0/city/{cityName}/session/{id}/terminal/input';
+};
+
+export type PostV0CityByCityNameSessionByIdTerminalInputErrors = {
+    /**
+     * Unauthorized
+     */
+    401: ErrorModel;
+    /**
+     * Forbidden
+     */
+    403: ErrorModel;
+    /**
+     * Not Found
+     */
+    404: ErrorModel;
+    /**
+     * Conflict
+     */
+    409: ErrorModel;
+    /**
+     * Unprocessable Entity
+     */
+    422: ErrorModel;
+    /**
+     * Internal Server Error
+     */
+    500: ErrorModel;
+    /**
+     * Not Implemented
+     */
+    501: ErrorModel;
+    /**
+     * Service Unavailable
+     */
+    503: ErrorModel;
+};
+
+export type PostV0CityByCityNameSessionByIdTerminalInputError = PostV0CityByCityNameSessionByIdTerminalInputErrors[keyof PostV0CityByCityNameSessionByIdTerminalInputErrors];
+
+export type PostV0CityByCityNameSessionByIdTerminalInputResponses = {
+    /**
+     * OK
+     */
+    200: SessionTerminalActionBody;
+};
+
+export type PostV0CityByCityNameSessionByIdTerminalInputResponse = PostV0CityByCityNameSessionByIdTerminalInputResponses[keyof PostV0CityByCityNameSessionByIdTerminalInputResponses];
+
+export type PostV0CityByCityNameSessionByIdTerminalInterruptData = {
+    body?: never;
+    headers: {
+        /**
+         * Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.
+         */
+        'X-GC-Request': string;
+    };
+    path: {
+        /**
+         * City name.
+         */
+        cityName: string;
+        /**
+         * Session ID, alias, or runtime session_name.
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/v0/city/{cityName}/session/{id}/terminal/interrupt';
+};
+
+export type PostV0CityByCityNameSessionByIdTerminalInterruptErrors = {
+    /**
+     * Unauthorized
+     */
+    401: ErrorModel;
+    /**
+     * Forbidden
+     */
+    403: ErrorModel;
+    /**
+     * Not Found
+     */
+    404: ErrorModel;
+    /**
+     * Conflict
+     */
+    409: ErrorModel;
+    /**
+     * Unprocessable Entity
+     */
+    422: ErrorModel;
+    /**
+     * Internal Server Error
+     */
+    500: ErrorModel;
+    /**
+     * Not Implemented
+     */
+    501: ErrorModel;
+    /**
+     * Service Unavailable
+     */
+    503: ErrorModel;
+};
+
+export type PostV0CityByCityNameSessionByIdTerminalInterruptError = PostV0CityByCityNameSessionByIdTerminalInterruptErrors[keyof PostV0CityByCityNameSessionByIdTerminalInterruptErrors];
+
+export type PostV0CityByCityNameSessionByIdTerminalInterruptResponses = {
+    /**
+     * OK
+     */
+    200: SessionTerminalActionBody;
+};
+
+export type PostV0CityByCityNameSessionByIdTerminalInterruptResponse = PostV0CityByCityNameSessionByIdTerminalInterruptResponses[keyof PostV0CityByCityNameSessionByIdTerminalInterruptResponses];
+
+export type PostV0CityByCityNameSessionByIdTerminalKeysData = {
+    body: SessionTerminalKeysBody;
+    headers: {
+        /**
+         * Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.
+         */
+        'X-GC-Request': string;
+    };
+    path: {
+        /**
+         * City name.
+         */
+        cityName: string;
+        /**
+         * Session ID, alias, or runtime session_name.
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/v0/city/{cityName}/session/{id}/terminal/keys';
+};
+
+export type PostV0CityByCityNameSessionByIdTerminalKeysErrors = {
+    /**
+     * Unauthorized
+     */
+    401: ErrorModel;
+    /**
+     * Forbidden
+     */
+    403: ErrorModel;
+    /**
+     * Not Found
+     */
+    404: ErrorModel;
+    /**
+     * Conflict
+     */
+    409: ErrorModel;
+    /**
+     * Unprocessable Entity
+     */
+    422: ErrorModel;
+    /**
+     * Internal Server Error
+     */
+    500: ErrorModel;
+    /**
+     * Not Implemented
+     */
+    501: ErrorModel;
+    /**
+     * Service Unavailable
+     */
+    503: ErrorModel;
+};
+
+export type PostV0CityByCityNameSessionByIdTerminalKeysError = PostV0CityByCityNameSessionByIdTerminalKeysErrors[keyof PostV0CityByCityNameSessionByIdTerminalKeysErrors];
+
+export type PostV0CityByCityNameSessionByIdTerminalKeysResponses = {
+    /**
+     * OK
+     */
+    200: SessionTerminalActionBody;
+};
+
+export type PostV0CityByCityNameSessionByIdTerminalKeysResponse = PostV0CityByCityNameSessionByIdTerminalKeysResponses[keyof PostV0CityByCityNameSessionByIdTerminalKeysResponses];
+
+export type PostV0CityByCityNameSessionByIdTerminalResizeData = {
+    body: SessionTerminalResizeBody;
+    headers: {
+        /**
+         * Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.
+         */
+        'X-GC-Request': string;
+    };
+    path: {
+        /**
+         * City name.
+         */
+        cityName: string;
+        /**
+         * Session ID, alias, or runtime session_name.
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/v0/city/{cityName}/session/{id}/terminal/resize';
+};
+
+export type PostV0CityByCityNameSessionByIdTerminalResizeErrors = {
+    /**
+     * Unauthorized
+     */
+    401: ErrorModel;
+    /**
+     * Forbidden
+     */
+    403: ErrorModel;
+    /**
+     * Not Found
+     */
+    404: ErrorModel;
+    /**
+     * Conflict
+     */
+    409: ErrorModel;
+    /**
+     * Unprocessable Entity
+     */
+    422: ErrorModel;
+    /**
+     * Internal Server Error
+     */
+    500: ErrorModel;
+    /**
+     * Not Implemented
+     */
+    501: ErrorModel;
+    /**
+     * Service Unavailable
+     */
+    503: ErrorModel;
+};
+
+export type PostV0CityByCityNameSessionByIdTerminalResizeError = PostV0CityByCityNameSessionByIdTerminalResizeErrors[keyof PostV0CityByCityNameSessionByIdTerminalResizeErrors];
+
+export type PostV0CityByCityNameSessionByIdTerminalResizeResponses = {
+    /**
+     * OK
+     */
+    200: SessionTerminalActionBody;
+};
+
+export type PostV0CityByCityNameSessionByIdTerminalResizeResponse = PostV0CityByCityNameSessionByIdTerminalResizeResponses[keyof PostV0CityByCityNameSessionByIdTerminalResizeResponses];
 
 export type GetV0CityByCityNameSessionByIdTranscriptData = {
     body?: never;

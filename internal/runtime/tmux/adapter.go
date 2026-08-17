@@ -31,6 +31,8 @@ type Provider struct {
 	workDirs map[string]string // session name → workDir (for CopyTo)
 }
 
+var _ runtime.TerminalProvider = (*Provider)(nil)
+
 var instanceTokenReader = rand.Reader
 
 // Compile-time check.
@@ -617,6 +619,74 @@ func (p *Provider) Peek(name string, lines int) (string, error) {
 		return p.tm.CapturePaneAll(name)
 	}
 	return p.tm.CapturePane(name, lines)
+}
+
+// ReadTerminal returns a bounded snapshot of the newest pane output.
+func (p *Provider) ReadTerminal(ctx context.Context, name string, maxBytes int) (runtime.TerminalRead, error) {
+	if err := ctx.Err(); err != nil {
+		return runtime.TerminalRead{}, err
+	}
+	output, err := p.tm.CapturePane(name, 2000)
+	if err != nil {
+		return runtime.TerminalRead{}, terminalTmuxError(name, err)
+	}
+	return runtime.BoundTerminalRead([]byte(output), maxBytes), nil
+}
+
+// SendTerminalInput forwards literal bytes once without submitting Enter.
+func (p *Provider) SendTerminalInput(ctx context.Context, name string, data []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return terminalTmuxError(name, p.tm.SendTextRaw(name, data))
+}
+
+// SendTerminalKeys forwards logical keys once.
+func (p *Provider) SendTerminalKeys(ctx context.Context, name string, keys ...string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	if used, err := p.tm.sendHiddenAttachedKeys(name, keys...); used {
+		return terminalTmuxError(name, err)
+	}
+	_, err := p.tm.run(append([]string{"send-keys", "-t", name}, keys...)...)
+	return terminalTmuxError(name, err)
+}
+
+// ResizeTerminal changes the tmux session PTY geometry.
+func (p *Provider) ResizeTerminal(ctx context.Context, name string, size runtime.TerminalSize) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return terminalTmuxError(name, p.tm.ResizeSession(name, size))
+}
+
+// InterruptTerminal sends one Ctrl-C without best-effort error swallowing.
+func (p *Provider) InterruptTerminal(ctx context.Context, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return terminalTmuxError(name, p.tm.SendKeysRaw(name, "C-c"))
+}
+
+// DetachTerminal is lifecycle-neutral because HTTP terminal operations hold no
+// provider-side attachment between requests.
+func (p *Provider) DetachTerminal(ctx context.Context, _ string) error { return ctx.Err() }
+
+func terminalTmuxError(name string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrSessionNotFound) {
+		return fmt.Errorf("%w: %s", runtime.ErrSessionNotFound, name)
+	}
+	if errors.Is(err, ErrNoServer) {
+		return fmt.Errorf("%w: tmux server is unavailable", runtime.ErrRuntimeUnavailable)
+	}
+	return err
 }
 
 // ListRunning returns all tmux session names matching the given prefix.

@@ -9,6 +9,88 @@ import (
 	"github.com/gastownhall/gascity/internal/session"
 )
 
+const (
+	defaultTerminalReadBytes = 64 << 10
+	maxTerminalReadBytes     = 256 << 10
+	maxTerminalInputBytes    = 64 << 10
+	maxTerminalKeys          = 32
+	maxTerminalKeyBytes      = 64
+	maxTerminalDimension     = 1000
+)
+
+// SessionTerminalSnapshotInput reads a bounded terminal snapshot. IfSnapshot
+// accepts the opaque value returned by a prior read for stateless reconnects.
+type SessionTerminalSnapshotInput struct {
+	CityScope
+	ID         string `path:"id" doc:"Session ID, alias, or runtime session_name."`
+	MaxBytes   int    `query:"max_bytes" required:"false" minimum:"0" maximum:"262144" doc:"Maximum newest terminal bytes to return. Zero defaults to 65536."`
+	IfSnapshot string `query:"if_snapshot" required:"false" maxLength:"64" pattern:"^$|^[0-9a-f]{64}$" doc:"Opaque cursor from the preceding terminal snapshot. Matching content returns unchanged=true with no data."`
+}
+
+// SessionTerminalSnapshotBody is a reconnectable, bounded terminal snapshot.
+// Data is base64 on JSON wire so arbitrary terminal bytes remain lossless.
+type SessionTerminalSnapshotBody struct {
+	SessionID string `json:"session_id" doc:"Resolved Gas City session ID."`
+	Cursor    string `json:"cursor" doc:"Opaque cursor for the returned bounded snapshot."`
+	Data      []byte `json:"data,omitempty" doc:"Newest terminal bytes, base64 encoded on JSON wire. Empty when unchanged=true."`
+	Truncated bool   `json:"truncated" doc:"Whether older terminal bytes were omitted to honor max_bytes."`
+	Unchanged bool   `json:"unchanged" doc:"Whether cursor already identifies the current bounded snapshot."`
+}
+
+// SessionTerminalSnapshotOutput wraps a terminal snapshot.
+type SessionTerminalSnapshotOutput struct{ Body SessionTerminalSnapshotBody }
+
+// SessionTerminalInputBody carries literal terminal bytes without an implicit
+// Enter. Data is base64 on JSON wire.
+type SessionTerminalInputBody struct {
+	_    struct{} `json:"-" additionalProperties:"false"`
+	Data []byte   `json:"data" doc:"Literal terminal bytes, base64 encoded on JSON wire. Maximum decoded size is 65536 bytes."`
+}
+
+// SessionTerminalInput is the literal-input endpoint request.
+type SessionTerminalInput struct {
+	CityScope
+	ID   string `path:"id" doc:"Session ID, alias, or runtime session_name."`
+	Body SessionTerminalInputBody
+}
+
+// SessionTerminalKeysBody carries bounded provider-neutral logical keys.
+type SessionTerminalKeysBody struct {
+	_    struct{} `json:"-" additionalProperties:"false"`
+	Keys []string `json:"keys" minItems:"1" maxItems:"32" doc:"Logical keys such as Enter, Escape, arrows, or C-c."`
+}
+
+// SessionTerminalKeysInput is the logical-key endpoint request.
+type SessionTerminalKeysInput struct {
+	CityScope
+	ID   string `path:"id" doc:"Session ID, alias, or runtime session_name."`
+	Body SessionTerminalKeysBody
+}
+
+// SessionTerminalResizeBody carries the authoritative terminal geometry.
+type SessionTerminalResizeBody struct {
+	_       struct{} `json:"-" additionalProperties:"false"`
+	Rows    int      `json:"rows" minimum:"1" maximum:"1000"`
+	Columns int      `json:"columns" minimum:"1" maximum:"1000"`
+}
+
+// SessionTerminalResizeInput is the resize endpoint request.
+type SessionTerminalResizeInput struct {
+	CityScope
+	ID   string `path:"id" doc:"Session ID, alias, or runtime session_name."`
+	Body SessionTerminalResizeBody
+}
+
+// SessionTerminalActionBody acknowledges one lifecycle-neutral terminal action.
+type SessionTerminalActionBody struct {
+	Status    string `json:"status" example:"ok"`
+	SessionID string `json:"session_id" doc:"Resolved Gas City session ID."`
+	Action    string `json:"action" enum:"input,keys,resize,interrupt,detach"`
+}
+
+// SessionTerminalActionOutput wraps a terminal action acknowledgement.
+type SessionTerminalActionOutput struct{ Body SessionTerminalActionBody }
+
 // SessionListInput is the Huma input for GET /v0/city/{cityName}/sessions.
 // Keyset cursors made the old "cursor present but empty" distinction moot: an
 // empty cursor is first-page paging, anything else must be a valid v1 token.

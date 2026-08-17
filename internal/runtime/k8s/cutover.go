@@ -23,7 +23,32 @@ var (
 	_ runtime.RelaunchProvider                = (*seamBackedProvider)(nil)
 	_ runtime.FreshRunningSessionLister       = (*seamBackedProvider)(nil)
 	_ runtime.InstanceTokenFencedStopProvider = (*seamBackedProvider)(nil)
+	_ runtime.TerminalProvider                = (*seamBackedProvider)(nil)
 )
+
+func (s *seamBackedProvider) ReadTerminal(ctx context.Context, name string, maxBytes int) (runtime.TerminalRead, error) {
+	return s.raw.ReadTerminal(ctx, name, maxBytes)
+}
+
+func (s *seamBackedProvider) SendTerminalInput(ctx context.Context, name string, data []byte) error {
+	return s.raw.SendTerminalInput(ctx, name, data)
+}
+
+func (s *seamBackedProvider) SendTerminalKeys(ctx context.Context, name string, keys ...string) error {
+	return s.raw.SendTerminalKeys(ctx, name, keys...)
+}
+
+func (s *seamBackedProvider) ResizeTerminal(ctx context.Context, name string, size runtime.TerminalSize) error {
+	return s.raw.ResizeTerminal(ctx, name, size)
+}
+
+func (s *seamBackedProvider) InterruptTerminal(ctx context.Context, name string) error {
+	return s.raw.InterruptTerminal(ctx, name)
+}
+
+func (s *seamBackedProvider) DetachTerminal(ctx context.Context, name string) error {
+	return s.raw.DetachTerminal(ctx, name)
+}
 
 // NewSeamBacked constructs a k8s provider served through the seams.
 func NewSeamBacked() (runtime.Provider, error) {

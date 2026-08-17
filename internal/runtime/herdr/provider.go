@@ -45,7 +45,85 @@ const defaultSetupTimeout = 10 * time.Second
 var (
 	_ runtime.Provider                = (*Provider)(nil)
 	_ runtime.ServerLifecycleProvider = (*Provider)(nil)
+	_ runtime.TerminalProvider        = (*Provider)(nil)
 )
+
+// ReadTerminal returns a bounded unwrapped Herdr pane snapshot.
+func (p *Provider) ReadTerminal(ctx context.Context, name string, maxBytes int) (runtime.TerminalRead, error) {
+	pid, err := p.paneID(ctx, name)
+	if err != nil {
+		return runtime.TerminalRead{}, err
+	}
+	if pid == "" {
+		return runtime.TerminalRead{}, runtime.ErrSessionNotFound
+	}
+	output, err := p.c.paneRead(ctx, pid, "recent-unwrapped", 2000)
+	if err != nil {
+		return runtime.TerminalRead{}, terminalHerdrError(name, err)
+	}
+	return runtime.BoundTerminalRead([]byte(output), maxBytes), nil
+}
+
+// SendTerminalInput forwards literal text once without submitting Enter.
+func (p *Provider) SendTerminalInput(ctx context.Context, name string, data []byte) error {
+	if bytes.IndexByte(data, 0) >= 0 {
+		return runtime.ErrTerminalUnsupported
+	}
+	pid, err := p.paneID(ctx, name)
+	if err != nil {
+		return err
+	}
+	if pid == "" {
+		return runtime.ErrSessionNotFound
+	}
+	return terminalHerdrError(name, p.c.sendText(ctx, pid, string(data)))
+}
+
+// SendTerminalKeys forwards provider-neutral logical keys once.
+func (p *Provider) SendTerminalKeys(ctx context.Context, name string, keys ...string) error {
+	pid, err := p.paneID(ctx, name)
+	if err != nil {
+		return err
+	}
+	if pid == "" {
+		return runtime.ErrSessionNotFound
+	}
+	herdrKeys := make([]string, len(keys))
+	for i, key := range keys {
+		herdrKeys[i] = translateKey(key)
+	}
+	return terminalHerdrError(name, p.c.sendKeys(ctx, pid, herdrKeys...))
+}
+
+// ResizeTerminal reports the missing exact rows/columns capability. Herdr's
+// split-relative resize operation cannot safely pretend to satisfy this
+// provider-neutral PTY geometry contract.
+func (p *Provider) ResizeTerminal(ctx context.Context, _ string, _ runtime.TerminalSize) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return runtime.ErrTerminalUnsupported
+}
+
+// InterruptTerminal sends one Ctrl-C to the pane.
+func (p *Provider) InterruptTerminal(ctx context.Context, name string) error {
+	return p.SendTerminalKeys(ctx, name, "C-c")
+}
+
+// DetachTerminal is lifecycle-neutral because requests hold no Herdr attach process.
+func (p *Provider) DetachTerminal(ctx context.Context, _ string) error { return ctx.Err() }
+
+func terminalHerdrError(name string, err error) error {
+	if err == nil {
+		return nil
+	}
+	switch herdrErrorCode(err) {
+	case "pane_not_found", "agent_not_found":
+		return fmt.Errorf("herdr terminal %q: %w", name, runtime.ErrSessionNotFound)
+	default:
+		return err
+	}
+}
 
 // New builds a herdr Provider. herdrSession is the shared per-city herdr session
 // name; metaDir is a writable directory for sidecar session metadata (a temp

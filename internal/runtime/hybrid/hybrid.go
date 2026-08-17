@@ -29,7 +29,70 @@ var (
 	_ runtime.FreshRunningSessionLister       = (*Provider)(nil)
 	_ runtime.InstanceTokenFencedStopProvider = (*Provider)(nil)
 	_ runtime.InstanceTokenFencedStopResolver = (*Provider)(nil)
+	_ runtime.TerminalProvider                = (*Provider)(nil)
 )
+
+func (p *Provider) terminal(name string) (runtime.TerminalProvider, error) {
+	provider, ok := p.route(name).(runtime.TerminalProvider)
+	if !ok {
+		return nil, runtime.ErrTerminalUnsupported
+	}
+	return provider, nil
+}
+
+// ReadTerminal forwards a bounded snapshot request to the routed provider.
+func (p *Provider) ReadTerminal(ctx context.Context, name string, maxBytes int) (runtime.TerminalRead, error) {
+	provider, err := p.terminal(name)
+	if err != nil {
+		return runtime.TerminalRead{}, err
+	}
+	return provider.ReadTerminal(ctx, name, maxBytes)
+}
+
+// SendTerminalInput forwards literal input once to the routed provider.
+func (p *Provider) SendTerminalInput(ctx context.Context, name string, data []byte) error {
+	provider, err := p.terminal(name)
+	if err != nil {
+		return err
+	}
+	return provider.SendTerminalInput(ctx, name, data)
+}
+
+// SendTerminalKeys forwards logical keys once to the routed provider.
+func (p *Provider) SendTerminalKeys(ctx context.Context, name string, keys ...string) error {
+	provider, err := p.terminal(name)
+	if err != nil {
+		return err
+	}
+	return provider.SendTerminalKeys(ctx, name, keys...)
+}
+
+// ResizeTerminal forwards PTY geometry to the routed provider.
+func (p *Provider) ResizeTerminal(ctx context.Context, name string, size runtime.TerminalSize) error {
+	provider, err := p.terminal(name)
+	if err != nil {
+		return err
+	}
+	return provider.ResizeTerminal(ctx, name, size)
+}
+
+// InterruptTerminal forwards one soft interrupt to the routed provider.
+func (p *Provider) InterruptTerminal(ctx context.Context, name string) error {
+	provider, err := p.terminal(name)
+	if err != nil {
+		return err
+	}
+	return provider.InterruptTerminal(ctx, name)
+}
+
+// DetachTerminal releases routed attachment state without stopping the session.
+func (p *Provider) DetachTerminal(ctx context.Context, name string) error {
+	provider, err := p.terminal(name)
+	if err != nil {
+		return err
+	}
+	return provider.DetachTerminal(ctx, name)
+}
 
 // New creates a hybrid provider. isRemote returns true for sessions
 // that should be managed by the remote provider.

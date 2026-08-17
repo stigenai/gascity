@@ -11,6 +11,35 @@ import (
 	"github.com/gastownhall/gascity/internal/runtime"
 )
 
+type terminalBackend struct {
+	*runtime.Fake
+	marker string
+}
+
+func (b *terminalBackend) ReadTerminal(context.Context, string, int) (runtime.TerminalRead, error) {
+	return runtime.TerminalRead{Data: []byte(b.marker)}, nil
+}
+func (b *terminalBackend) SendTerminalInput(context.Context, string, []byte) error   { return nil }
+func (b *terminalBackend) SendTerminalKeys(context.Context, string, ...string) error { return nil }
+func (b *terminalBackend) ResizeTerminal(context.Context, string, runtime.TerminalSize) error {
+	return nil
+}
+func (b *terminalBackend) InterruptTerminal(context.Context, string) error { return nil }
+func (b *terminalBackend) DetachTerminal(context.Context, string) error    { return nil }
+
+func TestTerminalProviderRoutesBySessionTransport(t *testing.T) {
+	local := &terminalBackend{Fake: runtime.NewFake(), marker: "tmux"}
+	acp := &terminalBackend{Fake: runtime.NewFake(), marker: "acp"}
+	p := New(local, acp)
+	p.RouteACP("remote")
+	for name, want := range map[string]string{"local": "tmux", "remote": "acp"} {
+		got, err := p.ReadTerminal(context.Background(), name, 100)
+		if err != nil || string(got.Data) != want {
+			t.Fatalf("ReadTerminal(%q) = %q, %v; want %q", name, got.Data, err, want)
+		}
+	}
+}
+
 var _ runtime.Provider = (*Provider)(nil)
 
 type freshListProvider struct {

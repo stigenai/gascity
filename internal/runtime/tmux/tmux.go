@@ -1232,6 +1232,32 @@ func (t *Tmux) SendKeysRaw(session, keys string) error {
 	return err
 }
 
+// SendTextRaw sends literal text without adding Enter. It uses a live hidden
+// attachment when present so TUIs receive the same byte path as an attached
+// operator; otherwise tmux injects the text literally once.
+func (t *Tmux) SendTextRaw(session string, data []byte) error {
+	if bytes.IndexByte(data, 0) >= 0 {
+		return fmt.Errorf("terminal input contains NUL: %w", runtime.ErrTerminalUnsupported)
+	}
+	if client := t.hiddenAttachClient(session); client != nil {
+		return client.write(data)
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	t.cancelCopyModeIfParked(session)
+	t.recordPoke(session)
+	_, err := t.run("send-keys", "-t", session, "-l", string(data))
+	return err
+}
+
+// ResizeSession changes the attached session's authoritative PTY geometry.
+func (t *Tmux) ResizeSession(session string, size runtime.TerminalSize) error {
+	_, err := t.run("resize-window", "-t", session,
+		"-x", strconv.Itoa(size.Columns), "-y", strconv.Itoa(size.Rows))
+	return err
+}
+
 // SendKeysReplace sends keystrokes, clearing any pending input first.
 // This is useful for "replaceable" notifications where only the latest matters.
 // Uses Ctrl-U to clear the input line before sending the new message.
@@ -1569,16 +1595,15 @@ func (t *Tmux) sendHiddenAttachedKeys(target string, keys ...string) (bool, erro
 	if client == nil {
 		return false, nil
 	}
+	var input []byte
 	for _, key := range keys {
 		seq, ok := hiddenAttachedKeyBytes(key)
 		if !ok {
 			return false, nil
 		}
-		if err := client.write(seq); err != nil {
-			return true, err
-		}
+		input = append(input, seq...)
 	}
-	return true, nil
+	return true, client.write(input)
 }
 
 func (t *Tmux) sendHiddenAttachedText(target, text string) (bool, error) {

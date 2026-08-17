@@ -78,8 +78,9 @@ var (
 	OperationInProgress = Register(ProblemType{Code: "operation-in-progress", Status: http.StatusConflict, Title: "Operation In Progress"})
 
 	// Authorization / capability.
-	Forbidden      = Register(ProblemType{Code: "forbidden", Status: http.StatusForbidden, Title: "Forbidden"})
-	NotImplemented = Register(ProblemType{Code: "not-implemented", Status: http.StatusNotImplemented, Title: "Not Implemented"})
+	Forbidden           = Register(ProblemType{Code: "forbidden", Status: http.StatusForbidden, Title: "Forbidden"})
+	NotImplemented      = Register(ProblemType{Code: "not-implemented", Status: http.StatusNotImplemented, Title: "Not Implemented"})
+	TerminalUnsupported = Register(ProblemType{Code: "terminal-unsupported", Status: http.StatusNotImplemented, Title: "Remote Terminal Unsupported"})
 
 	// Idempotency (two-phase reserve/complete).
 	IdempotencyInFlight = Register(ProblemType{Code: "idempotency-in-flight", Status: http.StatusConflict, Title: "Idempotency Key In Flight"})

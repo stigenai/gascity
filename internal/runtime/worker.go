@@ -15,9 +15,11 @@ import (
 //
 // The contract is deliberately limited to LOAD-BEARING surface — every method
 // here has a real, distinct implementation in some provider. Speculative surface
-// with no implementation (a stream/PTY Place extension, a transcript-history
-// read, a per-place env accessor) is intentionally NOT declared here; it will be
-// added alongside the implementation that needs it, not before.
+// with no implementation (a transcript-history read, a per-place env accessor)
+// is intentionally NOT declared here; it will be added alongside the
+// implementation that needs it, not before. The implemented provider-neutral
+// remote terminal extension lives separately in terminal.go; it is optional
+// rather than widening every Transport or Attachment.
 //
 // What the rpp-slim carrier work already pre-paid (REUSED, not net-new):
 //   - [ExecProvider].Exec → Place.Exec

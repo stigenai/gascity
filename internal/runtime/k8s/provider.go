@@ -39,7 +39,56 @@ var (
 	_ runtime.AttachedChecker                 = (*Provider)(nil)
 	_ runtime.CapsuleStateRuntime             = (*Provider)(nil)
 	_ runtime.CapsuleStatePlace               = (*Provider)(nil)
+	_ runtime.TerminalProvider                = (*Provider)(nil)
 )
+
+func (p *Provider) terminalCarrier() (runtime.TerminalCarrier, error) {
+	carrier, ok := p.carrier().(runtime.TerminalCarrier)
+	if !ok {
+		return nil, runtime.ErrTerminalUnsupported
+	}
+	return carrier, nil
+}
+
+// ReadTerminal returns a bounded in-pod tmux pane snapshot.
+func (p *Provider) ReadTerminal(ctx context.Context, name string, maxBytes int) (runtime.TerminalRead, error) {
+	output, err := p.carrier().Peek(ctx, name, 2000)
+	if err != nil {
+		return runtime.TerminalRead{}, interactionError("read terminal", name, err)
+	}
+	return runtime.BoundTerminalRead([]byte(output), maxBytes), nil
+}
+
+// SendTerminalInput forwards literal bytes once through the pod exec channel.
+func (p *Provider) SendTerminalInput(ctx context.Context, name string, data []byte) error {
+	carrier, err := p.terminalCarrier()
+	if err != nil {
+		return err
+	}
+	return interactionError("send terminal input", name, carrier.SendText(ctx, name, data))
+}
+
+// SendTerminalKeys forwards logical keys once through the pod exec channel.
+func (p *Provider) SendTerminalKeys(ctx context.Context, name string, keys ...string) error {
+	return interactionError("send terminal keys", name, p.carrier().SendKeys(ctx, name, keys...))
+}
+
+// ResizeTerminal forwards PTY geometry to the in-pod tmux session.
+func (p *Provider) ResizeTerminal(ctx context.Context, name string, size runtime.TerminalSize) error {
+	carrier, err := p.terminalCarrier()
+	if err != nil {
+		return err
+	}
+	return interactionError("resize terminal", name, carrier.Resize(ctx, name, size))
+}
+
+// InterruptTerminal sends one in-pod Ctrl-C.
+func (p *Provider) InterruptTerminal(ctx context.Context, name string) error {
+	return interactionError("interrupt terminal", name, p.carrier().Interrupt(ctx, name))
+}
+
+// DetachTerminal is lifecycle-neutral because requests hold no pod exec stream.
+func (p *Provider) DetachTerminal(ctx context.Context, _ string) error { return ctx.Err() }
 
 // Provider is a native Kubernetes session provider using client-go.
 // Eliminates subprocess overhead by making direct API calls over reused

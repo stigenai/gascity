@@ -41,10 +41,11 @@ Gas City controller
 An operator selecting a city through `--city-url`, `--context`, or the matching
 environment variables uses a different trust boundary. That client may use
 typed remote-city API operations. It may not obtain a raw proxy to a private
-workspace service. Full terminal attachment from such a client is deferred to
-the generic, authenticated Gas City remote TTY capability tracked by
-`ga-xgv.6.4`; it must work for every attachable harness rather than introduce an
-Omnigent-specific public tunnel.
+workspace service. Generic remote terminal control is brokered by Gas City at
+`/v0/city/{cityName}/session/{id}/terminal`: bounded snapshots use an opaque
+conditional reconnect cursor, while typed mutations send literal bytes,
+logical keys, resize, interrupt, or clean detach. The same capability serves
+every attachable harness; it is not an Omnigent-specific public tunnel.
 
 ## Why the split is required
 
@@ -71,7 +72,7 @@ shortcuts. They are different architectures and are rejected.
 | start Omnigent server and host | city-scoped workspace service | capsule-local supervisor in the place | not allowed |
 | access private Omnigent API | loopback city service proxy | private capsule Unix socket | not allowed |
 | create or resume conversation | `gc omnigent attach` | capsule-local attach mode | through worker lifecycle, not raw Omnigent API |
-| interactive terminal from controller host | tmux or Herdr attach | Kubernetes exec/tmux or SSH/tmux | unavailable until generic remote TTY exists |
+| interactive terminal from controller host | tmux or Herdr attach | Kubernetes exec/tmux or SSH/tmux | authenticated typed terminal broker; no provider endpoint disclosure |
 | read service status | local typed status and doctor | controller observation of the place | generic typed remote service/session status |
 | durable work and conversation binding | Beads/DoltLite | same authoritative store | typed controller API |
 | Omnigent database and artifacts | city service state | durable state owned by the Gas City session | never downloaded implicitly |
@@ -138,8 +139,9 @@ The following cases fail explicitly and never fall back to another location:
   conversation and not as permission to create a replacement conversation.
 - a runtime without required staging, durable-state, secret-reference, or
   interactive capabilities reports the missing capability.
-- a remote-city client without generic TTY support may use typed status and
-  transcript surfaces but cannot claim full interactive attachment.
+- a runtime without `runtime.TerminalProvider` returns the typed
+  `terminal-unsupported` capability error; no API path falls back to a raw
+  provider attach or exposes provider connection details.
 
 Provider transport errors, missing state, missing credentials, pin mismatch,
 and authorization failures remain distinguishable. No path silently selects a

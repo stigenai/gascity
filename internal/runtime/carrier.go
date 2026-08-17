@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strconv"
@@ -56,6 +57,8 @@ type tmuxCarrier struct {
 	conn   ExecProvider
 	target string
 }
+
+var _ TerminalCarrier = (*tmuxCarrier)(nil)
 
 // NewTmuxCarrier returns a [Carrier] that drives the in-box tmux session
 // target over conn.
@@ -124,5 +127,28 @@ func (c *tmuxCarrier) Interrupt(ctx context.Context, name string) error {
 
 func (c *tmuxCarrier) ClearScrollback(ctx context.Context, name string) error {
 	_, err := c.tmux(ctx, name, "clear-history", "-t", c.target)
+	return err
+}
+
+func (c *tmuxCarrier) SendText(ctx context.Context, name string, data []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if bytes.IndexByte(data, 0) >= 0 {
+		return fmt.Errorf("terminal input contains NUL: %w", ErrTerminalUnsupported)
+	}
+	if len(data) == 0 {
+		return nil
+	}
+	_, err := c.tmux(ctx, name, "send-keys", "-t", c.target, "-l", string(data))
+	return err
+}
+
+func (c *tmuxCarrier) Resize(ctx context.Context, name string, size TerminalSize) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	_, err := c.tmux(ctx, name, "resize-window", "-t", c.target,
+		"-x", strconv.Itoa(size.Columns), "-y", strconv.Itoa(size.Rows))
 	return err
 }

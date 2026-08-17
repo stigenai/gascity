@@ -1,12 +1,53 @@
 package tmux
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/gastownhall/gascity/internal/runtime"
 )
+
+func TestProviderTerminalSurfaceUsesOneShotTmuxCommands(t *testing.T) {
+	fe := &fakeExecutor{out: "terminal-output"}
+	p := NewProviderWithConfig(Config{SocketName: "x"})
+	p.tm.exec = fe
+
+	read, err := p.ReadTerminal(context.Background(), "runner", 8)
+	if err != nil || string(read.Data) != "l-output" || !read.Truncated {
+		t.Fatalf("ReadTerminal = %#v, %v", read, err)
+	}
+	if err := p.SendTerminalInput(context.Background(), "runner", []byte("hello")); err != nil {
+		t.Fatalf("SendTerminalInput: %v", err)
+	}
+	if err := p.SendTerminalKeys(context.Background(), "runner", "Enter", "C-c"); err != nil {
+		t.Fatalf("SendTerminalKeys: %v", err)
+	}
+	if err := p.ResizeTerminal(context.Background(), "runner", runtime.TerminalSize{Rows: 40, Columns: 120}); err != nil {
+		t.Fatalf("ResizeTerminal: %v", err)
+	}
+	if err := p.InterruptTerminal(context.Background(), "runner"); err != nil {
+		t.Fatalf("InterruptTerminal: %v", err)
+	}
+
+	calls := make([]string, len(fe.calls))
+	for i, call := range fe.calls {
+		calls[i] = strings.Join(call, " ")
+	}
+	joined := strings.Join(calls, "\n")
+	for _, command := range []string{
+		"capture-pane -p -t runner -S -2000",
+		"send-keys -t runner -l hello",
+		"send-keys -t runner Enter C-c",
+		"resize-window -t runner -x 120 -y 40",
+		"send-keys -t runner C-c",
+	} {
+		if !strings.Contains(joined, command) {
+			t.Fatalf("tmux calls missing %q:\n%s", command, joined)
+		}
+	}
+}
 
 func TestBuildLaunchCommandUnsetsColorKillersForInteractiveExecutables(t *testing.T) {
 	for _, tc := range []struct {

@@ -175,3 +175,34 @@ func TestTmuxCarrier_NonZeroExitIsRuntimeUnavailable(t *testing.T) {
 		t.Fatalf("SendKeys error = %v, want ErrRuntimeUnavailable", err)
 	}
 }
+
+func TestTmuxCarrier_TerminalActionsAreLiteralAndSized(t *testing.T) {
+	f := NewFake()
+	c, ok := NewTmuxCarrier(f, "main").(TerminalCarrier)
+	if !ok {
+		t.Fatal("tmux carrier does not implement TerminalCarrier")
+	}
+	if err := c.SendText(context.Background(), "s", []byte("hello\nworld")); err != nil {
+		t.Fatalf("SendText: %v", err)
+	}
+	if err := c.Resize(context.Background(), "s", TerminalSize{Rows: 40, Columns: 120}); err != nil {
+		t.Fatalf("Resize: %v", err)
+	}
+	wantExec(t, f,
+		"tmux send-keys -t main -l hello\nworld",
+		"tmux resize-window -t main -x 120 -y 40",
+	)
+}
+
+func TestTmuxCarrier_TerminalActionsHonorCancellation(t *testing.T) {
+	f := NewFake()
+	c := NewTmuxCarrier(f, "main").(TerminalCarrier)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := c.SendText(ctx, "s", []byte("must-not-send")); !errors.Is(err, context.Canceled) {
+		t.Fatalf("SendText error = %v, want context.Canceled", err)
+	}
+	if got := execMessages(f); len(got) != 0 {
+		t.Fatalf("canceled action issued commands: %v", got)
+	}
+}

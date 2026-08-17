@@ -85,11 +85,20 @@ var exemptFromIdempotency = map[string]bool{
 	"post-v0-city-by-city-name-session-by-id-rename":           true,
 	"post-v0-city-by-city-name-session-by-id-stop":             true,
 	"post-v0-city-by-city-name-session-by-id-suspend":          true,
-	"post-v0-city-by-city-name-session-by-id-wake":             true,
-	"post-v0-city-by-city-name-sling":                          true,
-	"post-v0-city-by-city-name-unregister":                     true,
-	"rotate-events":                                            true,
-	"trigger-maintenance-dolt-gc":                              true,
+	// Terminal actions mutate an existing live TTY and deliberately execute at
+	// most once per admitted request. Gas City never retries an ambiguous
+	// provider failure; clients must observe a fresh snapshot before deciding on
+	// a follow-up, so Idempotency-Key replay would falsely claim delivery state.
+	"post-v0-city-by-city-name-session-by-id-terminal-detach":    true,
+	"post-v0-city-by-city-name-session-by-id-terminal-input":     true,
+	"post-v0-city-by-city-name-session-by-id-terminal-interrupt": true,
+	"post-v0-city-by-city-name-session-by-id-terminal-keys":      true,
+	"post-v0-city-by-city-name-session-by-id-terminal-resize":    true,
+	"post-v0-city-by-city-name-session-by-id-wake":               true,
+	"post-v0-city-by-city-name-sling":                            true,
+	"post-v0-city-by-city-name-unregister":                       true,
+	"rotate-events":                                              true,
+	"trigger-maintenance-dolt-gc":                                true,
 }
 
 type idemSpecDoc struct {

@@ -249,6 +249,16 @@ func TestAttach_RoutesCorrectly(t *testing.T) {
 	}
 }
 
+func TestTerminalProviderReturnsTypedUnsupportedForRoutedBackend(t *testing.T) {
+	p := New(runtime.NewFake(), runtime.NewFake(), func(name string) bool { return name == "remote" })
+	for _, name := range []string{"local", "remote"} {
+		_, err := p.ReadTerminal(context.Background(), name, 100)
+		if !errors.Is(err, runtime.ErrTerminalUnsupported) {
+			t.Fatalf("ReadTerminal(%q) error = %v, want ErrTerminalUnsupported", name, err)
+		}
+	}
+}
+
 func TestStop_RoutesCorrectly(t *testing.T) {
 	local, remote := runtime.NewFake(), runtime.NewFake()
 	h := New(local, remote, isRemote)

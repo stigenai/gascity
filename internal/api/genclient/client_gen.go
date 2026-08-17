@@ -438,6 +438,33 @@ func (e SessionStructuredToolErrorCategory) Valid() bool {
 	}
 }
 
+// Defines values for SessionTerminalActionBodyAction.
+const (
+	Detach    SessionTerminalActionBodyAction = "detach"
+	Input     SessionTerminalActionBodyAction = "input"
+	Interrupt SessionTerminalActionBodyAction = "interrupt"
+	Keys      SessionTerminalActionBodyAction = "keys"
+	Resize    SessionTerminalActionBodyAction = "resize"
+)
+
+// Valid indicates whether the value is a known member of the SessionTerminalActionBodyAction enum.
+func (e SessionTerminalActionBodyAction) Valid() bool {
+	switch e {
+	case Detach:
+		return true
+	case Input:
+		return true
+	case Interrupt:
+		return true
+	case Keys:
+		return true
+	case Resize:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for SessionTranscriptConversationResponseFormat.
 const (
 	SessionTranscriptConversationResponseFormatConversation SessionTranscriptConversationResponseFormat = "conversation"
@@ -4604,6 +4631,54 @@ type SessionSubmitSucceededPayload struct {
 
 	// SessionId Session ID that received the submission.
 	SessionId string `json:"session_id"`
+}
+
+// SessionTerminalActionBody defines model for SessionTerminalActionBody.
+type SessionTerminalActionBody struct {
+	Action SessionTerminalActionBodyAction `json:"action"`
+
+	// SessionId Resolved Gas City session ID.
+	SessionId string `json:"session_id"`
+	Status    string `json:"status"`
+}
+
+// SessionTerminalActionBodyAction defines model for SessionTerminalActionBody.Action.
+type SessionTerminalActionBodyAction string
+
+// SessionTerminalInputBody defines model for SessionTerminalInputBody.
+type SessionTerminalInputBody struct {
+	// Data Literal terminal bytes, base64 encoded on JSON wire. Maximum decoded size is 65536 bytes.
+	Data string `json:"data"`
+}
+
+// SessionTerminalKeysBody defines model for SessionTerminalKeysBody.
+type SessionTerminalKeysBody struct {
+	// Keys Logical keys such as Enter, Escape, arrows, or C-c.
+	Keys *[]string `json:"keys"`
+}
+
+// SessionTerminalResizeBody defines model for SessionTerminalResizeBody.
+type SessionTerminalResizeBody struct {
+	Columns int64 `json:"columns"`
+	Rows    int64 `json:"rows"`
+}
+
+// SessionTerminalSnapshotBody defines model for SessionTerminalSnapshotBody.
+type SessionTerminalSnapshotBody struct {
+	// Cursor Opaque cursor for the returned bounded snapshot.
+	Cursor string `json:"cursor"`
+
+	// Data Newest terminal bytes, base64 encoded on JSON wire. Empty when unchanged=true.
+	Data *string `json:"data,omitempty"`
+
+	// SessionId Resolved Gas City session ID.
+	SessionId string `json:"session_id"`
+
+	// Truncated Whether older terminal bytes were omitted to honor max_bytes.
+	Truncated bool `json:"truncated"`
+
+	// Unchanged Whether cursor already identifies the current bounded snapshot.
+	Unchanged bool `json:"unchanged"`
 }
 
 // SessionTranscriptConversationResponse defines model for SessionTranscriptConversationResponse.
@@ -9022,6 +9097,45 @@ type PostV0CityByCityNameSessionByIdSuspendParams struct {
 	XGCRequest string `json:"X-GC-Request"`
 }
 
+// GetV0CityByCityNameSessionByIdTerminalParams defines parameters for GetV0CityByCityNameSessionByIdTerminal.
+type GetV0CityByCityNameSessionByIdTerminalParams struct {
+	// MaxBytes Maximum newest terminal bytes to return. Zero defaults to 65536.
+	MaxBytes *int64 `form:"max_bytes,omitempty" json:"max_bytes,omitempty"`
+
+	// IfSnapshot Opaque cursor from the preceding terminal snapshot. Matching content returns unchanged=true with no data.
+	IfSnapshot *string `form:"if_snapshot,omitempty" json:"if_snapshot,omitempty"`
+}
+
+// PostV0CityByCityNameSessionByIdTerminalDetachParams defines parameters for PostV0CityByCityNameSessionByIdTerminalDetach.
+type PostV0CityByCityNameSessionByIdTerminalDetachParams struct {
+	// XGCRequest Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.
+	XGCRequest string `json:"X-GC-Request"`
+}
+
+// PostV0CityByCityNameSessionByIdTerminalInputParams defines parameters for PostV0CityByCityNameSessionByIdTerminalInput.
+type PostV0CityByCityNameSessionByIdTerminalInputParams struct {
+	// XGCRequest Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.
+	XGCRequest string `json:"X-GC-Request"`
+}
+
+// PostV0CityByCityNameSessionByIdTerminalInterruptParams defines parameters for PostV0CityByCityNameSessionByIdTerminalInterrupt.
+type PostV0CityByCityNameSessionByIdTerminalInterruptParams struct {
+	// XGCRequest Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.
+	XGCRequest string `json:"X-GC-Request"`
+}
+
+// PostV0CityByCityNameSessionByIdTerminalKeysParams defines parameters for PostV0CityByCityNameSessionByIdTerminalKeys.
+type PostV0CityByCityNameSessionByIdTerminalKeysParams struct {
+	// XGCRequest Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.
+	XGCRequest string `json:"X-GC-Request"`
+}
+
+// PostV0CityByCityNameSessionByIdTerminalResizeParams defines parameters for PostV0CityByCityNameSessionByIdTerminalResize.
+type PostV0CityByCityNameSessionByIdTerminalResizeParams struct {
+	// XGCRequest Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.
+	XGCRequest string `json:"X-GC-Request"`
+}
+
 // GetV0CityByCityNameSessionByIdTranscriptParams defines parameters for GetV0CityByCityNameSessionByIdTranscript.
 type GetV0CityByCityNameSessionByIdTranscriptParams struct {
 	// Tail Number of recent compaction segments to return. This API parameter keeps compaction-segment semantics even though gc session logs --tail counts displayed transcript entries. Omit for the endpoint default (usually 1); 0 returns all segments; N>0 returns the last N.
@@ -9300,6 +9414,15 @@ type RespondSessionJSONRequestBody = SessionRespondInputBody
 
 // SubmitSessionJSONRequestBody defines body for SubmitSession for application/json ContentType.
 type SubmitSessionJSONRequestBody = SessionSubmitInputBody
+
+// PostV0CityByCityNameSessionByIdTerminalInputJSONRequestBody defines body for PostV0CityByCityNameSessionByIdTerminalInput for application/json ContentType.
+type PostV0CityByCityNameSessionByIdTerminalInputJSONRequestBody = SessionTerminalInputBody
+
+// PostV0CityByCityNameSessionByIdTerminalKeysJSONRequestBody defines body for PostV0CityByCityNameSessionByIdTerminalKeys for application/json ContentType.
+type PostV0CityByCityNameSessionByIdTerminalKeysJSONRequestBody = SessionTerminalKeysBody
+
+// PostV0CityByCityNameSessionByIdTerminalResizeJSONRequestBody defines body for PostV0CityByCityNameSessionByIdTerminalResize for application/json ContentType.
+type PostV0CityByCityNameSessionByIdTerminalResizeJSONRequestBody = SessionTerminalResizeBody
 
 // CreateSessionJSONRequestBody defines body for CreateSession for application/json ContentType.
 type CreateSessionJSONRequestBody = SessionCreateBody
@@ -17578,6 +17701,30 @@ type ClientInterface interface {
 	// PostV0CityByCityNameSessionByIdSuspend request
 	PostV0CityByCityNameSessionByIdSuspend(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdSuspendParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetV0CityByCityNameSessionByIdTerminal request
+	GetV0CityByCityNameSessionByIdTerminal(ctx context.Context, cityName string, id string, params *GetV0CityByCityNameSessionByIdTerminalParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostV0CityByCityNameSessionByIdTerminalDetach request
+	PostV0CityByCityNameSessionByIdTerminalDetach(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalDetachParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostV0CityByCityNameSessionByIdTerminalInputWithBody request with any body
+	PostV0CityByCityNameSessionByIdTerminalInputWithBody(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalInputParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	PostV0CityByCityNameSessionByIdTerminalInput(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalInputParams, body PostV0CityByCityNameSessionByIdTerminalInputJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostV0CityByCityNameSessionByIdTerminalInterrupt request
+	PostV0CityByCityNameSessionByIdTerminalInterrupt(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalInterruptParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostV0CityByCityNameSessionByIdTerminalKeysWithBody request with any body
+	PostV0CityByCityNameSessionByIdTerminalKeysWithBody(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalKeysParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	PostV0CityByCityNameSessionByIdTerminalKeys(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalKeysParams, body PostV0CityByCityNameSessionByIdTerminalKeysJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostV0CityByCityNameSessionByIdTerminalResizeWithBody request with any body
+	PostV0CityByCityNameSessionByIdTerminalResizeWithBody(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalResizeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	PostV0CityByCityNameSessionByIdTerminalResize(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalResizeParams, body PostV0CityByCityNameSessionByIdTerminalResizeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetV0CityByCityNameSessionByIdTranscript request
 	GetV0CityByCityNameSessionByIdTranscript(ctx context.Context, cityName string, id string, params *GetV0CityByCityNameSessionByIdTranscriptParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -19901,6 +20048,114 @@ func (c *Client) SubmitSession(ctx context.Context, cityName string, id string, 
 
 func (c *Client) PostV0CityByCityNameSessionByIdSuspend(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdSuspendParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewPostV0CityByCityNameSessionByIdSuspendRequest(c.Server, cityName, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetV0CityByCityNameSessionByIdTerminal(ctx context.Context, cityName string, id string, params *GetV0CityByCityNameSessionByIdTerminalParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetV0CityByCityNameSessionByIdTerminalRequest(c.Server, cityName, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostV0CityByCityNameSessionByIdTerminalDetach(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalDetachParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostV0CityByCityNameSessionByIdTerminalDetachRequest(c.Server, cityName, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostV0CityByCityNameSessionByIdTerminalInputWithBody(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalInputParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostV0CityByCityNameSessionByIdTerminalInputRequestWithBody(c.Server, cityName, id, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostV0CityByCityNameSessionByIdTerminalInput(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalInputParams, body PostV0CityByCityNameSessionByIdTerminalInputJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostV0CityByCityNameSessionByIdTerminalInputRequest(c.Server, cityName, id, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostV0CityByCityNameSessionByIdTerminalInterrupt(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalInterruptParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostV0CityByCityNameSessionByIdTerminalInterruptRequest(c.Server, cityName, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostV0CityByCityNameSessionByIdTerminalKeysWithBody(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalKeysParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostV0CityByCityNameSessionByIdTerminalKeysRequestWithBody(c.Server, cityName, id, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostV0CityByCityNameSessionByIdTerminalKeys(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalKeysParams, body PostV0CityByCityNameSessionByIdTerminalKeysJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostV0CityByCityNameSessionByIdTerminalKeysRequest(c.Server, cityName, id, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostV0CityByCityNameSessionByIdTerminalResizeWithBody(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalResizeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostV0CityByCityNameSessionByIdTerminalResizeRequestWithBody(c.Server, cityName, id, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostV0CityByCityNameSessionByIdTerminalResize(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalResizeParams, body PostV0CityByCityNameSessionByIdTerminalResizeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostV0CityByCityNameSessionByIdTerminalResizeRequest(c.Server, cityName, id, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -29424,6 +29679,394 @@ func NewPostV0CityByCityNameSessionByIdSuspendRequest(server string, cityName st
 	return req, nil
 }
 
+// NewGetV0CityByCityNameSessionByIdTerminalRequest generates requests for GetV0CityByCityNameSessionByIdTerminal
+func NewGetV0CityByCityNameSessionByIdTerminalRequest(server string, cityName string, id string, params *GetV0CityByCityNameSessionByIdTerminalParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "cityName", cityName, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v0/city/%s/session/%s/terminal", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.MaxBytes != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", false, "max_bytes", *params.MaxBytes, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "integer", Format: "int64"}); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.IfSnapshot != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", false, "if_snapshot", *params.IfSnapshot, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPostV0CityByCityNameSessionByIdTerminalDetachRequest generates requests for PostV0CityByCityNameSessionByIdTerminalDetach
+func NewPostV0CityByCityNameSessionByIdTerminalDetachRequest(server string, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalDetachParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "cityName", cityName, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v0/city/%s/session/%s/terminal/detach", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "X-GC-Request", params.XGCRequest, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-GC-Request", headerParam0)
+
+	}
+
+	return req, nil
+}
+
+// NewPostV0CityByCityNameSessionByIdTerminalInputRequest calls the generic PostV0CityByCityNameSessionByIdTerminalInput builder with application/json body
+func NewPostV0CityByCityNameSessionByIdTerminalInputRequest(server string, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalInputParams, body PostV0CityByCityNameSessionByIdTerminalInputJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostV0CityByCityNameSessionByIdTerminalInputRequestWithBody(server, cityName, id, params, "application/json", bodyReader)
+}
+
+// NewPostV0CityByCityNameSessionByIdTerminalInputRequestWithBody generates requests for PostV0CityByCityNameSessionByIdTerminalInput with any type of body
+func NewPostV0CityByCityNameSessionByIdTerminalInputRequestWithBody(server string, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalInputParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "cityName", cityName, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v0/city/%s/session/%s/terminal/input", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "X-GC-Request", params.XGCRequest, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-GC-Request", headerParam0)
+
+	}
+
+	return req, nil
+}
+
+// NewPostV0CityByCityNameSessionByIdTerminalInterruptRequest generates requests for PostV0CityByCityNameSessionByIdTerminalInterrupt
+func NewPostV0CityByCityNameSessionByIdTerminalInterruptRequest(server string, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalInterruptParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "cityName", cityName, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v0/city/%s/session/%s/terminal/interrupt", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "X-GC-Request", params.XGCRequest, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-GC-Request", headerParam0)
+
+	}
+
+	return req, nil
+}
+
+// NewPostV0CityByCityNameSessionByIdTerminalKeysRequest calls the generic PostV0CityByCityNameSessionByIdTerminalKeys builder with application/json body
+func NewPostV0CityByCityNameSessionByIdTerminalKeysRequest(server string, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalKeysParams, body PostV0CityByCityNameSessionByIdTerminalKeysJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostV0CityByCityNameSessionByIdTerminalKeysRequestWithBody(server, cityName, id, params, "application/json", bodyReader)
+}
+
+// NewPostV0CityByCityNameSessionByIdTerminalKeysRequestWithBody generates requests for PostV0CityByCityNameSessionByIdTerminalKeys with any type of body
+func NewPostV0CityByCityNameSessionByIdTerminalKeysRequestWithBody(server string, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalKeysParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "cityName", cityName, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v0/city/%s/session/%s/terminal/keys", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "X-GC-Request", params.XGCRequest, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-GC-Request", headerParam0)
+
+	}
+
+	return req, nil
+}
+
+// NewPostV0CityByCityNameSessionByIdTerminalResizeRequest calls the generic PostV0CityByCityNameSessionByIdTerminalResize builder with application/json body
+func NewPostV0CityByCityNameSessionByIdTerminalResizeRequest(server string, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalResizeParams, body PostV0CityByCityNameSessionByIdTerminalResizeJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostV0CityByCityNameSessionByIdTerminalResizeRequestWithBody(server, cityName, id, params, "application/json", bodyReader)
+}
+
+// NewPostV0CityByCityNameSessionByIdTerminalResizeRequestWithBody generates requests for PostV0CityByCityNameSessionByIdTerminalResize with any type of body
+func NewPostV0CityByCityNameSessionByIdTerminalResizeRequestWithBody(server string, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalResizeParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "cityName", cityName, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v0/city/%s/session/%s/terminal/resize", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "X-GC-Request", params.XGCRequest, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-GC-Request", headerParam0)
+
+	}
+
+	return req, nil
+}
+
 // NewGetV0CityByCityNameSessionByIdTranscriptRequest generates requests for GetV0CityByCityNameSessionByIdTranscript
 func NewGetV0CityByCityNameSessionByIdTranscriptRequest(server string, cityName string, id string, params *GetV0CityByCityNameSessionByIdTranscriptParams) (*http.Request, error) {
 	var err error
@@ -31198,6 +31841,30 @@ type ClientWithResponsesInterface interface {
 
 	// PostV0CityByCityNameSessionByIdSuspendWithResponse request
 	PostV0CityByCityNameSessionByIdSuspendWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdSuspendParams, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdSuspendResponse, error)
+
+	// GetV0CityByCityNameSessionByIdTerminalWithResponse request
+	GetV0CityByCityNameSessionByIdTerminalWithResponse(ctx context.Context, cityName string, id string, params *GetV0CityByCityNameSessionByIdTerminalParams, reqEditors ...RequestEditorFn) (*GetV0CityByCityNameSessionByIdTerminalResponse, error)
+
+	// PostV0CityByCityNameSessionByIdTerminalDetachWithResponse request
+	PostV0CityByCityNameSessionByIdTerminalDetachWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalDetachParams, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdTerminalDetachResponse, error)
+
+	// PostV0CityByCityNameSessionByIdTerminalInputWithBodyWithResponse request with any body
+	PostV0CityByCityNameSessionByIdTerminalInputWithBodyWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalInputParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdTerminalInputResponse, error)
+
+	PostV0CityByCityNameSessionByIdTerminalInputWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalInputParams, body PostV0CityByCityNameSessionByIdTerminalInputJSONRequestBody, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdTerminalInputResponse, error)
+
+	// PostV0CityByCityNameSessionByIdTerminalInterruptWithResponse request
+	PostV0CityByCityNameSessionByIdTerminalInterruptWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalInterruptParams, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdTerminalInterruptResponse, error)
+
+	// PostV0CityByCityNameSessionByIdTerminalKeysWithBodyWithResponse request with any body
+	PostV0CityByCityNameSessionByIdTerminalKeysWithBodyWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalKeysParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdTerminalKeysResponse, error)
+
+	PostV0CityByCityNameSessionByIdTerminalKeysWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalKeysParams, body PostV0CityByCityNameSessionByIdTerminalKeysJSONRequestBody, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdTerminalKeysResponse, error)
+
+	// PostV0CityByCityNameSessionByIdTerminalResizeWithBodyWithResponse request with any body
+	PostV0CityByCityNameSessionByIdTerminalResizeWithBodyWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalResizeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdTerminalResizeResponse, error)
+
+	PostV0CityByCityNameSessionByIdTerminalResizeWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalResizeParams, body PostV0CityByCityNameSessionByIdTerminalResizeJSONRequestBody, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdTerminalResizeResponse, error)
 
 	// GetV0CityByCityNameSessionByIdTranscriptWithResponse request
 	GetV0CityByCityNameSessionByIdTranscriptWithResponse(ctx context.Context, cityName string, id string, params *GetV0CityByCityNameSessionByIdTranscriptParams, reqEditors ...RequestEditorFn) (*GetV0CityByCityNameSessionByIdTranscriptResponse, error)
@@ -35301,6 +35968,184 @@ func (r PostV0CityByCityNameSessionByIdSuspendResponse) StatusCode() int {
 	return 0
 }
 
+type GetV0CityByCityNameSessionByIdTerminalResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *SessionTerminalSnapshotBody
+	ApplicationproblemJSON404 *ErrorModel
+	ApplicationproblemJSON409 *ErrorModel
+	ApplicationproblemJSON422 *ErrorModel
+	ApplicationproblemJSON500 *ErrorModel
+	ApplicationproblemJSON501 *ErrorModel
+	ApplicationproblemJSON503 *ErrorModel
+}
+
+// Status returns HTTPResponse.Status
+func (r GetV0CityByCityNameSessionByIdTerminalResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetV0CityByCityNameSessionByIdTerminalResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type PostV0CityByCityNameSessionByIdTerminalDetachResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *SessionTerminalActionBody
+	ApplicationproblemJSON401 *ErrorModel
+	ApplicationproblemJSON403 *ErrorModel
+	ApplicationproblemJSON404 *ErrorModel
+	ApplicationproblemJSON409 *ErrorModel
+	ApplicationproblemJSON422 *ErrorModel
+	ApplicationproblemJSON500 *ErrorModel
+	ApplicationproblemJSON501 *ErrorModel
+	ApplicationproblemJSON503 *ErrorModel
+}
+
+// Status returns HTTPResponse.Status
+func (r PostV0CityByCityNameSessionByIdTerminalDetachResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostV0CityByCityNameSessionByIdTerminalDetachResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type PostV0CityByCityNameSessionByIdTerminalInputResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *SessionTerminalActionBody
+	ApplicationproblemJSON401 *ErrorModel
+	ApplicationproblemJSON403 *ErrorModel
+	ApplicationproblemJSON404 *ErrorModel
+	ApplicationproblemJSON409 *ErrorModel
+	ApplicationproblemJSON422 *ErrorModel
+	ApplicationproblemJSON500 *ErrorModel
+	ApplicationproblemJSON501 *ErrorModel
+	ApplicationproblemJSON503 *ErrorModel
+}
+
+// Status returns HTTPResponse.Status
+func (r PostV0CityByCityNameSessionByIdTerminalInputResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostV0CityByCityNameSessionByIdTerminalInputResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type PostV0CityByCityNameSessionByIdTerminalInterruptResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *SessionTerminalActionBody
+	ApplicationproblemJSON401 *ErrorModel
+	ApplicationproblemJSON403 *ErrorModel
+	ApplicationproblemJSON404 *ErrorModel
+	ApplicationproblemJSON409 *ErrorModel
+	ApplicationproblemJSON422 *ErrorModel
+	ApplicationproblemJSON500 *ErrorModel
+	ApplicationproblemJSON501 *ErrorModel
+	ApplicationproblemJSON503 *ErrorModel
+}
+
+// Status returns HTTPResponse.Status
+func (r PostV0CityByCityNameSessionByIdTerminalInterruptResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostV0CityByCityNameSessionByIdTerminalInterruptResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type PostV0CityByCityNameSessionByIdTerminalKeysResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *SessionTerminalActionBody
+	ApplicationproblemJSON401 *ErrorModel
+	ApplicationproblemJSON403 *ErrorModel
+	ApplicationproblemJSON404 *ErrorModel
+	ApplicationproblemJSON409 *ErrorModel
+	ApplicationproblemJSON422 *ErrorModel
+	ApplicationproblemJSON500 *ErrorModel
+	ApplicationproblemJSON501 *ErrorModel
+	ApplicationproblemJSON503 *ErrorModel
+}
+
+// Status returns HTTPResponse.Status
+func (r PostV0CityByCityNameSessionByIdTerminalKeysResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostV0CityByCityNameSessionByIdTerminalKeysResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type PostV0CityByCityNameSessionByIdTerminalResizeResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *SessionTerminalActionBody
+	ApplicationproblemJSON401 *ErrorModel
+	ApplicationproblemJSON403 *ErrorModel
+	ApplicationproblemJSON404 *ErrorModel
+	ApplicationproblemJSON409 *ErrorModel
+	ApplicationproblemJSON422 *ErrorModel
+	ApplicationproblemJSON500 *ErrorModel
+	ApplicationproblemJSON501 *ErrorModel
+	ApplicationproblemJSON503 *ErrorModel
+}
+
+// Status returns HTTPResponse.Status
+func (r PostV0CityByCityNameSessionByIdTerminalResizeResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostV0CityByCityNameSessionByIdTerminalResizeResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type GetV0CityByCityNameSessionByIdTranscriptResponse struct {
 	Body                      []byte
 	HTTPResponse              *http.Response
@@ -37382,6 +38227,84 @@ func (c *ClientWithResponses) PostV0CityByCityNameSessionByIdSuspendWithResponse
 		return nil, err
 	}
 	return ParsePostV0CityByCityNameSessionByIdSuspendResponse(rsp)
+}
+
+// GetV0CityByCityNameSessionByIdTerminalWithResponse request returning *GetV0CityByCityNameSessionByIdTerminalResponse
+func (c *ClientWithResponses) GetV0CityByCityNameSessionByIdTerminalWithResponse(ctx context.Context, cityName string, id string, params *GetV0CityByCityNameSessionByIdTerminalParams, reqEditors ...RequestEditorFn) (*GetV0CityByCityNameSessionByIdTerminalResponse, error) {
+	rsp, err := c.GetV0CityByCityNameSessionByIdTerminal(ctx, cityName, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetV0CityByCityNameSessionByIdTerminalResponse(rsp)
+}
+
+// PostV0CityByCityNameSessionByIdTerminalDetachWithResponse request returning *PostV0CityByCityNameSessionByIdTerminalDetachResponse
+func (c *ClientWithResponses) PostV0CityByCityNameSessionByIdTerminalDetachWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalDetachParams, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdTerminalDetachResponse, error) {
+	rsp, err := c.PostV0CityByCityNameSessionByIdTerminalDetach(ctx, cityName, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostV0CityByCityNameSessionByIdTerminalDetachResponse(rsp)
+}
+
+// PostV0CityByCityNameSessionByIdTerminalInputWithBodyWithResponse request with arbitrary body returning *PostV0CityByCityNameSessionByIdTerminalInputResponse
+func (c *ClientWithResponses) PostV0CityByCityNameSessionByIdTerminalInputWithBodyWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalInputParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdTerminalInputResponse, error) {
+	rsp, err := c.PostV0CityByCityNameSessionByIdTerminalInputWithBody(ctx, cityName, id, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostV0CityByCityNameSessionByIdTerminalInputResponse(rsp)
+}
+
+func (c *ClientWithResponses) PostV0CityByCityNameSessionByIdTerminalInputWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalInputParams, body PostV0CityByCityNameSessionByIdTerminalInputJSONRequestBody, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdTerminalInputResponse, error) {
+	rsp, err := c.PostV0CityByCityNameSessionByIdTerminalInput(ctx, cityName, id, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostV0CityByCityNameSessionByIdTerminalInputResponse(rsp)
+}
+
+// PostV0CityByCityNameSessionByIdTerminalInterruptWithResponse request returning *PostV0CityByCityNameSessionByIdTerminalInterruptResponse
+func (c *ClientWithResponses) PostV0CityByCityNameSessionByIdTerminalInterruptWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalInterruptParams, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdTerminalInterruptResponse, error) {
+	rsp, err := c.PostV0CityByCityNameSessionByIdTerminalInterrupt(ctx, cityName, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostV0CityByCityNameSessionByIdTerminalInterruptResponse(rsp)
+}
+
+// PostV0CityByCityNameSessionByIdTerminalKeysWithBodyWithResponse request with arbitrary body returning *PostV0CityByCityNameSessionByIdTerminalKeysResponse
+func (c *ClientWithResponses) PostV0CityByCityNameSessionByIdTerminalKeysWithBodyWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalKeysParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdTerminalKeysResponse, error) {
+	rsp, err := c.PostV0CityByCityNameSessionByIdTerminalKeysWithBody(ctx, cityName, id, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostV0CityByCityNameSessionByIdTerminalKeysResponse(rsp)
+}
+
+func (c *ClientWithResponses) PostV0CityByCityNameSessionByIdTerminalKeysWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalKeysParams, body PostV0CityByCityNameSessionByIdTerminalKeysJSONRequestBody, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdTerminalKeysResponse, error) {
+	rsp, err := c.PostV0CityByCityNameSessionByIdTerminalKeys(ctx, cityName, id, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostV0CityByCityNameSessionByIdTerminalKeysResponse(rsp)
+}
+
+// PostV0CityByCityNameSessionByIdTerminalResizeWithBodyWithResponse request with arbitrary body returning *PostV0CityByCityNameSessionByIdTerminalResizeResponse
+func (c *ClientWithResponses) PostV0CityByCityNameSessionByIdTerminalResizeWithBodyWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalResizeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdTerminalResizeResponse, error) {
+	rsp, err := c.PostV0CityByCityNameSessionByIdTerminalResizeWithBody(ctx, cityName, id, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostV0CityByCityNameSessionByIdTerminalResizeResponse(rsp)
+}
+
+func (c *ClientWithResponses) PostV0CityByCityNameSessionByIdTerminalResizeWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameSessionByIdTerminalResizeParams, body PostV0CityByCityNameSessionByIdTerminalResizeJSONRequestBody, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameSessionByIdTerminalResizeResponse, error) {
+	rsp, err := c.PostV0CityByCityNameSessionByIdTerminalResize(ctx, cityName, id, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostV0CityByCityNameSessionByIdTerminalResizeResponse(rsp)
 }
 
 // GetV0CityByCityNameSessionByIdTranscriptWithResponse request returning *GetV0CityByCityNameSessionByIdTranscriptResponse
@@ -46802,6 +47725,484 @@ func ParsePostV0CityByCityNameSessionByIdSuspendResponse(rsp *http.Response) (*P
 			return nil, err
 		}
 		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetV0CityByCityNameSessionByIdTerminalResponse parses an HTTP response from a GetV0CityByCityNameSessionByIdTerminalWithResponse call
+func ParseGetV0CityByCityNameSessionByIdTerminalResponse(rsp *http.Response) (*GetV0CityByCityNameSessionByIdTerminalResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetV0CityByCityNameSessionByIdTerminalResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SessionTerminalSnapshotBody
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 501:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON501 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostV0CityByCityNameSessionByIdTerminalDetachResponse parses an HTTP response from a PostV0CityByCityNameSessionByIdTerminalDetachWithResponse call
+func ParsePostV0CityByCityNameSessionByIdTerminalDetachResponse(rsp *http.Response) (*PostV0CityByCityNameSessionByIdTerminalDetachResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostV0CityByCityNameSessionByIdTerminalDetachResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SessionTerminalActionBody
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 501:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON501 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostV0CityByCityNameSessionByIdTerminalInputResponse parses an HTTP response from a PostV0CityByCityNameSessionByIdTerminalInputWithResponse call
+func ParsePostV0CityByCityNameSessionByIdTerminalInputResponse(rsp *http.Response) (*PostV0CityByCityNameSessionByIdTerminalInputResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostV0CityByCityNameSessionByIdTerminalInputResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SessionTerminalActionBody
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 501:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON501 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostV0CityByCityNameSessionByIdTerminalInterruptResponse parses an HTTP response from a PostV0CityByCityNameSessionByIdTerminalInterruptWithResponse call
+func ParsePostV0CityByCityNameSessionByIdTerminalInterruptResponse(rsp *http.Response) (*PostV0CityByCityNameSessionByIdTerminalInterruptResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostV0CityByCityNameSessionByIdTerminalInterruptResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SessionTerminalActionBody
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 501:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON501 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostV0CityByCityNameSessionByIdTerminalKeysResponse parses an HTTP response from a PostV0CityByCityNameSessionByIdTerminalKeysWithResponse call
+func ParsePostV0CityByCityNameSessionByIdTerminalKeysResponse(rsp *http.Response) (*PostV0CityByCityNameSessionByIdTerminalKeysResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostV0CityByCityNameSessionByIdTerminalKeysResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SessionTerminalActionBody
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 501:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON501 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostV0CityByCityNameSessionByIdTerminalResizeResponse parses an HTTP response from a PostV0CityByCityNameSessionByIdTerminalResizeWithResponse call
+func ParsePostV0CityByCityNameSessionByIdTerminalResizeResponse(rsp *http.Response) (*PostV0CityByCityNameSessionByIdTerminalResizeResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostV0CityByCityNameSessionByIdTerminalResizeResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest SessionTerminalActionBody
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 501:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON501 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
 		var dest ErrorModel
