@@ -26,7 +26,7 @@ case " $* " in
     printf '%s\n' "${FAKE_REMOTE_ROOT:-/var/tmp/gascity-remote-tests.ABC123}"
     ;;
   *" bash -s -- "*)
-    cat >/dev/null
+    cat >"${FAKE_REMOTE_SCRIPT:-/dev/null}"
     printf '%s\n' '[remote] simulated shard output'
     exit "${FAKE_REMOTE_STATUS:-0}"
     ;;
@@ -49,7 +49,9 @@ chmod +x "$fake_bin/ssh" "$fake_bin/rsync"
 
 calls="$test_root/calls"
 output="$test_root/output"
+remote_script="$test_root/remote-script"
 if ! PATH="$fake_bin:$PATH" FAKE_CALLS="$calls" \
+  FAKE_REMOTE_SCRIPT="$remote_script" \
   GC_REMOTE_TEST_ARTIFACT_ROOT="$test_root/artifacts" \
   "$runner" gtr integration 12 >"$output" 2>&1; then
   fail "successful fake remote run failed: $(cat "$output")"
@@ -65,6 +67,19 @@ grep -Fq "ssh: <-o> <BatchMode=yes> <-o> <ConnectTimeout=10> <gtr> <rm -rf -- '/
   fail "allocated remote workspace was not cleaned"
 grep -Fq '[remote] simulated shard output' "$output" ||
   fail "remote output was not streamed"
+grep -Fq 'git init -q' "$remote_script" ||
+  fail "remote workspace was not initialized as a Git repository"
+grep -Fq 'git config commit.gpgsign false' "$remote_script" ||
+  fail "remote snapshot did not disable unavailable commit signing"
+# shellcheck disable=SC2016 # Match literal variables in the transmitted script.
+grep -Fq 'run_home="$remote_root/home"' "$remote_script" ||
+  fail "remote shards did not receive a run-scoped home"
+# shellcheck disable=SC2016 # Match literal variables in the transmitted script.
+grep -Fq 'export GOCACHE="$host_gocache"' "$remote_script" ||
+  fail "run-scoped home did not retain the shared remote Go cache"
+# shellcheck disable=SC2016 # Match literal variables in the transmitted script.
+grep -Fq 'go env -w CGO_ENABLED="$remote_cgo"' "$remote_script" ||
+  fail "remote CGO selection was not persisted for sanitized shard jobs"
 grep -Fq 'artifacts:' "$output" || fail "artifact location was not reported"
 
 : >"$calls"

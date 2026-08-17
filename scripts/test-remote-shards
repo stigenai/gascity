@@ -119,14 +119,51 @@ for dependency in go git; do
     exit 1
   fi
 done
+
+# Keep user-level Git preferences and credentials out of subprocess tests. Go
+# caches remain explicitly attached to the host account so repeated shard runs
+# still benefit from warm compilation artifacts.
+host_gopath="$(go env GOPATH)"
+host_gocache="$(go env GOCACHE)"
+host_gomodcache="$(go env GOMODCACHE)"
+host_gotmpdir="$(go env GOTMPDIR)"
+run_home="$remote_root/home"
+mkdir -p "$run_home"
+git config --file "$run_home/.gitconfig" user.name "Gas City remote test runner"
+git config --file "$run_home/.gitconfig" user.email "remote-tests@gascity.invalid"
+git config --file "$run_home/.gitconfig" commit.gpgsign false
+export HOME="$run_home"
+export GOPATH="$host_gopath"
+export GOCACHE="$host_gocache"
+export GOMODCACHE="$host_gomodcache"
+if [[ -n "$host_gotmpdir" ]]; then
+  export GOTMPDIR="$host_gotmpdir"
+fi
+
+# The source transfer intentionally excludes the caller's worktree metadata.
+# Create a real, unsigned snapshot so Go VCS stamping and Git-aware tests see a
+# valid repository without depending on remote network access or credentials.
+git init -q
+git config user.name "Gas City remote test runner"
+git config user.email "remote-tests@gascity.invalid"
+git config commit.gpgsign false
+git add -A
+git commit -q --no-gpg-sign -m "remote test snapshot"
+
+# test-local-parallel sanitizes each shard's environment. A run-scoped GOENV
+# keeps the requested CGO setting visible to those children without changing
+# the remote account's machine-wide Go configuration.
+goenv_file="$remote_root/goenv"
+export GOENV="$goenv_file"
+go env -w CGO_ENABLED="$remote_cgo"
+
 if [[ "$remote_jobs" == auto ]]; then
   remote_jobs="$(./scripts/test-local-job-count)"
 fi
 
 echo "remote host: $(hostname)"
 echo "remote jobs: $remote_jobs"
-CGO_ENABLED="$remote_cgo" \
-  LOCAL_TEST_JOBS="$remote_jobs" \
+LOCAL_TEST_JOBS="$remote_jobs" \
   LOCAL_TEST_LOG_DIR="$remote_root/logs" \
   ./scripts/test-local-parallel "$mode"
 REMOTE
