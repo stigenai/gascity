@@ -72,6 +72,39 @@ type SessionItem struct {
 	Content []ContentBlock `json:"content"`
 }
 
+type sessionItemWire struct {
+	ID      string          `json:"id"`
+	Type    string          `json:"type"`
+	Role    string          `json:"role"`
+	Content []ContentBlock  `json:"content"`
+	Data    sessionItemData `json:"data"`
+}
+
+type sessionItemData struct {
+	Role    string         `json:"role"`
+	Content []ContentBlock `json:"content"`
+}
+
+// UnmarshalJSON accepts the pinned Omnigent item envelope and the earlier
+// flat compatibility shape while keeping one typed representation internally.
+func (i *SessionItem) UnmarshalJSON(data []byte) error {
+	var wire sessionItemWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	i.ID = wire.ID
+	i.Type = wire.Type
+	i.Role = wire.Role
+	i.Content = wire.Content
+	if i.Role == "" {
+		i.Role = wire.Data.Role
+	}
+	if len(i.Content) == 0 {
+		i.Content = wire.Data.Content
+	}
+	return nil
+}
+
 // ContentBlock is a typed text-bearing item block. Unknown non-text fields are
 // ignored at this external wire edge.
 type ContentBlock struct {

@@ -55,7 +55,7 @@ profiles:
     backend: compatible-gateway
     network: external-model
     agent: agents/primary.yaml
-    environment: [HOME, CLAUDE_PRIMARY_TOKEN]
+    environment: [CLAUDE_PRIMARY_TOKEN]
 `, executable, sum)
 	catalogPath := filepath.Join(configDir, "profiles.yaml")
 	if err := os.WriteFile(catalogPath, []byte(catalogText), 0o600); err != nil {
@@ -105,19 +105,20 @@ profiles:
 		t.Fatalf("host must remain foreground-supervised: %v", prepared.Plan.HostArgs)
 	}
 	env := envListMap(prepared.Plan.Env)
-	if env["HOME"] != "/operator/home" || env["CLAUDE_PRIMARY_TOKEN"] != "fixture-secret-value" {
+	if env["HOME"] != prepared.Paths.DataDir || env["CLAUDE_PRIMARY_TOKEN"] != "fixture-secret-value" {
 		t.Fatalf("explicit environment missing: keys=%v", sortedMapKeys(env))
 	}
 	if _, ok := env["UNRELATED_SECRET"]; ok {
 		t.Fatal("unrelated ambient secret forwarded")
 	}
 	for key, want := range map[string]string{
-		"OMNIGENT_CONFIG_HOME":          prepared.Paths.ConfigDir,
-		"OMNIGENT_DATA_DIR":             prepared.Paths.DataDir,
-		"OMNIGENT_NO_UPDATE_CHECK":      "1",
-		"OMNIGENT_DISABLE_TELEMETRY":    "true",
-		"OMNIGENT_TELEMETRY_ENABLED":    "0",
-		"OMNIGENT_OTEL_CAPTURE_CONTENT": "0",
+		"OMNIGENT_CONFIG_HOME":            prepared.Paths.ConfigDir,
+		"OMNIGENT_DATA_DIR":               prepared.Paths.DataDir,
+		"OMNIGENT_NO_UPDATE_CHECK":        "1",
+		"OMNIGENT_DISABLE_TELEMETRY":      "true",
+		"OMNIGENT_TELEMETRY_ENABLED":      "0",
+		"OMNIGENT_OTEL_CAPTURE_CONTENT":   "0",
+		"OMNIGENT_RUNNER_ENV_PASSTHROUGH": "CLAUDE_PRIMARY_TOKEN",
 	} {
 		if env[key] != want {
 			t.Fatalf("env[%s] = %q, want %q", key, env[key], want)
@@ -128,6 +129,20 @@ profiles:
 		if err != nil || info.Mode().Perm() != 0o700 {
 			t.Fatalf("mode %s = %v, %v; want 0700", path, infoMode(info), err)
 		}
+	}
+}
+
+func TestSelectReadySidecarHostRejectsStaleRegistryRows(t *testing.T) {
+	connected := sidecarGatewayInference{}
+	if got, err := selectReadySidecarHost([]sidecarHost{{
+		ID: "host_stale", Owner: "local", Status: "online",
+	}}); err != nil || got != "" {
+		t.Fatalf("stale host selection = %q, %v", got, err)
+	}
+	if got, err := selectReadySidecarHost([]sidecarHost{{
+		ID: "host_connected", Owner: "local", Status: "online", GatewayInference: &connected,
+	}}); err != nil || got != "host_connected" {
+		t.Fatalf("connected host selection = %q, %v", got, err)
 	}
 }
 
@@ -916,7 +931,7 @@ func TestSidecarChildHelper(_ *testing.T) {
 		}
 		if r.URL.Path == "/v1/hosts" {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"hosts":[{"host_id":"host_fixture","owner":"local","status":"online"}]}`)
+			_, _ = io.WriteString(w, `{"hosts":[{"host_id":"host_fixture","owner":"local","status":"online","gateway_inference":{}}]}`)
 			return
 		}
 		if r.URL.Path != "/health" {
@@ -997,7 +1012,7 @@ func (c *persistentSidecarChild) serveHTTP(w http.ResponseWriter, r *http.Reques
 	case r.Method == http.MethodGet && r.URL.Path == "/health":
 		writePersistentSidecarJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/hosts":
-		writePersistentSidecarJSON(w, http.StatusOK, map[string]any{"hosts": []map[string]string{{"host_id": "host_persisted", "owner": "local", "status": "online"}}})
+		writePersistentSidecarJSON(w, http.StatusOK, map[string]any{"hosts": []map[string]any{{"host_id": "host_persisted", "owner": "local", "status": "online", "gateway_inference": map[string]bool{}}}})
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/agents":
 		writePersistentSidecarJSON(w, http.StatusOK, map[string]any{
 			"data": []Agent{{ID: "ag_fixture", Name: "fixture-agent", Harness: "codex"}}, "has_more": false,

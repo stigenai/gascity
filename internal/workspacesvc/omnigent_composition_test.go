@@ -258,7 +258,7 @@ func runOmnigentCompositionHelper(mode string) {
 					_, _ = io.WriteString(w, `{"hosts":[]}`)
 					return
 				}
-				_, _ = io.WriteString(w, `{"hosts":[{"host_id":"host_composition","owner":"local","status":"online"}]}`)
+				_, _ = io.WriteString(w, `{"hosts":[{"host_id":"host_composition","owner":"local","status":"online","gateway_inference":{}}]}`)
 				return
 			}
 			if r.URL.Path != "/health" {

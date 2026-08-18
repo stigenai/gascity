@@ -3,7 +3,7 @@ description: Generic coding worker using the operator's local Codex profile.
 
 executor:
   harness: codex
-  model: openai/gpt-5.4
+  model: gpt-5.4
 
 prompt: |
   Work only on the task assigned by Gas City in the current workspace. Report

@@ -3,10 +3,6 @@ description: Generic coding worker using the independently authenticated backup 
 
 executor:
   harness: claude-sdk
-  model: anthropic/claude-sonnet-4-20250514
-  auth:
-    type: provider
-    name: claude-secondary
 
 prompt: |
   Work only on the task assigned by Gas City in the current workspace. Report

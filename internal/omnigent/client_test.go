@@ -121,6 +121,26 @@ func TestAPIClientSessionLifecycleUsesExternalWorkspaceAndTypedEvents(t *testing
 	}
 }
 
+func TestSessionItemDecodesPinnedNestedAndLegacyFlatWireShapes(t *testing.T) {
+	data := []byte(`[
+		{"id":"nested","type":"message","data":{"role":"assistant","content":[{"type":"output_text","text":"nested answer"}]}},
+		{"id":"flat","type":"message","role":"user","content":[{"type":"input_text","text":"flat prompt"}]}
+	]`)
+	var items []SessionItem
+	if err := json.Unmarshal(data, &items); err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items = %#v", items)
+	}
+	if items[0].Role != "assistant" || len(items[0].Content) != 1 || items[0].Content[0].Text != "nested answer" {
+		t.Fatalf("nested item = %#v", items[0])
+	}
+	if items[1].Role != "user" || len(items[1].Content) != 1 || items[1].Content[0].Text != "flat prompt" {
+		t.Fatalf("flat item = %#v", items[1])
+	}
+}
+
 func TestNormalizeWorkspaceResolvesExistingSymlink(t *testing.T) {
 	realRoot := t.TempDir()
 	linkRoot := filepath.Join(t.TempDir(), "workspace-link")

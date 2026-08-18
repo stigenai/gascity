@@ -40,7 +40,7 @@ type SidecarConfig struct {
 }
 
 const (
-	defaultSidecarStartupTimeout  = 4 * time.Second
+	defaultSidecarStartupTimeout  = 15 * time.Second
 	defaultSidecarShutdownTimeout = 2 * time.Second
 	sidecarHealthInterval         = 50 * time.Millisecond
 )
@@ -269,6 +269,7 @@ func availableAgentPaths(catalog *Catalog, lookup func(string) (string, bool)) [
 
 func sidecarChildEnvironment(catalog *Catalog, paths SidecarPaths, lookup func(string) (string, bool)) []string {
 	values := map[string]string{
+		"HOME":                          paths.DataDir,
 		"OMNIGENT_CONFIG_HOME":          paths.ConfigDir,
 		"OMNIGENT_DATA_DIR":             paths.DataDir,
 		"OMNIGENT_NO_UPDATE_CHECK":      "1",
@@ -282,6 +283,9 @@ func sidecarChildEnvironment(catalog *Catalog, paths SidecarPaths, lookup func(s
 		"GC_SERVICE_STATE_ROOT":         paths.Root,
 		"GC_SERVICE_SECRETS_DIR":        paths.SecretsDir,
 		"GC_SERVICE_RUN_ROOT":           paths.RunDir,
+	}
+	if names := catalog.EnvironmentNames(); len(names) > 0 {
+		values["OMNIGENT_RUNNER_ENV_PASSTHROUGH"] = strings.Join(names, ",")
 	}
 	for _, name := range []string{"PATH", "LANG", "LC_ALL", "TMPDIR", "SYSTEMROOT", "WINDIR"} {
 		if value, ok := lookup(name); ok && value != "" {
@@ -735,10 +739,13 @@ func startSidecarProcess(prepared *PreparedSidecar, args []string, stdoutTarget,
 }
 
 type sidecarHost struct {
-	ID     string `json:"host_id"`
-	Owner  string `json:"owner"`
-	Status string `json:"status"`
+	ID               string                   `json:"host_id"`
+	Owner            string                   `json:"owner"`
+	Status           string                   `json:"status"`
+	GatewayInference *sidecarGatewayInference `json:"gateway_inference"`
 }
+
+type sidecarGatewayInference struct{}
 
 func waitSidecarHostReady(ctx context.Context, client *APIClient, hostDone <-chan error, timeout time.Duration) (string, error) {
 	deadline := time.NewTimer(timeout)
@@ -752,22 +759,7 @@ func waitSidecarHostReady(ctx context.Context, client *APIClient, hostDone <-cha
 		if err := client.doJSON(ctx, http.MethodGet, "/v1/hosts", nil, &response); err != nil {
 			return "", nil
 		}
-		var online []sidecarHost
-		for _, host := range response.Hosts {
-			if host.Owner == "local" && host.Status == "online" {
-				online = append(online, host)
-			}
-		}
-		if len(online) > 1 {
-			return "", fmt.Errorf("omnigent local server reported %d online local hosts; expected exactly one supervised host", len(online))
-		}
-		if len(online) == 0 {
-			return "", nil
-		}
-		if err := validateOpaqueID("host", online[0].ID); err != nil {
-			return "", err
-		}
-		return online[0].ID, nil
+		return selectReadySidecarHost(response.Hosts)
 	}
 	for {
 		hostID, err := check()
@@ -787,6 +779,25 @@ func waitSidecarHostReady(ctx context.Context, client *APIClient, hostDone <-cha
 		case <-ticker.C:
 		}
 	}
+}
+
+func selectReadySidecarHost(hosts []sidecarHost) (string, error) {
+	var connected []sidecarHost
+	for _, host := range hosts {
+		if host.Owner == "local" && host.Status == "online" && host.GatewayInference != nil {
+			connected = append(connected, host)
+		}
+	}
+	if len(connected) > 1 {
+		return "", fmt.Errorf("omnigent local server reported %d connected local hosts; expected exactly one supervised host", len(connected))
+	}
+	if len(connected) == 0 {
+		return "", nil
+	}
+	if err := validateOpaqueID("host", connected[0].ID); err != nil {
+		return "", err
+	}
+	return connected[0].ID, nil
 }
 
 func reserveLoopbackPort() (int, error) {

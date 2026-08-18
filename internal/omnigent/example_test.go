@@ -8,6 +8,42 @@ import (
 	"testing"
 )
 
+func TestExampleCodexProfileUsesCodexCLISlug(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve test source path")
+	}
+	path := filepath.Join(filepath.Dir(file), "..", "..", "examples", "omnigent", "agents", "codex.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(string(data)), "model: openai/") {
+		t.Fatal("Codex subscription profile must use a bare Codex CLI model slug")
+	}
+}
+
+func TestExampleClaudeProfilesDoNotReferenceUndefinedProviders(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve test source path")
+	}
+	agentDir := filepath.Join(filepath.Dir(file), "..", "..", "examples", "omnigent", "agents")
+	for _, name := range []string{"claude-primary.yaml", "claude-secondary.yaml"} {
+		data, err := os.ReadFile(filepath.Join(agentDir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := strings.ToLower(string(data))
+		if strings.Contains(text, "\nauth:\n") {
+			t.Errorf("%s references an Omnigent provider absent from local config", name)
+		}
+		if strings.Contains(text, "model: anthropic/") {
+			t.Errorf("%s hardcodes an Anthropic provider despite backend-neutral profile metadata", name)
+		}
+	}
+}
+
 func TestExampleCatalogIsCredentialFreeAndDeclaresPortableProfiles(t *testing.T) {
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
