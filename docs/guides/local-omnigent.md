@@ -112,6 +112,9 @@ Unix socket; Gas City still owns placement, durable workspace and conversation
 state, secret projection, supervision, and cleanup. Omnigent does not become a
 second remote control plane.
 
+For runtime configuration, retained-state inspection, recovery, and explicit
+purge, see [Operate Remote Omnigent Capsules](/runbooks/remote-omnigent-capsules).
+
 Discover local and remote sessions from one local Herdr console:
 
 ```bash

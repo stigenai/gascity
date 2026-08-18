@@ -17,3 +17,4 @@ alive.
 ## Operate
 
 - [Operate Managed-City Dolt Endpoints](/runbooks/managed-city-endpoints) — mental model, forbidden edits, sanctioned escape hatches, and recovery recipe for the city-level Dolt endpoint architecture.
+- [Operate Remote Omnigent Capsules](/runbooks/remote-omnigent-capsules) — configure Kubernetes or SSH placement, inspect retained state, attach through Herdr, and recover without losing conversations.
