@@ -60,7 +60,43 @@ key = ".credentials.json"
 path = "/srv/gascity/secrets/claude-primary"
 ```
 
-The `id` must match the selected catalog profile's `secret_references` entry. Repeat the provider and Agent block for `claude-secondary`, using a different ID, Secret, mount path, and SSH path. The profile's display name, blurb, harness, and backend remain non-secret status metadata, so a Claude-compatible backend does not need to identify itself as Anthropic.
+The `id` must match the selected catalog profile's `secret_references` entry.
+Repeat the provider and Agent block for `claude-secondary`, using a different
+ID, Secret, mount path, and SSH path.
+
+Codex uses the same typed boundary with its own home projection:
+
+```toml
+[providers.omnigent-codex]
+base = "provider:omnigent"
+
+[providers.omnigent-codex.option_defaults]
+profile = "codex"
+
+[[agent]]
+name = "remote-implementer"
+provider = "omnigent-codex"
+
+[[agent.secret]]
+id = "codex-home"
+environment = "CODEX_HOME"
+mount_path = "/run/gascity/omnigent/credentials/codex"
+
+[agent.secret.kubernetes]
+name = "codex-auth"
+key = "auth.json"
+
+[agent.secret.ssh]
+path = "/srv/gascity/secrets/codex"
+```
+
+Keep `codex-home` separate from both Claude profile sources. The released
+agent image supplies the pinned Codex executable; the projection supplies
+only that profile's operator-managed authentication.
+
+A profile's display name, blurb, harness, and backend remain non-secret status
+metadata, so a Claude-compatible backend does not need to identify itself as
+Anthropic.
 
 Select Kubernetes city-wide:
 
