@@ -352,16 +352,22 @@ on_exhausted = "hard_fail"
 	if !traceHasLineWithAll(trace,
 		"exit-after-claim bead="+attempt2.ID,
 		"ref="+attempt2.Ref,
+	) {
+		t.Fatalf("first attempt-2 process did not reach injected post-claim crash:\n%s", trace)
+	}
+	if !traceHasLineWithAll(trace,
+		"run bead="+attempt2.ID,
+		"ref="+attempt2.Ref,
 		"trigger_bead="+attempt2.ID,
 	) {
-		t.Fatalf("first attempt-2 process did not receive fresh trigger identity:\n%s", trace)
+		t.Fatalf("reclaimed attempt-2 process did not receive fresh trigger identity before execution:\n%s", trace)
 	}
 	attempt1Token := traceFieldForLineWithAll(trace, "instance_token",
 		"run bead="+attempt1.ID,
 		"ref="+attempt1.Ref,
 	)
 	attempt2Token := traceFieldForLineWithAll(trace, "instance_token",
-		"exit-after-claim bead="+attempt2.ID,
+		"run bead="+attempt2.ID,
 		"ref="+attempt2.Ref,
 	)
 	if attempt1Token == "" || attempt2Token == "" || attempt1Token == attempt2Token {

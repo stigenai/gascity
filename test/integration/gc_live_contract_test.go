@@ -1335,7 +1335,7 @@ func runLiveContractReadSweep(t *testing.T, baseURL string, v openapivalidator.V
 			if probe.skipReason != "" {
 				t.Skip(probe.skipReason)
 			}
-			liveContractRequest(t, baseURL, v, http.MethodGet, probe.path, nil, http.StatusOK)
+			liveContractRequestOneOf(t, baseURL, v, http.MethodGet, probe.path, nil, liveContractReadProbeStatuses(probe.pathTemplate))
 		})
 	}
 }
@@ -1412,6 +1412,27 @@ func liveContractProbeSkipReason(pathTemplate string) string {
 		return "requires [maintenance.dolt] enabled=true in city.toml"
 	default:
 		return ""
+	}
+}
+
+func liveContractReadProbeStatuses(pathTemplate string) []int {
+	if strings.HasSuffix(pathTemplate, "/omnigent/capsule-state") {
+		return []int{http.StatusOK, http.StatusNotImplemented}
+	}
+	return []int{http.StatusOK}
+}
+
+func TestLiveContractReadProbeStatuses(t *testing.T) {
+	t.Parallel()
+
+	got := liveContractReadProbeStatuses("/v0/city/{cityName}/omnigent/capsule-state")
+	if len(got) != 2 || got[0] != http.StatusOK || got[1] != http.StatusNotImplemented {
+		t.Fatalf("capsule-state read statuses = %v, want [200 501]", got)
+	}
+
+	got = liveContractReadProbeStatuses("/v0/city/{cityName}/status")
+	if len(got) != 1 || got[0] != http.StatusOK {
+		t.Fatalf("ordinary read statuses = %v, want [200]", got)
 	}
 }
 

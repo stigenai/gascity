@@ -424,10 +424,16 @@ func TestEnsureSessionFresh_ZombieSession(t *testing.T) {
 	}
 
 	// Verify generic agent check also treats it as not running (shell session).
-	// Allow a brief settle time — tmux pane command may not be stable immediately.
-	time.Sleep(200 * time.Millisecond)
+	// A newly created zsh may briefly report a foreground startup helper as the
+	// pane command, especially on loaded Linux hosts. Wait for the shell prompt
+	// boundary instead of treating that transient helper as an agent.
+	deadline := time.Now().Add(5 * time.Second)
+	for tm.IsAgentRunning(sessionName) && time.Now().Before(deadline) {
+		time.Sleep(25 * time.Millisecond)
+	}
 	if tm.IsAgentRunning(sessionName) {
-		t.Fatalf("expected IsAgentRunning(%q) to be false for a fresh shell session", sessionName)
+		command, _ := tm.GetPaneCommand(sessionName)
+		t.Fatalf("expected IsAgentRunning(%q) to be false for a fresh shell session; pane command=%q", sessionName, command)
 	}
 
 	// EnsureSessionFresh should kill the zombie and create fresh session
