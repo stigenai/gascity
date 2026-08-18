@@ -4731,7 +4731,11 @@ func resolveTemplatePrepared(bp *agentBuildParams, cfgAgent *config.Agent, quali
 		return TemplateParams{}, err
 	}
 	prepareTemplateResolution(bp, cfgAgent, qualifiedName, bp.stderr)
-	return resolveTemplate(bp, cfgAgent, qualifiedName, fpExtra)
+	tp, err := resolveTemplate(bp, cfgAgent, qualifiedName, fpExtra)
+	if err != nil {
+		return TemplateParams{}, err
+	}
+	return materializeOmnigentCapsule(bp, tp)
 }
 
 func validateAgentSessionTransportForBuild(bp *agentBuildParams, cfgAgent *config.Agent, qualifiedName string) error {

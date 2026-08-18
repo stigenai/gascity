@@ -115,6 +115,36 @@ func validateResolvedProviderOptions(name string, resolved ResolvedProvider) err
 	if err := ValidateOptionDefaults(resolved.OptionsSchema, resolved.EffectiveDefaults); err != nil {
 		return fmt.Errorf("provider %q option_defaults: %w", name, err)
 	}
+	if err := validateResolvedProviderCapsule(resolved); err != nil {
+		return fmt.Errorf("provider %q: %w", name, err)
+	}
+	return nil
+}
+
+func validateResolvedProviderCapsule(resolved ResolvedProvider) error {
+	capsule := resolved.Capsule
+	if capsule.Kind == "" && capsule.ProfileOption == "" && capsule.Catalog == "" {
+		return nil
+	}
+	if capsule.Kind != "omnigent" {
+		return fmt.Errorf("capsule kind %q is unsupported", capsule.Kind)
+	}
+	if strings.TrimSpace(capsule.ProfileOption) == "" {
+		return errors.New("capsule profile_option is required")
+	}
+	foundProfileOption := false
+	for _, option := range resolved.OptionsSchema {
+		if option.Key == capsule.ProfileOption {
+			foundProfileOption = true
+			break
+		}
+	}
+	if !foundProfileOption {
+		return fmt.Errorf("capsule profile_option %q is not declared in options_schema", capsule.ProfileOption)
+	}
+	if strings.TrimSpace(capsule.Catalog) == "" {
+		return errors.New("capsule catalog is required")
+	}
 	return nil
 }
 

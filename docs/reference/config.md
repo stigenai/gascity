@@ -648,6 +648,16 @@ PoolOverride modifies legacy [pool] fields that map to session scaling.
 | `on_death` | string |  |  | OnDeath overrides the on_death command template. Supports the same Go template placeholders as Agent.on_death. |
 | `on_boot` | string |  |  | OnBoot overrides the on_boot command template. Supports the same Go template placeholders as Agent.on_boot. |
 
+## ProviderCapsuleSpec
+
+ProviderCapsuleSpec declares an optional provider-specific remote capsule adapter.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `kind` | string |  |  | Kind identifies the local compatibility adapter. "omnigent" is the currently supported adapter; an empty kind disables capsule handling. Enum: `omnigent` |
+| `profile_option` | string |  |  | ProfileOption names the provider option whose effective default selects the capsule-local profile. |
+| `catalog` | string |  |  | Catalog is a city-relative path to the pinned local profile catalog. |
+
 ## ProviderOption
 
 ProviderOption declares a single configurable option for a provider.
@@ -668,6 +678,7 @@ ProviderPatch modifies an existing provider identified by Name.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `name` | string | **yes** |  | Name is the targeting key (required). Must match an existing provider's name. |
+| `capsule` | ProviderCapsuleSpec |  |  | Capsule replaces the provider's capsule adapter declaration. |
 | `base` | string |  |  | Base overrides the provider's inheritance parent (presence-aware). Pointer to a pointer so the patch can distinguish "no change" (double-nil) from "clear to inherit default" (single-nil value in outer pointer) from "set to explicit empty opt-out" (value "" in inner pointer) from "set to &lt;name&gt;". Callers use:   nil          = patch does not touch Base   &(*string)(nil) = patch clears Base to absent   &(&"")       = patch sets Base = "" (explicit opt-out)   &(&"builtin:codex") = patch sets Base to that value |
 | `command` | string |  |  | Command overrides the provider command. |
 | `acp_command` | string |  |  | ACPCommand overrides the provider command for ACP transport sessions. |
@@ -693,6 +704,7 @@ ProviderSpec defines a named provider's startup parameters.
 | `args_append` | []string |  |  | ArgsAppend accumulates extra args after each layer's Args replacement. |
 | `options_schema_merge` | string |  |  | OptionsSchemaMerge controls OptionsSchema merge mode across the chain: "replace" (default) or "by_key". Enum: `replace`, `by_key` |
 | `display_name` | string |  |  | DisplayName is the human-readable name shown in UI and logs. |
+| `capsule` | ProviderCapsuleSpec |  |  | Capsule declares an optional capsule-local compatibility adapter. |
 | `command` | string |  |  | Command is the executable to run for this provider. |
 | `args` | []string |  |  | Args are default command-line arguments passed to the provider. The built-in Kiro provider defaults to ["chat", "--no-interactive", "--agent", "gascity", "--trust-all-tools"]; remove or replace "--trust-all-tools" by defining [providers.kiro].args explicitly in city.toml. |
 | `prompt_mode` | string |  | `arg` | PromptMode controls how prompts are delivered: "arg", "flag", or "none". Enum: `arg`, `flag`, `none` |
@@ -770,7 +782,7 @@ SSHSecretPathReference identifies an owner-only credential file or directory alr
 
 ## SecretReference
 
-SecretReference maps a logical credential to one environment or mount destination.
+SecretReference maps a logical credential to an environment destination, a mount destination, or both.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|

@@ -984,6 +984,12 @@ func (m *Manager) createStarted(ctx context.Context, spec CreateOptions) (Info, 
 			cfg.Env = mergeEnv(cfg.Env, map[string]string{"GC_PROVIDER": gcProvider})
 		}
 		cfg = runtime.SyncWorkDirEnv(cfg)
+		if err := m.persistCapsuleStateIdentity(b.ID, &b, cfg.Capsule); err != nil {
+			if rbErr := rollbackFailedCreate(); rbErr != nil {
+				return errors.Join(err, rbErr)
+			}
+			return err
+		}
 
 		// Start the runtime session. Refuse to start if a prior escaped process
 		// for this session could not be confirmed dead: a survivor would race

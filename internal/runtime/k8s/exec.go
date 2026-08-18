@@ -38,6 +38,12 @@ type k8sPVCOps interface {
 	deletePVC(ctx context.Context, name string, uid types.UID) error
 }
 
+type k8sConfigMapOps interface {
+	createConfigMap(ctx context.Context, configMap *corev1.ConfigMap) (*corev1.ConfigMap, error)
+	getConfigMap(ctx context.Context, name string) (*corev1.ConfigMap, error)
+	deleteConfigMap(ctx context.Context, name string, uid types.UID) error
+}
+
 type k8sNetworkOps interface {
 	createNetworkPolicy(ctx context.Context, policy *networkingv1.NetworkPolicy) (*networkingv1.NetworkPolicy, error)
 	getNetworkPolicy(ctx context.Context, name string) (*networkingv1.NetworkPolicy, error)
@@ -103,6 +109,23 @@ func (r *realK8sOps) deletePVC(ctx context.Context, name string, uid types.UID) 
 		return fmt.Errorf("refusing to delete PVC %q without an immutable UID", name)
 	}
 	return r.clientset.CoreV1().PersistentVolumeClaims(r.namespace).Delete(ctx, name, metav1.DeleteOptions{
+		Preconditions: &metav1.Preconditions{UID: &uid},
+	})
+}
+
+func (r *realK8sOps) createConfigMap(ctx context.Context, configMap *corev1.ConfigMap) (*corev1.ConfigMap, error) {
+	return r.clientset.CoreV1().ConfigMaps(r.namespace).Create(ctx, configMap, metav1.CreateOptions{})
+}
+
+func (r *realK8sOps) getConfigMap(ctx context.Context, name string) (*corev1.ConfigMap, error) {
+	return r.clientset.CoreV1().ConfigMaps(r.namespace).Get(ctx, name, metav1.GetOptions{})
+}
+
+func (r *realK8sOps) deleteConfigMap(ctx context.Context, name string, uid types.UID) error {
+	if uid == "" {
+		return fmt.Errorf("refusing to delete ConfigMap %q without an immutable UID", name)
+	}
+	return r.clientset.CoreV1().ConfigMaps(r.namespace).Delete(ctx, name, metav1.DeleteOptions{
 		Preconditions: &metav1.Preconditions{UID: &uid},
 	})
 }
@@ -176,27 +199,31 @@ func (r *realK8sOps) execInPod(ctx context.Context, pod, container string, cmd [
 type fakeK8sOps struct {
 	pods            map[string]*corev1.Pod
 	pvcs            map[string]*corev1.PersistentVolumeClaim
+	configMaps      map[string]*corev1.ConfigMap
 	networkPolicies map[string]*networkingv1.NetworkPolicy
 	calls           []fakeCall
 	pvcMu           sync.Mutex
 
 	// Configurable behaviors.
-	execOutput       map[string]string                              // pod+cmd key → stdout
-	execErr          map[string]error                               // pod+cmd key → error
-	execFunc         func(pod string, cmd []string) (string, error) // dynamic override, checked first
-	createErr        error
-	deleteErr        error
-	getErr           error
-	listErr          error
-	pvcCreateErr     error
-	pvcGetErr        error
-	pvcListErr       error
-	pvcDeleteErr     error
-	networkCreateErr error
-	networkGetErr    error
-	networkListErr   error
-	networkDeleteErr error
-	beforeDelete     func(name string)
+	execOutput         map[string]string                              // pod+cmd key → stdout
+	execErr            map[string]error                               // pod+cmd key → error
+	execFunc           func(pod string, cmd []string) (string, error) // dynamic override, checked first
+	createErr          error
+	deleteErr          error
+	getErr             error
+	listErr            error
+	pvcCreateErr       error
+	pvcGetErr          error
+	pvcListErr         error
+	pvcDeleteErr       error
+	configMapCreateErr error
+	configMapGetErr    error
+	configMapDeleteErr error
+	networkCreateErr   error
+	networkGetErr      error
+	networkListErr     error
+	networkDeleteErr   error
+	beforeDelete       func(name string)
 }
 
 type fakeCall struct {
@@ -212,10 +239,60 @@ func newFakeK8sOps() *fakeK8sOps {
 	return &fakeK8sOps{
 		pods:            make(map[string]*corev1.Pod),
 		pvcs:            make(map[string]*corev1.PersistentVolumeClaim),
+		configMaps:      make(map[string]*corev1.ConfigMap),
 		networkPolicies: make(map[string]*networkingv1.NetworkPolicy),
 		execOutput:      make(map[string]string),
 		execErr:         make(map[string]error),
 	}
+}
+
+func (f *fakeK8sOps) createConfigMap(_ context.Context, configMap *corev1.ConfigMap) (*corev1.ConfigMap, error) {
+	f.pvcMu.Lock()
+	defer f.pvcMu.Unlock()
+	f.calls = append(f.calls, fakeCall{method: "createConfigMap", pod: configMap.Name})
+	if f.configMapCreateErr != nil {
+		return nil, f.configMapCreateErr
+	}
+	if _, exists := f.configMaps[configMap.Name]; exists {
+		return nil, apierrors.NewAlreadyExists(schema.GroupResource{Resource: "configmaps"}, configMap.Name)
+	}
+	created := configMap.DeepCopy()
+	created.UID = types.UID("fake-configmap-uid-" + created.Name)
+	created.ResourceVersion = "1"
+	f.configMaps[created.Name] = created
+	return created.DeepCopy(), nil
+}
+
+func (f *fakeK8sOps) getConfigMap(_ context.Context, name string) (*corev1.ConfigMap, error) {
+	f.pvcMu.Lock()
+	defer f.pvcMu.Unlock()
+	f.calls = append(f.calls, fakeCall{method: "getConfigMap", pod: name})
+	if f.configMapGetErr != nil {
+		return nil, f.configMapGetErr
+	}
+	configMap, ok := f.configMaps[name]
+	if !ok {
+		return nil, apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, name)
+	}
+	return configMap.DeepCopy(), nil
+}
+
+func (f *fakeK8sOps) deleteConfigMap(_ context.Context, name string, uid types.UID) error {
+	f.pvcMu.Lock()
+	defer f.pvcMu.Unlock()
+	f.calls = append(f.calls, fakeCall{method: "deleteConfigMap", pod: name, uid: uid})
+	if f.configMapDeleteErr != nil {
+		return f.configMapDeleteErr
+	}
+	configMap, ok := f.configMaps[name]
+	if !ok {
+		return apierrors.NewNotFound(schema.GroupResource{Resource: "configmaps"}, name)
+	}
+	if configMap.UID != uid {
+		return apierrors.NewConflict(schema.GroupResource{Resource: "configmaps"}, name, fmt.Errorf("UID precondition failed: expected %q, got %q", uid, configMap.UID))
+	}
+	delete(f.configMaps, name)
+	return nil
 }
 
 func (f *fakeK8sOps) createNetworkPolicy(_ context.Context, policy *networkingv1.NetworkPolicy) (*networkingv1.NetworkPolicy, error) {

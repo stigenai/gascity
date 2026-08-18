@@ -3085,11 +3085,16 @@ func TestConfigureServerReappliesExitEmptyAfterReplacement(t *testing.T) {
 	if err := provider.Start(context.Background(), "replacement-before", runtimepkg.Config{Command: "sleep 600"}); err != nil {
 		t.Fatalf("start before replacement: %v", err)
 	}
+	initialExitEmpty := mustExitEmpty(t, tmux)
 	if err := guard.CaptureServer(); err != nil {
 		t.Fatalf("capture server before replacement: %v", err)
 	}
-	if got := mustExitEmpty(t, tmux); got != "off" {
-		t.Fatalf("initial exit-empty=%q, want off", got)
+	// CaptureServer intentionally restores exit-empty=on as a test-only
+	// orphan backstop. Assert the value Start produced before the guard
+	// mutates it, but capture the PID before failing so cleanup remains
+	// ordering-safe and has a socket-independent termination path.
+	if initialExitEmpty != "off" {
+		t.Fatalf("initial exit-empty=%q, want off", initialExitEmpty)
 	}
 	if err := provider.TeardownServer(); err != nil {
 		t.Fatalf("teardown replacement server: %v", err)
@@ -3097,11 +3102,12 @@ func TestConfigureServerReappliesExitEmptyAfterReplacement(t *testing.T) {
 	if err := provider.Start(context.Background(), "replacement-after", runtimepkg.Config{Command: "sleep 600"}); err != nil {
 		t.Fatalf("start after replacement: %v", err)
 	}
+	replacementExitEmpty := mustExitEmpty(t, tmux)
 	if err := guard.CaptureServer(); err != nil {
 		t.Fatalf("capture server after replacement: %v", err)
 	}
-	if got := mustExitEmpty(t, tmux); got != "off" {
-		t.Fatalf("replacement exit-empty=%q, want off", got)
+	if replacementExitEmpty != "off" {
+		t.Fatalf("replacement exit-empty=%q, want off", replacementExitEmpty)
 	}
 }
 

@@ -222,6 +222,8 @@ type RigPatch struct {
 type ProviderPatch struct {
 	// Name is the targeting key (required). Must match an existing provider's name.
 	Name string `toml:"name" jsonschema:"required"`
+	// Capsule replaces the provider's capsule adapter declaration.
+	Capsule *ProviderCapsuleSpec `toml:"capsule,omitempty"`
 	// Base overrides the provider's inheritance parent (presence-aware).
 	// Pointer to a pointer so the patch can distinguish "no change"
 	// (double-nil) from "clear to inherit default" (single-nil value in
@@ -741,6 +743,9 @@ func applyProviderPatch(cfg *City, patch *ProviderPatch) error {
 	if patch.Replace {
 		// Full replacement — build a new spec from patch fields only.
 		var newSpec ProviderSpec
+		if patch.Capsule != nil {
+			newSpec.Capsule = *patch.Capsule
+		}
 		if patch.Base != nil {
 			newSpec.Base = *patch.Base
 		}
@@ -785,6 +790,9 @@ func applyProviderPatch(cfg *City, patch *ProviderPatch) error {
 		}
 		cfg.Providers[patch.Name] = newSpec
 		return nil
+	}
+	if patch.Capsule != nil {
+		spec.Capsule = *patch.Capsule
 	}
 	// Deep merge: only set fields override.
 	if patch.Base != nil {

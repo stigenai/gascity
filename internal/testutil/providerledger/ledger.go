@@ -200,7 +200,7 @@ func Catalog() []Entry {
 		builtin(
 			"k8s", "exact:k8s", nil,
 			waivedRuntime(
-				repoSymbol("internal/runtime/k8s", "NewSeamBacked"),
+				repoSymbol("internal/runtime/k8s", "NewSeamBackedForCity"),
 				"the actual K8s production composition has no full shared runtime contract",
 			),
 		),

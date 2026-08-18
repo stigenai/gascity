@@ -85,6 +85,12 @@ run_in_test_env() {
     GC_TEST_SHARD_INDEX="${shard_index}" \
     GC_TEST_SHARD_TOTAL="${shard_total}"
   )
+  if [[ -n "${ZDOTDIR-}" ]]; then
+    base_env+=("ZDOTDIR=$ZDOTDIR")
+  fi
+  if [[ -n "${GIT_CONFIG_GLOBAL-}" ]]; then
+    base_env+=("GIT_CONFIG_GLOBAL=$GIT_CONFIG_GLOBAL")
+  fi
   if (( ${#extra_env[@]} > 0 )); then
     env -i "${base_env[@]}" "${extra_env[@]}" "$@"
   else

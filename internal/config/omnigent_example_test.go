@@ -66,6 +66,9 @@ func TestOmnigentExamplePackDeclaresPrivateSupervisedSidecar(t *testing.T) {
 	if provider.OptionDefaults["profile"] != "offline-mock" || len(provider.OptionsSchema) != 1 {
 		t.Fatalf("profile defaults/schema = %#v / %#v", provider.OptionDefaults, provider.OptionsSchema)
 	}
+	if provider.Capsule.Kind != "omnigent" || provider.Capsule.ProfileOption != "profile" || provider.Capsule.Catalog != ".gc/services/omnigent/config/profiles.yaml" {
+		t.Fatalf("Omnigent capsule declaration = %+v", provider.Capsule)
+	}
 }
 
 func TestOmnigentImportedPackCityAliasAndAgentOverrideCompose(t *testing.T) {

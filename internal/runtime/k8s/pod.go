@@ -367,6 +367,11 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 			corev1.VolumeMount{Name: "capsule-catalog", MountPath: capsule.CatalogMountPath, ReadOnly: true},
 		)
 		catalogMode := int32(0o444)
+		catalogItems := make([]corev1.KeyToPath, len(capsule.CatalogInputs))
+		for i, input := range capsule.CatalogInputs {
+			mode := int32(input.Mode)
+			catalogItems[i] = corev1.KeyToPath{Key: capsuleCatalogInputKey(i), Path: input.RelativePath, Mode: &mode}
+		}
 		volumes = append(volumes,
 			corev1.Volume{Name: "capsule-state", VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: capsule.State.ResourceID},
@@ -379,6 +384,7 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 					LocalObjectReference: corev1.LocalObjectReference{Name: capsule.CatalogResourceID},
 					DefaultMode:          &catalogMode,
 					Optional:             boolPtr(false),
+					Items:                catalogItems,
 				},
 			}},
 		)
@@ -472,6 +478,7 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 		pod.Labels["gc-capsule"] = "true"
 		pod.Annotations["gc-capsule-digest"] = capsule.Key.Digest
 		pod.Annotations["gc-capsule-catalog-sha256"] = capsule.CatalogSHA256
+		pod.Annotations[capsuleCatalogResourceAnnotation] = capsule.CatalogResourceID
 		pod.Annotations[capsuleCityScopeAnnotation] = capsuleCityScopeFingerprint(capsule.Key.CityScope)
 		var securityExceptions []string
 		if linuxUsername != "" {

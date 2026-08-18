@@ -59,10 +59,80 @@ artifact_root="${GC_REMOTE_TEST_ARTIFACT_ROOT:-/var/tmp}"
 remote_root=""
 ssh_cmd=(ssh -o BatchMode=yes -o ConnectTimeout=10)
 
+terminate_remote_processes() {
+  local root_prefix root_suffix
+  root_prefix="${remote_root%.*}."
+  root_suffix="${remote_root##*.}"
+  "${ssh_cmd[@]}" "$host" bash -s -- "$root_prefix" "$root_suffix" <<'REMOTE_CLEANUP'
+set -euo pipefail
+
+marker="$1$2"
+export GC_REMOTE_CLEANUP_MARKER="$marker"
+self="$$"
+parent="$PPID"
+pids="$(ps -eo pid=,ppid=,args= | awk -v self="$self" -v parent="$parent" '
+BEGIN { marker=ENVIRON["GC_REMOTE_CLEANUP_MARKER"] }
+{
+  pid=$1
+  ppid=$2
+  $1=""
+  $2=""
+  args=$0
+  parent_of[pid]=ppid
+  order[++n]=pid
+  if (index(args, marker) > 0 && pid != self && pid != parent) {
+    owned[pid]=1
+  }
+}
+END {
+  changed=1
+  while (changed) {
+    changed=0
+    for (i=1; i<=n; i++) {
+      pid=order[i]
+      if (!owned[pid] && owned[parent_of[pid]]) {
+        owned[pid]=1
+        changed=1
+      }
+    }
+  }
+  for (i=1; i<=n; i++) {
+    if (owned[order[i]]) print order[i]
+  }
+}')"
+
+if [[ -n "$pids" ]]; then
+  # shellcheck disable=SC2086 # Numeric PIDs emitted by ps/awk above.
+  kill -TERM $pids 2>/dev/null || true
+  for _ in {1..20}; do
+    alive=""
+    for pid in $pids; do
+      if kill -0 "$pid" 2>/dev/null; then
+        alive="$alive $pid"
+      fi
+    done
+    [[ -z "$alive" ]] && break
+    sleep 0.1
+  done
+  if [[ -n "${alive:-}" ]]; then
+    # shellcheck disable=SC2086 # Numeric live subset of pids above.
+    kill -KILL $alive 2>/dev/null || true
+  fi
+fi
+
+if ps -eo args= | awk 'BEGIN { marker=ENVIRON["GC_REMOTE_CLEANUP_MARKER"] } index($0, marker) { found=1 } END { exit found ? 1 : 0 }'; then
+  exit 0
+fi
+echo "remote test processes still reference $marker after termination" >&2
+exit 1
+REMOTE_CLEANUP
+}
+
 # shellcheck disable=SC2329 # Invoked by the EXIT trap.
 cleanup() {
   local cleanup_status=0
   if [[ -n "$remote_root" ]]; then
+    terminate_remote_processes || cleanup_status=$?
     "${ssh_cmd[@]}" "$host" "rm -rf -- '$remote_root'" || cleanup_status=$?
   fi
   if [[ "$cleanup_status" -ne 0 ]]; then
@@ -96,6 +166,7 @@ rsync -a --from0 --files-from="$manifest" --relative \
   -e 'ssh -o BatchMode=yes -o ConnectTimeout=10' -- \
   "$repo_root/" "$host:$remote_root/repo/"
 
+test_status=0
 set +e
 "${ssh_cmd[@]}" "$host" bash -s -- \
   "$remote_root" "$mode" "$remote_jobs" "$remote_cgo" <<'REMOTE'
@@ -120,19 +191,23 @@ for dependency in go git; do
   fi
 done
 
-# Keep user-level Git preferences and credentials out of subprocess tests. Go
-# caches remain explicitly attached to the host account so repeated shard runs
-# still benefit from warm compilation artifacts.
+# Keep user-level Git preferences, credentials, Gas City state, and zsh startup
+# files out of subprocess tests. HOME itself must stay real: the Linux
+# supervisor rejects a forged HOME because user-systemd services are anchored
+# to the platform account. Go caches remain explicitly attached to that account
+# so repeated shard runs still benefit from warm compilation artifacts.
 host_gopath="$(go env GOPATH)"
 host_gocache="$(go env GOCACHE)"
 host_gomodcache="$(go env GOMODCACHE)"
 host_gotmpdir="$(go env GOTMPDIR)"
 run_home="$remote_root/home"
 mkdir -p "$run_home"
+: >"$run_home/.zshrc"
 git config --file "$run_home/.gitconfig" user.name "Gas City remote test runner"
 git config --file "$run_home/.gitconfig" user.email "remote-tests@gascity.invalid"
 git config --file "$run_home/.gitconfig" commit.gpgsign false
-export HOME="$run_home"
+export TEST_LOCAL_ZDOTDIR="$run_home"
+export TEST_LOCAL_GIT_CONFIG_GLOBAL="$run_home/.gitconfig"
 export GOPATH="$host_gopath"
 export GOCACHE="$host_gocache"
 export GOMODCACHE="$host_gomodcache"
@@ -157,6 +232,40 @@ goenv_file="$remote_root/goenv"
 export GOENV="$goenv_file"
 go env -w CGO_ENABLED="$remote_cgo"
 
+run_bin="$remote_root/bin"
+mkdir -p "$run_bin"
+export PATH="$run_bin:$PATH"
+
+tool_version_from_deps() {
+	local key="$1"
+	local count value
+	count="$(grep -c "^${key}=" deps.env || true)"
+	if [[ "$count" -ne 1 ]]; then
+		echo "deps.env must contain exactly one ${key} assignment; found $count" >&2
+		exit 1
+	fi
+	value="$(sed -n "s/^${key}=//p" deps.env)"
+	printf '%s\n' "$value"
+}
+
+beads_version="$(tool_version_from_deps BD_VERSION)"
+dolt_version="$(tool_version_from_deps DOLT_VERSION)"
+if ! [[ "$beads_version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
+	echo "invalid repository-pinned beads version: $beads_version" >&2
+	exit 1
+fi
+if ! [[ "$dolt_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
+	echo "invalid repository-pinned Dolt version: $dolt_version" >&2
+	exit 1
+fi
+
+# Use the same checksum-pinned release artifacts as CI. Building bd from
+# source would make an otherwise isolated shard run depend on host ICU headers
+# and the test CGO setting; the published binary already includes its required
+# embedded-Dolt support.
+BD_INSTALL_BIN_DIR="$run_bin" .github/scripts/install-bd-archive.sh "$beads_version"
+DOLT_INSTALL_BIN_DIR="$run_bin" .github/scripts/install-dolt-archive.sh "$dolt_version"
+
 if [[ "$remote_jobs" == auto ]]; then
   remote_jobs="$(./scripts/test-local-job-count)"
 fi
@@ -164,6 +273,7 @@ fi
 echo "remote host: $(hostname)"
 echo "remote jobs: $remote_jobs"
 LOCAL_TEST_JOBS="$remote_jobs" \
+  LOCAL_TEST_PKG_PARALLELISM="$remote_jobs" \
   LOCAL_TEST_LOG_DIR="$remote_root/logs" \
   ./scripts/test-local-parallel "$mode"
 REMOTE

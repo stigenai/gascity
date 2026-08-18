@@ -29,6 +29,11 @@ resume_flag = "--conversation"
 resume_style = "flag"
 resume_command = "gc omnigent attach --mode controller --conversation {{.SessionKey}}"
 
+[providers.omnigent.capsule]
+kind = "omnigent"
+profile_option = "profile"
+catalog = ".gc/services/omnigent/config/profiles.yaml"
+
 [[providers.omnigent.options_schema]]
 key = "profile"
 label = "Omnigent profile"

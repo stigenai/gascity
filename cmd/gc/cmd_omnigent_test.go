@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/api"
 	"github.com/gastownhall/gascity/internal/omnigent"
 )
 
@@ -41,11 +42,77 @@ func TestOmnigentCommandExposesServeWithoutRemoteOrInstallControls(t *testing.T)
 			t.Fatalf("unexpected omnigent subcommand %q", forbidden)
 		}
 	}
-	for _, expected := range []string{"serve", "attach", "explain", "status", "doctor"} {
+	for _, expected := range []string{"serve", "attach", "explain", "status", "doctor", "state"} {
 		found, _, err := cmd.Find([]string{expected})
 		if err != nil || found == cmd {
 			t.Fatalf("missing omnigent subcommand %q: %v", expected, err)
 		}
+	}
+	state, _, err := cmd.Find([]string{"state"})
+	if err != nil || state == cmd {
+		t.Fatalf("state command missing: %v", err)
+	}
+	for _, expected := range []string{"inspect", "purge"} {
+		found, _, err := state.Find([]string{expected})
+		if err != nil || found == state {
+			t.Fatalf("missing omnigent state subcommand %q: %v", expected, err)
+		}
+	}
+}
+
+func TestOmnigentStateCommandsUseTypedControllerAPI(t *testing.T) {
+	var sawPurge bool
+	srv := newCommandHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v0/city/test-city/omnigent/capsule-state":
+			_, _ = io.WriteString(w, `{"dry_run":true,"items":[{"session_id":"ga-1","action":"retained","reason":"retention_required"}],"ignored_foreign":1}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/v0/city/test-city/omnigent/capsule-state/ga-1/purge":
+			if r.Header.Get("X-GC-Request") == "" {
+				t.Error("purge request missing X-GC-Request")
+			}
+			var body struct {
+				DryRun bool `json:"dry_run"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode purge body: %v", err)
+			}
+			if !body.DryRun {
+				t.Error("purge command did not forward --dry-run")
+			}
+			sawPurge = true
+			_, _ = io.WriteString(w, `{"dry_run":true,"items":[{"session_id":"ga-1","action":"would_purge","reason":"explicit_terminal_purge"}],"ignored_foreign":0}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	client := api.NewCityScopedClient(srv.URL, "test-city")
+	oldRead, oldWrite := omnigentStateReadClientForCommand, omnigentStateWriteClientForCommand
+	omnigentStateReadClientForCommand = func() (*api.Client, error) { return client, nil }
+	omnigentStateWriteClientForCommand = func() (*api.Client, error) { return client, nil }
+	t.Cleanup(func() {
+		omnigentStateReadClientForCommand = oldRead
+		omnigentStateWriteClientForCommand = oldWrite
+	})
+
+	var inspectOut bytes.Buffer
+	inspect := newOmnigentStateInspectCmd(&inspectOut, io.Discard)
+	if err := inspect.Execute(); err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if got := inspectOut.String(); !strings.Contains(got, "ga-1") || !strings.Contains(got, "retained") || !strings.Contains(got, "foreign allocations ignored: 1") {
+		t.Fatalf("inspect output = %q", got)
+	}
+
+	var purgeOut bytes.Buffer
+	purge := newOmnigentStatePurgeCmd(&purgeOut, io.Discard)
+	purge.SetArgs([]string{"ga-1", "--dry-run", "--json"})
+	if err := purge.Execute(); err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if !sawPurge || !strings.Contains(purgeOut.String(), `"would_purge"`) {
+		t.Fatalf("purge output = %q saw=%t", purgeOut.String(), sawPurge)
 	}
 }
 

@@ -1992,6 +1992,31 @@ export type OkWithIdResponseBody = {
     status: string;
 };
 
+export type OmnigentCapsuleStateItem = {
+    action: 'retained' | 'retained_orphan' | 'would_purge' | 'purged' | 'purge_recorded' | 'conflict' | 'missing';
+    /**
+     * Stable non-secret explanation for the factual action.
+     */
+    reason: string;
+    /**
+     * Gas City session ID, or provider-recorded session ID for an orphan.
+     */
+    session_id: string;
+};
+
+export type OmnigentCapsuleStatePurgeBody = {
+    /**
+     * When true, perform fresh safety checks without recording authorization or deleting state.
+     */
+    dry_run: boolean;
+};
+
+export type OmnigentCapsuleStateReportBody = {
+    dry_run: boolean;
+    ignored_foreign: number;
+    items: Array<OmnigentCapsuleStateItem> | null;
+};
+
 export type OptionChoiceDto = {
     label: string;
     value: string;
@@ -2275,6 +2300,12 @@ export type ProjectIdentityStampedPayload = {
     source: string;
 };
 
+export type ProviderCapsuleSpec = {
+    Catalog: string;
+    Kind: string;
+    ProfileOption: string;
+};
+
 export type ProviderCreateInputBody = {
     /**
      * ACP transport command arguments override.
@@ -2364,6 +2395,7 @@ export type ProviderPatch = {
     Args: Array<string> | null;
     ArgsAppend: Array<string> | null;
     Base: string | null;
+    Capsule: ProviderCapsuleSpec;
     Command: string | null;
     Env: {
         [key: string]: string;
@@ -13645,6 +13677,124 @@ export type GetV0CityByCityNameMaintenanceStatusResponses = {
 };
 
 export type GetV0CityByCityNameMaintenanceStatusResponse = GetV0CityByCityNameMaintenanceStatusResponses[keyof GetV0CityByCityNameMaintenanceStatusResponses];
+
+export type GetV0CityByCityNameOmnigentCapsuleStateData = {
+    body?: never;
+    path: {
+        /**
+         * City name.
+         */
+        cityName: string;
+    };
+    query?: never;
+    url: '/v0/city/{cityName}/omnigent/capsule-state';
+};
+
+export type GetV0CityByCityNameOmnigentCapsuleStateErrors = {
+    /**
+     * Conflict
+     */
+    409: ErrorModel;
+    /**
+     * Unprocessable Entity
+     */
+    422: ErrorModel;
+    /**
+     * Internal Server Error
+     */
+    500: ErrorModel;
+    /**
+     * Not Implemented
+     */
+    501: ErrorModel;
+    /**
+     * Service Unavailable
+     */
+    503: ErrorModel;
+};
+
+export type GetV0CityByCityNameOmnigentCapsuleStateError = GetV0CityByCityNameOmnigentCapsuleStateErrors[keyof GetV0CityByCityNameOmnigentCapsuleStateErrors];
+
+export type GetV0CityByCityNameOmnigentCapsuleStateResponses = {
+    /**
+     * OK
+     */
+    200: OmnigentCapsuleStateReportBody;
+};
+
+export type GetV0CityByCityNameOmnigentCapsuleStateResponse = GetV0CityByCityNameOmnigentCapsuleStateResponses[keyof GetV0CityByCityNameOmnigentCapsuleStateResponses];
+
+export type PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeData = {
+    body: OmnigentCapsuleStatePurgeBody;
+    headers: {
+        /**
+         * Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.
+         */
+        'X-GC-Request': string;
+    };
+    path: {
+        /**
+         * City name.
+         */
+        cityName: string;
+        /**
+         * Closed Gas City session ID whose capsule state should be previewed or purged.
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/v0/city/{cityName}/omnigent/capsule-state/{id}/purge';
+};
+
+export type PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeErrors = {
+    /**
+     * Bad Request
+     */
+    400: ErrorModel;
+    /**
+     * Unauthorized
+     */
+    401: ErrorModel;
+    /**
+     * Forbidden
+     */
+    403: ErrorModel;
+    /**
+     * Not Found
+     */
+    404: ErrorModel;
+    /**
+     * Conflict
+     */
+    409: ErrorModel;
+    /**
+     * Unprocessable Entity
+     */
+    422: ErrorModel;
+    /**
+     * Internal Server Error
+     */
+    500: ErrorModel;
+    /**
+     * Not Implemented
+     */
+    501: ErrorModel;
+    /**
+     * Service Unavailable
+     */
+    503: ErrorModel;
+};
+
+export type PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeError = PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeErrors[keyof PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeErrors];
+
+export type PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeResponses = {
+    /**
+     * OK
+     */
+    200: OmnigentCapsuleStateReportBody;
+};
+
+export type PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeResponse = PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeResponses[keyof PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeResponses];
 
 export type GetV0CityByCityNameOmnigentStatusData = {
     body?: never;

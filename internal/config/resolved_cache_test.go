@@ -187,3 +187,104 @@ func TestResolvedProviderCached_NilCityReturnsFalse(t *testing.T) {
 		t.Error("nil city should produce cache miss")
 	}
 }
+
+func TestBuildResolvedProviderCache_ValidatesCapsuleDeclaration(t *testing.T) {
+	validSchema := []ProviderOption{{
+		Key:     "profile",
+		Default: "offline",
+		Choices: []OptionChoice{{Value: "offline"}},
+	}}
+	tests := []struct {
+		name    string
+		capsule ProviderCapsuleSpec
+		wantErr string
+	}{
+		{
+			name: "unsupported kind",
+			capsule: ProviderCapsuleSpec{
+				Kind:          "other",
+				ProfileOption: "profile",
+				Catalog:       ".gc/services/omnigent/config/profiles.yaml",
+			},
+			wantErr: `capsule kind "other" is unsupported`,
+		},
+		{
+			name: "missing profile option",
+			capsule: ProviderCapsuleSpec{
+				Kind:    "omnigent",
+				Catalog: ".gc/services/omnigent/config/profiles.yaml",
+			},
+			wantErr: "capsule profile_option is required",
+		},
+		{
+			name: "undeclared profile option",
+			capsule: ProviderCapsuleSpec{
+				Kind:          "omnigent",
+				ProfileOption: "missing",
+				Catalog:       ".gc/services/omnigent/config/profiles.yaml",
+			},
+			wantErr: `capsule profile_option "missing" is not declared`,
+		},
+		{
+			name: "missing catalog",
+			capsule: ProviderCapsuleSpec{
+				Kind:          "omnigent",
+				ProfileOption: "profile",
+			},
+			wantErr: "capsule catalog is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &City{Providers: map[string]ProviderSpec{
+				"adapter": {
+					Command:       "omnigent",
+					PromptMode:    "none",
+					Capsule:       tt.capsule,
+					OptionsSchema: validSchema,
+				},
+			}}
+			err := BuildResolvedProviderCache(cfg)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("BuildResolvedProviderCache() error = %v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestBuildResolvedProviderCache_PreservesInheritedCapsuleDeclaration(t *testing.T) {
+	base := "provider:adapter-base"
+	cfg := &City{Providers: map[string]ProviderSpec{
+		"adapter-base": {
+			Command:    "omnigent",
+			PromptMode: "none",
+			Capsule: ProviderCapsuleSpec{
+				Kind:          "omnigent",
+				ProfileOption: "profile",
+				Catalog:       ".gc/services/omnigent/config/profiles.yaml",
+			},
+			OptionsSchema: []ProviderOption{{
+				Key:     "profile",
+				Default: "offline",
+				Choices: []OptionChoice{{Value: "offline"}},
+			}},
+		},
+		"adapter-child": {
+			Base:       &base,
+			Command:    "wrapper",
+			PromptMode: "none",
+		},
+	}}
+
+	if err := BuildResolvedProviderCache(cfg); err != nil {
+		t.Fatalf("BuildResolvedProviderCache() error = %v", err)
+	}
+	got, ok := ResolvedProviderCached(cfg, "adapter-child")
+	if !ok {
+		t.Fatal("adapter-child missing from resolved cache")
+	}
+	if got.Capsule.Kind != "omnigent" || got.Capsule.ProfileOption != "profile" || got.Capsule.Catalog == "" {
+		t.Fatalf("resolved capsule = %+v", got.Capsule)
+	}
+}

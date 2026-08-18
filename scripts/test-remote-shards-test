@@ -9,6 +9,9 @@ fail() {
   exit 1
 }
 
+grep -Fq 'test_status=0' "$runner" ||
+  fail "remote runner does not initialize status before the interruptible SSH boundary"
+
 test_root="$(mktemp -d -p /var/tmp gascity-remote-shards-test.XXXXXX)"
 trap 'rm -rf "$test_root"' EXIT
 fake_bin="$test_root/bin"
@@ -24,6 +27,9 @@ printf '\n' >>"$FAKE_CALLS"
 case " $* " in
   *" mktemp -d -p /var/tmp gascity-remote-tests.XXXXXX "*)
     printf '%s\n' "${FAKE_REMOTE_ROOT:-/var/tmp/gascity-remote-tests.ABC123}"
+    ;;
+  *" bash -s -- /var/tmp/gascity-remote-tests. ABC123 "*)
+    cat >"${FAKE_REMOTE_CLEANUP_SCRIPT:-/dev/null}"
     ;;
   *" bash -s -- "*)
     cat >"${FAKE_REMOTE_SCRIPT:-/dev/null}"
@@ -50,8 +56,10 @@ chmod +x "$fake_bin/ssh" "$fake_bin/rsync"
 calls="$test_root/calls"
 output="$test_root/output"
 remote_script="$test_root/remote-script"
+remote_cleanup_script="$test_root/remote-cleanup-script"
 if ! PATH="$fake_bin:$PATH" FAKE_CALLS="$calls" \
   FAKE_REMOTE_SCRIPT="$remote_script" \
+  FAKE_REMOTE_CLEANUP_SCRIPT="$remote_cleanup_script" \
   GC_REMOTE_TEST_ARTIFACT_ROOT="$test_root/artifacts" \
   "$runner" gtr integration 12 >"$output" 2>&1; then
   fail "successful fake remote run failed: $(cat "$output")"
@@ -65,6 +73,12 @@ grep -Fq 'ssh: <-o> <BatchMode=yes> <-o> <ConnectTimeout=10> <gtr> <bash> <-s> <
   fail "remote mode and concurrency were not forwarded"
 grep -Fq "ssh: <-o> <BatchMode=yes> <-o> <ConnectTimeout=10> <gtr> <rm -rf -- '/var/tmp/gascity-remote-tests.ABC123'>" "$calls" ||
   fail "allocated remote workspace was not cleaned"
+grep -Fq '<gtr> <bash> <-s> <--> </var/tmp/gascity-remote-tests.> <ABC123>' "$calls" ||
+  fail "remote process cleanup was not scoped to the allocated workspace"
+grep -Fq 'kill -TERM' "$remote_cleanup_script" ||
+  fail "remote process cleanup did not terminate the discovered process tree"
+grep -Fq 'kill -KILL' "$remote_cleanup_script" ||
+  fail "remote process cleanup had no bounded forced-termination fallback"
 grep -Fq '[remote] simulated shard output' "$output" ||
   fail "remote output was not streamed"
 grep -Fq 'git init -q' "$remote_script" ||
@@ -73,13 +87,45 @@ grep -Fq 'git config commit.gpgsign false' "$remote_script" ||
   fail "remote snapshot did not disable unavailable commit signing"
 # shellcheck disable=SC2016 # Match literal variables in the transmitted script.
 grep -Fq 'run_home="$remote_root/home"' "$remote_script" ||
-  fail "remote shards did not receive a run-scoped home"
+	fail "remote shards did not receive a run-scoped home"
+# shellcheck disable=SC2016 # Match literal variables in the transmitted script.
+grep -Fq 'export TEST_LOCAL_ZDOTDIR="$run_home"' "$remote_script" ||
+	fail "remote shards did not isolate zsh startup files without replacing HOME"
+# shellcheck disable=SC2016 # Match literal variables in the transmitted script.
+grep -Fq 'export TEST_LOCAL_GIT_CONFIG_GLOBAL="$run_home/.gitconfig"' "$remote_script" ||
+	fail "remote shards did not isolate user-level Git configuration without replacing HOME"
+if grep -Fq 'export HOME="$run_home"' "$remote_script"; then
+	fail "remote shards replaced HOME and will be rejected by the Linux supervisor"
+fi
+# shellcheck disable=SC2016 # Match literal variables in the transmitted script.
+grep -Fq ': >"$run_home/.zshrc"' "$remote_script" ||
+	fail "remote shards did not suppress interactive zsh first-run setup"
+# shellcheck disable=SC2016 # Match literal variables in the transmitted script.
+grep -Fq 'tool_version_from_deps BD_VERSION' "$remote_script" ||
+	fail "remote shards did not resolve the repository-pinned bd version"
+# shellcheck disable=SC2016 # Match literal variables in the transmitted script.
+grep -Fq 'tool_version_from_deps DOLT_VERSION' "$remote_script" ||
+	fail "remote shards did not resolve the repository-pinned Dolt version"
+# shellcheck disable=SC2016 # Match literal variables in the transmitted script.
+grep -Fq 'BD_INSTALL_BIN_DIR="$run_bin" .github/scripts/install-bd-archive.sh "$beads_version"' "$remote_script" ||
+	fail "remote shards did not install the SHA-pinned bd archive into the run-scoped bin"
+# shellcheck disable=SC2016 # Match literal variables in the transmitted script.
+grep -Fq 'DOLT_INSTALL_BIN_DIR="$run_bin" .github/scripts/install-dolt-archive.sh "$dolt_version"' "$remote_script" ||
+	fail "remote shards did not install the SHA-pinned Dolt archive into the run-scoped bin"
+if grep -Fq 'go install "github.com/steveyegge/beads/cmd/bd@' "$remote_script"; then
+	fail "remote shards still build bd from source and depend on host ICU headers"
+fi
+# shellcheck disable=SC2016 # Match literal variables in the transmitted script.
+grep -Fq 'export PATH="$run_bin:$PATH"' "$remote_script" ||
+	fail "remote shards did not expose run-scoped tools"
 # shellcheck disable=SC2016 # Match literal variables in the transmitted script.
 grep -Fq 'export GOCACHE="$host_gocache"' "$remote_script" ||
   fail "run-scoped home did not retain the shared remote Go cache"
 # shellcheck disable=SC2016 # Match literal variables in the transmitted script.
 grep -Fq 'go env -w CGO_ENABLED="$remote_cgo"' "$remote_script" ||
   fail "remote CGO selection was not persisted for sanitized shard jobs"
+grep -Fq 'LOCAL_TEST_PKG_PARALLELISM="$remote_jobs"' "$remote_script" ||
+  fail "remote package fan-out was not bounded by the selected job count"
 grep -Fq 'artifacts:' "$output" || fail "artifact location was not reported"
 
 : >"$calls"

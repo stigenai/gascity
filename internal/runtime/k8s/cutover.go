@@ -2,6 +2,8 @@ package k8s
 
 import (
 	"context"
+	"errors"
+	"strings"
 
 	"github.com/gastownhall/gascity/internal/runtime"
 )
@@ -24,7 +26,38 @@ var (
 	_ runtime.FreshRunningSessionLister       = (*seamBackedProvider)(nil)
 	_ runtime.InstanceTokenFencedStopProvider = (*seamBackedProvider)(nil)
 	_ runtime.TerminalProvider                = (*seamBackedProvider)(nil)
+	_ runtime.CapsuleStateRuntime             = (*seamBackedProvider)(nil)
+	_ runtime.CapsuleStatePlace               = (*seamBackedProvider)(nil)
+	_ runtime.CapsuleCityScopeProvider        = (*seamBackedProvider)(nil)
 )
+
+func (s *seamBackedProvider) CapsuleCityScope() string {
+	return s.raw.CapsuleCityScope()
+}
+
+func (s *seamBackedProvider) EnsureCapsuleState(ctx context.Context, key runtime.CapsuleKey) (runtime.CapsuleStateReference, bool, error) {
+	return s.raw.EnsureCapsuleState(ctx, key)
+}
+
+func (s *seamBackedProvider) OpenCapsuleState(ctx context.Context, key runtime.CapsuleKey) (runtime.CapsuleStateReference, bool, error) {
+	return s.raw.OpenCapsuleState(ctx, key)
+}
+
+func (s *seamBackedProvider) ListCapsuleStates(ctx context.Context) ([]runtime.CapsuleStateReference, error) {
+	return s.raw.ListCapsuleStates(ctx)
+}
+
+func (s *seamBackedProvider) PurgeCapsuleState(ctx context.Context, key runtime.CapsuleKey) error {
+	return s.raw.PurgeCapsuleState(ctx, key)
+}
+
+func (s *seamBackedProvider) AttachCapsuleState(ctx context.Context, placeName string, ref runtime.CapsuleStateReference) error {
+	return s.raw.AttachCapsuleState(ctx, placeName, ref)
+}
+
+func (s *seamBackedProvider) DetachCapsuleState(ctx context.Context, placeName string) error {
+	return s.raw.DetachCapsuleState(ctx, placeName)
+}
 
 func (s *seamBackedProvider) ReadTerminal(ctx context.Context, name string, maxBytes int) (runtime.TerminalRead, error) {
 	return s.raw.ReadTerminal(ctx, name, maxBytes)
@@ -56,6 +89,37 @@ func NewSeamBacked() (runtime.Provider, error) {
 	if err != nil {
 		return nil, err
 	}
+	return newSeamBacked(raw), nil
+}
+
+// NewSeamBackedForCity constructs the production provider with a stable
+// Gas-City-owned capsule scope. It avoids requiring remote Kubernetes-specific
+// configuration for identity that the local controller already knows.
+func NewSeamBackedForCity(cityName string) (runtime.Provider, error) {
+	raw, err := NewProvider()
+	if err != nil {
+		return nil, err
+	}
+	return newSeamBackedForCity(raw, cityName)
+}
+
+func newSeamBackedForCity(raw *Provider, cityName string) (runtime.Provider, error) {
+	if raw == nil {
+		return nil, errors.New("kubernetes provider is nil")
+	}
+	cityName = strings.TrimSpace(cityName)
+	if cityName == "" {
+		return nil, errors.New("kubernetes capsule city name is required")
+	}
+	cluster := strings.TrimSpace(raw.k8sContext)
+	if cluster == "" {
+		cluster = "in-cluster"
+	}
+	namespace := strings.TrimSpace(raw.namespace)
+	if namespace == "" {
+		return nil, errors.New("kubernetes capsule namespace is required")
+	}
+	raw.capsuleCityScope = strings.Join([]string{cluster, namespace, cityName}, "/")
 	return newSeamBacked(raw), nil
 }
 

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "next_id": 205,
+  "next_id": 207,
   "permanent_ids": [
     {
       "name": "help",
@@ -2639,11 +2639,57 @@
       "mode": "standard",
       "notice_policy": "eligible",
       "classification": "omnigent-serve",
-      "owner": "immediate",
-      "id": 199
-    },
-    {
-      "path": "gc omnigent status",
+    "owner": "immediate",
+    "id": 199
+  },
+  {
+    "path": "gc omnigent state",
+    "aliases": [],
+    "conditional_modes": [],
+    "hidden": false,
+    "effective_hidden": false,
+    "disable_flag_parsing": false,
+    "shape": "structural",
+    "recording_policy": "recordable",
+    "mode": "standard",
+    "notice_policy": "eligible",
+    "classification": "help",
+    "canonical_target": "@help",
+    "owner": "structural",
+    "id": 1
+  },
+  {
+    "path": "gc omnigent state inspect",
+    "aliases": [],
+    "conditional_modes": [],
+    "hidden": false,
+    "effective_hidden": false,
+    "disable_flag_parsing": false,
+    "shape": "runnable",
+    "recording_policy": "recordable",
+    "mode": "standard",
+    "notice_policy": "eligible",
+    "classification": "omnigent-state-inspect",
+    "owner": "immediate",
+    "id": 205
+  },
+  {
+    "path": "gc omnigent state purge",
+    "aliases": [],
+    "conditional_modes": [],
+    "hidden": false,
+    "effective_hidden": false,
+    "disable_flag_parsing": false,
+    "shape": "runnable",
+    "recording_policy": "recordable",
+    "mode": "standard",
+    "notice_policy": "eligible",
+    "classification": "omnigent-state-purge",
+    "owner": "immediate",
+    "id": 206
+  },
+  {
+    "path": "gc omnigent status",
       "aliases": [],
       "conditional_modes": [],
       "hidden": false,
@@ -2655,8 +2701,8 @@
       "notice_policy": "eligible",
       "classification": "omnigent-status",
       "owner": "immediate",
-      "id": 200
-    },
+    "id": 200
+  },
     {
       "path": "gc order",
       "aliases": [],

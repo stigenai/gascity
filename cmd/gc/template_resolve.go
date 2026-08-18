@@ -130,6 +130,9 @@ type TemplateParams struct {
 	// SecretReferences are provider-owned credential identities resolved only
 	// after runtime placement. Values never enter Env.
 	SecretReferences []runtime.SecretReference
+	// Capsule is the optional provider-neutral remote capsule launch plan.
+	// Local providers leave it nil and retain their controller-local command.
+	Capsule *runtime.CapsuleLaunchConfig
 }
 
 // DisplayName returns the name to use for log messages and event subjects.
@@ -873,6 +876,7 @@ func templateParamsToConfigWithDelivery(tp TemplateParams) (runtime.Config, prom
 	cfg.PromptFlag = promptFlag
 	cfg.Env = env
 	cfg.SecretReferences = tp.SecretReferences
+	cfg.Capsule = tp.Capsule
 	if tp.IsACP {
 		cfg.MCPServers = tp.MCPServers
 	}

@@ -39,8 +39,13 @@ var (
 	_ runtime.AttachedChecker                 = (*Provider)(nil)
 	_ runtime.CapsuleStateRuntime             = (*Provider)(nil)
 	_ runtime.CapsuleStatePlace               = (*Provider)(nil)
+	_ runtime.CapsuleCityScopeProvider        = (*Provider)(nil)
 	_ runtime.TerminalProvider                = (*Provider)(nil)
 )
+
+// CapsuleCityScope returns the stable ownership scope configured for capsule
+// PVCs. It contains no provider credentials or resource contents.
+func (p *Provider) CapsuleCityScope() string { return p.capsuleCityScope }
 
 func (p *Provider) terminalCarrier() (runtime.TerminalCarrier, error) {
 	carrier, ok := p.carrier().(runtime.TerminalCarrier)
@@ -94,6 +99,7 @@ func (p *Provider) DetachTerminal(ctx context.Context, _ string) error { return 
 // Eliminates subprocess overhead by making direct API calls over reused
 // HTTP/2 connections. Pod manifests are compatible with gc-session-k8s.
 type Provider struct {
+	configMapOps            k8sConfigMapOps
 	ops                     k8sOps
 	pvcOps                  k8sPVCOps
 	networkOps              k8sNetworkOps
@@ -190,6 +196,7 @@ func NewProvider() (*Provider, error) {
 
 	realOps := &realK8sOps{clientset: clientset, restConfig: restConfig, namespace: namespace}
 	return &Provider{
+		configMapOps:            realOps,
 		ops:                     realOps,
 		pvcOps:                  realOps,
 		networkOps:              realOps,
@@ -247,8 +254,10 @@ func parseSchedulingEnv() (schedulingFields, error) {
 // newProviderWithOps creates a provider with a custom k8sOps (for testing).
 func newProviderWithOps(ops k8sOps) *Provider {
 	pvcOps, _ := ops.(k8sPVCOps)
+	configMapOps, _ := ops.(k8sConfigMapOps)
 	networkOps, _ := ops.(k8sNetworkOps)
 	return &Provider{
+		configMapOps:          configMapOps,
 		ops:                   ops,
 		pvcOps:                pvcOps,
 		networkOps:            networkOps,
@@ -329,14 +338,29 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 			return fmt.Errorf("waiting for existing pod %q deletion: %w", pod.Name, waitErr)
 		}
 	}
+	// Materialize the immutable capsule catalog before authoring a pod that
+	// references it. Content and ownership are verified on every reopen.
+	catalogRef, _, err := p.ensureCapsuleCatalog(ctx, name, cfg)
+	if err != nil {
+		return fmt.Errorf("applying capsule catalog for session %q: %w", name, err)
+	}
+	cleanupCatalog := func(reason string) error {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := p.deleteCapsuleCatalogIfUnreferenced(cleanupCtx, name, catalogRef); err != nil {
+			return fmt.Errorf("cleaning up ConfigMap %q for session %q after %s: %w", catalogRef.Name, name, reason, err)
+		}
+		return nil
+	}
+
 	// Build and create pod.
 	pod, err := buildPod(name, cfg, p)
 	if err != nil {
-		return fmt.Errorf("building pod for session %q: %w", name, err)
+		return errors.Join(fmt.Errorf("building pod for session %q: %w", name, err), cleanupCatalog("pod build failed"))
 	}
 	networkPolicy, networkPolicyCreated, err := p.ensureCapsuleNetworkPolicy(ctx, name, cfg)
 	if err != nil {
-		return fmt.Errorf("applying capsule network isolation for session %q: %w", name, err)
+		return errors.Join(fmt.Errorf("applying capsule network isolation for session %q: %w", name, err), cleanupCatalog("network isolation failed"))
 	}
 	cleanupNetworkPolicy := func(reason string) error {
 		if !networkPolicyCreated {
@@ -350,6 +374,9 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 		}
 		return fmt.Errorf("cleaning up NetworkPolicy %q for session %q after %s: %w", networkPolicy.Name, name, reason, err)
 	}
+	cleanupProvisioning := func(reason string) error {
+		return errors.Join(cleanupNetworkPolicy(reason), cleanupCatalog(reason))
+	}
 	p.invalidateRunningPodSnapshot()
 	createdPod, err := p.ops.createPod(ctx, pod)
 	p.invalidateRunningPodSnapshot()
@@ -361,20 +388,20 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 			cancel()
 			if getErr == nil {
 				if validateErr := validateCommittedCapsulePod(current, pod); validateErr != nil {
-					return errors.Join(createErr, validateErr, cleanupNetworkPolicy("pod create identity conflict"))
+					return errors.Join(createErr, validateErr, cleanupProvisioning("pod create identity conflict"))
 				}
 				createdPod = current
 				err = nil
 			}
 		}
 		if err != nil {
-			return errors.Join(createErr, cleanupNetworkPolicy("pod creation failed"))
+			return errors.Join(createErr, cleanupProvisioning("pod creation failed"))
 		}
 	}
 	if createdPod == nil || createdPod.UID == "" {
 		return errors.Join(
 			fmt.Errorf("creating pod for session %q returned no immutable UID", name),
-			cleanupNetworkPolicy("pod create returned no UID"),
+			cleanupProvisioning("pod create returned no UID"),
 		)
 	}
 	podUID := createdPod.UID
@@ -395,6 +422,9 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 			if err := p.networkOps.deleteNetworkPolicy(cleanupCtx, networkPolicy.Name, networkPolicy.UID); err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
 				cleanupErrs = append(cleanupErrs, fmt.Errorf("cleaning up NetworkPolicy %q for session %q after %s: %w", networkPolicy.Name, name, reason, err))
 			}
+		}
+		if err := p.deleteCapsuleCatalogIfUnreferenced(cleanupCtx, name, catalogRef); err != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("cleaning up ConfigMap %q for session %q after %s: %w", catalogRef.Name, name, reason, err))
 		}
 		return errors.Join(cleanupErrs...)
 	}
@@ -633,6 +663,10 @@ func (p *Provider) Stop(name string) error {
 		p.invalidateRunningPodSnapshot()
 		if delErr != nil && !apierrors.IsNotFound(delErr) {
 			errs = append(errs, fmt.Errorf("deleting pod %q: %w", pods[i].Name, delErr))
+			continue
+		}
+		if err := p.deleteCapsuleCatalogForPod(ctx, &pods[i]); err != nil {
+			errs = append(errs, fmt.Errorf("deleting catalog for pod %q: %w", pods[i].Name, err))
 		}
 	}
 	if len(errs) > 0 {
@@ -701,7 +735,13 @@ func (p *Provider) StopIfInstanceToken(name, expectedToken string) error {
 		p.invalidateRunningPodSnapshot()
 		// NotFound and UID-precondition conflicts both prove that this captured
 		// immutable object is gone. A replacement, if any, remains untouched.
-		if deleteErr == nil || apierrors.IsNotFound(deleteErr) || apierrors.IsConflict(deleteErr) {
+		if deleteErr == nil || apierrors.IsNotFound(deleteErr) {
+			if err := p.deleteCapsuleCatalogForPod(ctx, pod); err != nil {
+				errs = append(errs, fmt.Errorf("deleting catalog for token-matched pod %q: %w", pod.Name, err))
+			}
+			continue
+		}
+		if apierrors.IsConflict(deleteErr) {
 			continue
 		}
 		errs = append(errs, fmt.Errorf("deleting token-matched pod %q (%s): %w", pod.Name, pod.UID, deleteErr))

@@ -26,7 +26,7 @@ func TestBuildPodCapsuleProjectsOnlySelectedProfileChainThroughNativeSecrets(t *
 				SSH:        &runtime.SSHSecretPathReference{Path: "/srv/private/primary-token"},
 			},
 			{
-				ID: "claude-primary-home", MountPath: "/run/gascity/omnigent/credentials/claude-primary",
+				ID: "claude-primary-home", Environment: "CLAUDE_CONFIG_DIR", MountPath: "/run/gascity/omnigent/credentials/claude-primary",
 				Kubernetes: &runtime.KubernetesSecretKeyReference{Name: "claude-primary", Key: "config"},
 				SSH:        &runtime.SSHSecretPathReference{Path: "/srv/private/claude-primary"},
 			},
@@ -53,6 +53,10 @@ func TestBuildPodCapsuleProjectsOnlySelectedProfileChainThroughNativeSecrets(t *
 	}
 	if env["BACKEND_BASE_URL"].Value != "https://compatible.example.invalid" {
 		t.Fatalf("compatible backend metadata was not preserved: %#v", env["BACKEND_BASE_URL"])
+	}
+	claudeHome := env["CLAUDE_CONFIG_DIR"]
+	if claudeHome.Value != "/run/gascity/omnigent/credentials/claude-primary" || claudeHome.ValueFrom != nil {
+		t.Fatalf("CLAUDE_CONFIG_DIR = %#v, want literal projected mount path", claudeHome)
 	}
 
 	mounts := podVolumeMountsByName(agent.VolumeMounts)

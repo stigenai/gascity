@@ -99,6 +99,39 @@ func (e EventRotateArchiveCompressionStatus) Valid() bool {
 	}
 }
 
+// Defines values for OmnigentCapsuleStateItemAction.
+const (
+	Conflict       OmnigentCapsuleStateItemAction = "conflict"
+	Missing        OmnigentCapsuleStateItemAction = "missing"
+	PurgeRecorded  OmnigentCapsuleStateItemAction = "purge_recorded"
+	Purged         OmnigentCapsuleStateItemAction = "purged"
+	Retained       OmnigentCapsuleStateItemAction = "retained"
+	RetainedOrphan OmnigentCapsuleStateItemAction = "retained_orphan"
+	WouldPurge     OmnigentCapsuleStateItemAction = "would_purge"
+)
+
+// Valid indicates whether the value is a known member of the OmnigentCapsuleStateItemAction enum.
+func (e OmnigentCapsuleStateItemAction) Valid() bool {
+	switch e {
+	case Conflict:
+		return true
+	case Missing:
+		return true
+	case PurgeRecorded:
+		return true
+	case Purged:
+		return true
+	case Retained:
+		return true
+	case RetainedOrphan:
+		return true
+	case WouldPurge:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for RequestFailedPayloadOperation.
 const (
 	CityCreate     RequestFailedPayloadOperation = "city.create"
@@ -2621,6 +2654,33 @@ type OKWithIDResponseBody struct {
 	Status string `json:"status"`
 }
 
+// OmnigentCapsuleStateItem defines model for OmnigentCapsuleStateItem.
+type OmnigentCapsuleStateItem struct {
+	Action OmnigentCapsuleStateItemAction `json:"action"`
+
+	// Reason Stable non-secret explanation for the factual action.
+	Reason string `json:"reason"`
+
+	// SessionId Gas City session ID, or provider-recorded session ID for an orphan.
+	SessionId string `json:"session_id"`
+}
+
+// OmnigentCapsuleStateItemAction defines model for OmnigentCapsuleStateItem.Action.
+type OmnigentCapsuleStateItemAction string
+
+// OmnigentCapsuleStatePurgeBody defines model for OmnigentCapsuleStatePurgeBody.
+type OmnigentCapsuleStatePurgeBody struct {
+	// DryRun When true, perform fresh safety checks without recording authorization or deleting state.
+	DryRun bool `json:"dry_run"`
+}
+
+// OmnigentCapsuleStateReportBody defines model for OmnigentCapsuleStateReportBody.
+type OmnigentCapsuleStateReportBody struct {
+	DryRun         bool                        `json:"dry_run"`
+	IgnoredForeign int64                       `json:"ignored_foreign"`
+	Items          *[]OmnigentCapsuleStateItem `json:"items"`
+}
+
 // OptionChoiceDTO defines model for OptionChoiceDTO.
 type OptionChoiceDTO struct {
 	Label string `json:"label"`
@@ -2888,6 +2948,13 @@ type ProjectIdentityStampedPayload struct {
 	Source    string  `json:"source"`
 }
 
+// ProviderCapsuleSpec defines model for ProviderCapsuleSpec.
+type ProviderCapsuleSpec struct {
+	Catalog       string `json:"Catalog"`
+	Kind          string `json:"Kind"`
+	ProfileOption string `json:"ProfileOption"`
+}
+
 // ProviderCreateInputBody defines model for ProviderCreateInputBody.
 type ProviderCreateInputBody struct {
 	// AcpArgs ACP transport command arguments override.
@@ -2953,21 +3020,22 @@ type ProviderOptionDTO struct {
 
 // ProviderPatch defines model for ProviderPatch.
 type ProviderPatch struct {
-	ACPArgs              *[]string         `json:"ACPArgs"`
-	ACPCommand           *string           `json:"ACPCommand"`
-	AcceptStartupDialogs *bool             `json:"AcceptStartupDialogs"`
-	Args                 *[]string         `json:"Args"`
-	ArgsAppend           *[]string         `json:"ArgsAppend"`
-	Base                 *string           `json:"Base"`
-	Command              *string           `json:"Command"`
-	Env                  map[string]string `json:"Env"`
-	EnvRemove            *[]string         `json:"EnvRemove"`
-	Name                 string            `json:"Name"`
-	OptionsSchemaMerge   *string           `json:"OptionsSchemaMerge"`
-	PromptFlag           *string           `json:"PromptFlag"`
-	PromptMode           *string           `json:"PromptMode"`
-	ReadyDelayMs         *int64            `json:"ReadyDelayMs"`
-	Replace              bool              `json:"Replace"`
+	ACPArgs              *[]string           `json:"ACPArgs"`
+	ACPCommand           *string             `json:"ACPCommand"`
+	AcceptStartupDialogs *bool               `json:"AcceptStartupDialogs"`
+	Args                 *[]string           `json:"Args"`
+	ArgsAppend           *[]string           `json:"ArgsAppend"`
+	Base                 *string             `json:"Base"`
+	Capsule              ProviderCapsuleSpec `json:"Capsule"`
+	Command              *string             `json:"Command"`
+	Env                  map[string]string   `json:"Env"`
+	EnvRemove            *[]string           `json:"EnvRemove"`
+	Name                 string              `json:"Name"`
+	OptionsSchemaMerge   *string             `json:"OptionsSchemaMerge"`
+	PromptFlag           *string             `json:"PromptFlag"`
+	PromptMode           *string             `json:"PromptMode"`
+	ReadyDelayMs         *int64              `json:"ReadyDelayMs"`
+	Replace              bool                `json:"Replace"`
 }
 
 // ProviderPatchSetInputBody defines model for ProviderPatchSetInputBody.
@@ -8782,6 +8850,12 @@ type TriggerMaintenanceDoltGcParams struct {
 	XGCRequest string `json:"X-GC-Request"`
 }
 
+// PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeParams defines parameters for PostV0CityByCityNameOmnigentCapsuleStateByIdPurge.
+type PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeParams struct {
+	// XGCRequest Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.
+	XGCRequest string `json:"X-GC-Request"`
+}
+
 // GetV0CityByCityNameOmnigentStatusParams defines parameters for GetV0CityByCityNameOmnigentStatus.
 type GetV0CityByCityNameOmnigentStatusParams struct {
 	// Cursor Opaque keyset pagination token from a previous response's next_cursor field. Invalid or legacy tokens are rejected with a typed 400 (invalid-cursor); re-fetch the first page.
@@ -9369,6 +9443,9 @@ type SendMailJSONRequestBody = MailSendInputBody
 
 // ReplyMailJSONRequestBody defines body for ReplyMail for application/json ContentType.
 type ReplyMailJSONRequestBody = MailReplyInputBody
+
+// PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeJSONRequestBody defines body for PostV0CityByCityNameOmnigentCapsuleStateByIdPurge for application/json ContentType.
+type PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeJSONRequestBody = OmnigentCapsuleStatePurgeBody
 
 // PostV0CityByCityNameOrderByNameRunJSONRequestBody defines body for PostV0CityByCityNameOrderByNameRun for application/json ContentType.
 type PostV0CityByCityNameOrderByNameRunJSONRequestBody = OrderRunInputBody
@@ -17476,6 +17553,14 @@ type ClientInterface interface {
 	// GetV0CityByCityNameMaintenanceStatus request
 	GetV0CityByCityNameMaintenanceStatus(ctx context.Context, cityName string, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetV0CityByCityNameOmnigentCapsuleState request
+	GetV0CityByCityNameOmnigentCapsuleState(ctx context.Context, cityName string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeWithBody request with any body
+	PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeWithBody(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	PostV0CityByCityNameOmnigentCapsuleStateByIdPurge(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeParams, body PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetV0CityByCityNameOmnigentStatus request
 	GetV0CityByCityNameOmnigentStatus(ctx context.Context, cityName string, params *GetV0CityByCityNameOmnigentStatusParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -19088,6 +19173,42 @@ func (c *Client) TriggerMaintenanceDoltGc(ctx context.Context, cityName string, 
 
 func (c *Client) GetV0CityByCityNameMaintenanceStatus(ctx context.Context, cityName string, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetV0CityByCityNameMaintenanceStatusRequest(c.Server, cityName)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetV0CityByCityNameOmnigentCapsuleState(ctx context.Context, cityName string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetV0CityByCityNameOmnigentCapsuleStateRequest(c.Server, cityName)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeWithBody(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostV0CityByCityNameOmnigentCapsuleStateByIdPurgeRequestWithBody(c.Server, cityName, id, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PostV0CityByCityNameOmnigentCapsuleStateByIdPurge(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeParams, body PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPostV0CityByCityNameOmnigentCapsuleStateByIdPurgeRequest(c.Server, cityName, id, params, body)
 	if err != nil {
 		return nil, err
 	}
@@ -26034,6 +26155,107 @@ func NewGetV0CityByCityNameMaintenanceStatusRequest(server string, cityName stri
 	return req, nil
 }
 
+// NewGetV0CityByCityNameOmnigentCapsuleStateRequest generates requests for GetV0CityByCityNameOmnigentCapsuleState
+func NewGetV0CityByCityNameOmnigentCapsuleStateRequest(server string, cityName string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "cityName", cityName, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v0/city/%s/omnigent/capsule-state", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewPostV0CityByCityNameOmnigentCapsuleStateByIdPurgeRequest calls the generic PostV0CityByCityNameOmnigentCapsuleStateByIdPurge builder with application/json body
+func NewPostV0CityByCityNameOmnigentCapsuleStateByIdPurgeRequest(server string, cityName string, id string, params *PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeParams, body PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPostV0CityByCityNameOmnigentCapsuleStateByIdPurgeRequestWithBody(server, cityName, id, params, "application/json", bodyReader)
+}
+
+// NewPostV0CityByCityNameOmnigentCapsuleStateByIdPurgeRequestWithBody generates requests for PostV0CityByCityNameOmnigentCapsuleStateByIdPurge with any type of body
+func NewPostV0CityByCityNameOmnigentCapsuleStateByIdPurgeRequestWithBody(server string, cityName string, id string, params *PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "cityName", cityName, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithOptions("simple", false, "id", id, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v0/city/%s/omnigent/capsule-state/%s/purge", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithOptions("simple", false, "X-GC-Request", params.XGCRequest, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationHeader, Type: "string", Format: ""})
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("X-GC-Request", headerParam0)
+
+	}
+
+	return req, nil
+}
+
 // NewGetV0CityByCityNameOmnigentStatusRequest generates requests for GetV0CityByCityNameOmnigentStatus
 func NewGetV0CityByCityNameOmnigentStatusRequest(server string, cityName string, params *GetV0CityByCityNameOmnigentStatusParams) (*http.Request, error) {
 	var err error
@@ -31617,6 +31839,14 @@ type ClientWithResponsesInterface interface {
 	// GetV0CityByCityNameMaintenanceStatusWithResponse request
 	GetV0CityByCityNameMaintenanceStatusWithResponse(ctx context.Context, cityName string, reqEditors ...RequestEditorFn) (*GetV0CityByCityNameMaintenanceStatusResponse, error)
 
+	// GetV0CityByCityNameOmnigentCapsuleStateWithResponse request
+	GetV0CityByCityNameOmnigentCapsuleStateWithResponse(ctx context.Context, cityName string, reqEditors ...RequestEditorFn) (*GetV0CityByCityNameOmnigentCapsuleStateResponse, error)
+
+	// PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeWithBodyWithResponse request with any body
+	PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeWithBodyWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeResponse, error)
+
+	PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeParams, body PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeJSONRequestBody, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeResponse, error)
+
 	// GetV0CityByCityNameOmnigentStatusWithResponse request
 	GetV0CityByCityNameOmnigentStatusWithResponse(ctx context.Context, cityName string, params *GetV0CityByCityNameOmnigentStatusParams, reqEditors ...RequestEditorFn) (*GetV0CityByCityNameOmnigentStatusResponse, error)
 
@@ -34193,6 +34423,64 @@ func (r GetV0CityByCityNameMaintenanceStatusResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetV0CityByCityNameMaintenanceStatusResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetV0CityByCityNameOmnigentCapsuleStateResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *OmnigentCapsuleStateReportBody
+	ApplicationproblemJSON409 *ErrorModel
+	ApplicationproblemJSON422 *ErrorModel
+	ApplicationproblemJSON500 *ErrorModel
+	ApplicationproblemJSON501 *ErrorModel
+	ApplicationproblemJSON503 *ErrorModel
+}
+
+// Status returns HTTPResponse.Status
+func (r GetV0CityByCityNameOmnigentCapsuleStateResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetV0CityByCityNameOmnigentCapsuleStateResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeResponse struct {
+	Body                      []byte
+	HTTPResponse              *http.Response
+	JSON200                   *OmnigentCapsuleStateReportBody
+	ApplicationproblemJSON400 *ErrorModel
+	ApplicationproblemJSON401 *ErrorModel
+	ApplicationproblemJSON403 *ErrorModel
+	ApplicationproblemJSON404 *ErrorModel
+	ApplicationproblemJSON409 *ErrorModel
+	ApplicationproblemJSON422 *ErrorModel
+	ApplicationproblemJSON500 *ErrorModel
+	ApplicationproblemJSON501 *ErrorModel
+	ApplicationproblemJSON503 *ErrorModel
+}
+
+// Status returns HTTPResponse.Status
+func (r PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -37522,6 +37810,32 @@ func (c *ClientWithResponses) GetV0CityByCityNameMaintenanceStatusWithResponse(c
 		return nil, err
 	}
 	return ParseGetV0CityByCityNameMaintenanceStatusResponse(rsp)
+}
+
+// GetV0CityByCityNameOmnigentCapsuleStateWithResponse request returning *GetV0CityByCityNameOmnigentCapsuleStateResponse
+func (c *ClientWithResponses) GetV0CityByCityNameOmnigentCapsuleStateWithResponse(ctx context.Context, cityName string, reqEditors ...RequestEditorFn) (*GetV0CityByCityNameOmnigentCapsuleStateResponse, error) {
+	rsp, err := c.GetV0CityByCityNameOmnigentCapsuleState(ctx, cityName, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetV0CityByCityNameOmnigentCapsuleStateResponse(rsp)
+}
+
+// PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeWithBodyWithResponse request with arbitrary body returning *PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeResponse
+func (c *ClientWithResponses) PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeWithBodyWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeResponse, error) {
+	rsp, err := c.PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeWithBody(ctx, cityName, id, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostV0CityByCityNameOmnigentCapsuleStateByIdPurgeResponse(rsp)
+}
+
+func (c *ClientWithResponses) PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeWithResponse(ctx context.Context, cityName string, id string, params *PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeParams, body PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeJSONRequestBody, reqEditors ...RequestEditorFn) (*PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeResponse, error) {
+	rsp, err := c.PostV0CityByCityNameOmnigentCapsuleStateByIdPurge(ctx, cityName, id, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePostV0CityByCityNameOmnigentCapsuleStateByIdPurgeResponse(rsp)
 }
 
 // GetV0CityByCityNameOmnigentStatusWithResponse request returning *GetV0CityByCityNameOmnigentStatusResponse
@@ -43662,6 +43976,156 @@ func ParseGetV0CityByCityNameMaintenanceStatusResponse(rsp *http.Response) (*Get
 			return nil, err
 		}
 		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetV0CityByCityNameOmnigentCapsuleStateResponse parses an HTTP response from a GetV0CityByCityNameOmnigentCapsuleStateWithResponse call
+func ParseGetV0CityByCityNameOmnigentCapsuleStateResponse(rsp *http.Response) (*GetV0CityByCityNameOmnigentCapsuleStateResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetV0CityByCityNameOmnigentCapsuleStateResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest OmnigentCapsuleStateReportBody
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 501:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON501 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePostV0CityByCityNameOmnigentCapsuleStateByIdPurgeResponse parses an HTTP response from a PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeWithResponse call
+func ParsePostV0CityByCityNameOmnigentCapsuleStateByIdPurgeResponse(rsp *http.Response) (*PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PostV0CityByCityNameOmnigentCapsuleStateByIdPurgeResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest OmnigentCapsuleStateReportBody
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 422:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON422 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 501:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSON501 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
 		var dest ErrorModel

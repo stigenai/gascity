@@ -61,7 +61,7 @@ gc [flags]
 | [gc mcp](#gc-mcp) | Inspect projected MCP config |
 | [gc metrics](#gc-metrics) | Inspect or control Gas City command usage metrics |
 | [gc nudge](#gc-nudge) | Inspect and deliver deferred nudges |
-| [gc omnigent](#gc-omnigent) | Run the opt-in local Omnigent compatibility adapter |
+| [gc omnigent](#gc-omnigent) | Control the opt-in Omnigent compatibility adapter |
 | [gc order](#gc-order) | Manage orders (scheduled and event-driven dispatch) |
 | [gc pack](#gc-pack) | Manage remote pack sources |
 | [gc prime](#gc-prime) | Output the behavioral prompt for an agent |
@@ -2603,7 +2603,7 @@ gc nudge status [session] [flags]
 
 ## gc omnigent
 
-Run the opt-in local Omnigent compatibility adapter
+Control the opt-in Omnigent compatibility adapter
 
 ```
 gc omnigent
@@ -2615,6 +2615,7 @@ gc omnigent
 | [gc omnigent doctor](#gc-omnigent-doctor) | Diagnose the pinned local Omnigent integration |
 | [gc omnigent explain](#gc-omnigent-explain) | Explain resolved local Omnigent configuration |
 | [gc omnigent serve](#gc-omnigent-serve) | Serve one Gas City-supervised local Omnigent sidecar |
+| [gc omnigent state](#gc-omnigent-state) | Inspect and explicitly purge remote Omnigent capsule state |
 | [gc omnigent status](#gc-omnigent-status) | Show local Omnigent sidecar and attachment status |
 
 ## gc omnigent attach
@@ -2675,6 +2676,44 @@ gc omnigent serve [flags]
 | `--catalog` | string |  | absolute profile catalog path (default: &lt;service-root&gt;/config/profiles.yaml) |
 | `--shutdown-timeout` | duration | `0s` | override exact-child shutdown grace period |
 | `--startup-timeout` | duration | `0s` | override bounded child readiness timeout |
+
+## gc omnigent state
+
+Inspect and explicitly purge remote Omnigent capsule state
+
+```
+gc omnigent state
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| [gc omnigent state inspect](#gc-omnigent-state-inspect) | Compare durable sessions with provider-owned capsule state |
+| [gc omnigent state purge](#gc-omnigent-state-purge) | Preview or explicitly delete one closed session's capsule state |
+
+## gc omnigent state inspect
+
+Compare durable sessions with provider-owned capsule state
+
+```
+gc omnigent state inspect [flags]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--json` | bool |  | Output JSON |
+
+## gc omnigent state purge
+
+Record durable purge authorization and delete the exact provider-owned allocation for one closed, non-live session. Use --dry-run to perform every safety read without recording authorization or mutating provider state.
+
+```
+gc omnigent state purge <session-id> [flags]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--dry-run` | bool |  | Validate purge without recording authorization or deleting state |
+| `--json` | bool |  | Output JSON |
 
 ## gc omnigent status
 

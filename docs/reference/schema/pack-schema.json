@@ -1093,6 +1093,28 @@
       "type": "object",
       "description": "PoolOverride modifies legacy [pool] fields that map to session scaling."
     },
+    "ProviderCapsuleSpec": {
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "omnigent"
+          ],
+          "description": "Kind identifies the local compatibility adapter. \"omnigent\" is the\ncurrently supported adapter; an empty kind disables capsule handling."
+        },
+        "profile_option": {
+          "type": "string",
+          "description": "ProfileOption names the provider option whose effective default selects\nthe capsule-local profile."
+        },
+        "catalog": {
+          "type": "string",
+          "description": "Catalog is a city-relative path to the pinned local profile catalog."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "ProviderCapsuleSpec declares an optional provider-specific remote capsule adapter."
+    },
     "ProviderOption": {
       "properties": {
         "key": {
@@ -1158,6 +1180,10 @@
         "display_name": {
           "type": "string",
           "description": "DisplayName is the human-readable name shown in UI and logs."
+        },
+        "capsule": {
+          "$ref": "#/$defs/ProviderCapsuleSpec",
+          "description": "Capsule declares an optional capsule-local compatibility adapter."
         },
         "command": {
           "type": "string",
@@ -1339,7 +1365,7 @@
       "required": [
         "id"
       ],
-      "description": "SecretReference maps a logical credential to one environment or mount destination."
+      "description": "SecretReference maps a logical credential to an environment destination, a mount destination, or both."
     },
     "Service": {
       "properties": {

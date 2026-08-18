@@ -172,11 +172,12 @@ type SSHSecretPathReference struct {
 	Path string
 }
 
-// SecretReference maps one logical credential to exactly one environment or
-// mounted-file destination. It may carry both Kubernetes and SSH sources so a
-// hybrid agent retains one logical profile while each provider resolves only
-// its own source. It deliberately has no field capable of holding a secret
-// value.
+// SecretReference maps one logical credential to an environment destination,
+// a mounted-file destination, or both. When both are set, providers mount the
+// credential and assign the non-secret mount path to Environment. It may carry
+// both Kubernetes and SSH sources so a hybrid agent retains one logical
+// profile while each provider resolves only its own source. It deliberately
+// has no field capable of holding a secret value.
 type SecretReference struct {
 	ID          string
 	Environment string
@@ -201,25 +202,30 @@ func ValidateSecretReferences(refs []SecretReference) error {
 		ids[ref.ID] = true
 		hasEnv := ref.Environment != ""
 		hasMount := ref.MountPath != ""
-		if hasEnv == hasMount {
-			return fmt.Errorf("secret reference %q: exactly one environment or mount_path destination is required", ref.ID)
+		if !hasEnv && !hasMount {
+			return fmt.Errorf("secret reference %q: environment or mount_path destination is required", ref.ID)
 		}
-		destination := "env:" + ref.Environment
 		if hasEnv {
 			if !environmentNamePattern.MatchString(ref.Environment) || forbiddenSecretEnvironment(ref.Environment) {
 				return fmt.Errorf("secret reference %q: environment destination is reserved or invalid", ref.ID)
 			}
-		} else {
+			destination := "env:" + ref.Environment
+			if destinations[destination] {
+				return fmt.Errorf("secret reference %q: duplicate destination", ref.ID)
+			}
+			destinations[destination] = true
+		}
+		if hasMount {
 			clean := filepath.Clean(ref.MountPath)
 			if !filepath.IsAbs(ref.MountPath) || clean != ref.MountPath || clean == string(filepath.Separator) {
 				return fmt.Errorf("secret reference %q: mount_path must be a clean absolute path", ref.ID)
 			}
-			destination = "mount:" + clean
+			destination := "mount:" + clean
+			if destinations[destination] {
+				return fmt.Errorf("secret reference %q: duplicate destination", ref.ID)
+			}
+			destinations[destination] = true
 		}
-		if destinations[destination] {
-			return fmt.Errorf("secret reference %q: duplicate destination", ref.ID)
-		}
-		destinations[destination] = true
 		if ref.Kubernetes == nil && ref.SSH == nil {
 			return fmt.Errorf("secret reference %q: at least one provider source is required", ref.ID)
 		}
@@ -443,6 +449,20 @@ type CapsuleStateRuntime interface {
 	OpenCapsuleState(ctx context.Context, key CapsuleKey) (ref CapsuleStateReference, ok bool, err error)
 	ListCapsuleStates(ctx context.Context) ([]CapsuleStateReference, error)
 	PurgeCapsuleState(ctx context.Context, key CapsuleKey) error
+}
+
+// CapsuleCityScopeProvider exposes the stable provider-owned city scope used
+// to derive capsule keys. Providers that constrain state to a configured
+// scope implement this so controller-side plans cannot guess a mismatched key.
+type CapsuleCityScopeProvider interface {
+	CapsuleCityScope() string
+}
+
+// CapsuleRouteResolver exposes the factual routed backend for composite
+// runtimes. It lets controller-side launch composition allocate state through
+// the same backend that will own the session without guessing from names.
+type CapsuleRouteResolver interface {
+	ResolveCapsuleRoute(sessionName string) (remote bool, state CapsuleStateRuntime, cityScope string, err error)
 }
 
 // CapsuleStatePlace is the optional Place-side capability for exclusive attach

@@ -128,7 +128,7 @@ func remoteRuntimeKind(value string) string {
 // exactly one local or capsule boundary. Capability failures never reroute.
 func ResolveAttachmentLaunchPlan(input AttachmentLaunchInput) (AttachmentLaunchPlan, error) {
 	runtimeName := strings.TrimSpace(input.Runtime)
-	location, provider, err := attachmentPlacement(runtimeName, input.HybridRouteSet, input.HybridRemote)
+	location, provider, err := ResolveAttachmentPlacement(runtimeName, input.HybridRouteSet, input.HybridRemote)
 	if err != nil {
 		return AttachmentLaunchPlan{}, err
 	}
@@ -193,6 +193,13 @@ func flattenProfileCredentialReferences(projections []ProfileCredentialProjectio
 		refs = append(refs, projection.References...)
 	}
 	return refs
+}
+
+// ResolveAttachmentPlacement maps an already selected Gas City runtime to the
+// Omnigent attachment boundary and remote secret provider. Hybrid callers must
+// supply the factual resolved route; this function never guesses placement.
+func ResolveAttachmentPlacement(runtimeName string, hybridRouteSet, hybridRemote bool) (AttachmentLocation, runtime.SecretProvider, error) {
+	return attachmentPlacement(strings.TrimSpace(runtimeName), hybridRouteSet, hybridRemote)
 }
 
 func attachmentPlacement(runtimeName string, hybridRouteSet, hybridRemote bool) (AttachmentLocation, runtime.SecretProvider, error) {

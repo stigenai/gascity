@@ -14,6 +14,13 @@ import (
 	"github.com/gastownhall/gascity/internal/session"
 )
 
+func newLoopbackTestServer(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	return server
+}
+
 // TestRouteMissingClassification pins the new-CLI/old-server hazard model: a 404
 // with no problem+json body is a route-missing signal (old server's SPA / bare-
 // mux catch-all), while a 404 that carries a problem+json body is a domain 404.
@@ -150,8 +157,7 @@ func TestWaitList_TypedRungPreservesSubSecondOrder(t *testing.T) {
 	// cityBeadStore, which the /v0/waits handler reads.
 	state.cityBeadStore = beads.NewMemStoreFrom(2, []beads.Bead{late, early}, nil)
 
-	ts := httptest.NewServer(newTestCityHandler(t, state))
-	t.Cleanup(ts.Close)
+	ts := newLoopbackTestServer(t, newTestCityHandler(t, state))
 	c := NewCityScopedClient(ts.URL, state.CityName())
 
 	cr, err := c.ListWaits("", "")

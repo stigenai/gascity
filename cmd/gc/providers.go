@@ -1144,7 +1144,7 @@ func newHybridProvider(sc config.SessionConfig, cityName, cityPath string) (runt
 	if err != nil {
 		return nil, err
 	}
-	remote, err := sessionk8s.NewSeamBacked()
+	remote, err := sessionk8s.NewSeamBackedForCity(cityName)
 	if err != nil {
 		return nil, fmt.Errorf("hybrid: k8s backend: %w", err)
 	}

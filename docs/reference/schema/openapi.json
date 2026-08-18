@@ -2206,6 +2206,7 @@
               "urn:gascity:error:ambiguous-reference",
               "urn:gascity:error:bad-gateway",
               "urn:gascity:error:bead-not-found",
+              "urn:gascity:error:capsule-state-unsupported",
               "urn:gascity:error:city-not-found",
               "urn:gascity:error:conflict-concurrent-delete",
               "urn:gascity:error:conflict-concurrent-modify",
@@ -2254,6 +2255,7 @@
               "urn:gascity:error:ambiguous-reference",
               "urn:gascity:error:bad-gateway",
               "urn:gascity:error:bead-not-found",
+              "urn:gascity:error:capsule-state-unsupported",
               "urn:gascity:error:city-not-found",
               "urn:gascity:error:conflict-concurrent-delete",
               "urn:gascity:error:conflict-concurrent-modify",
@@ -4823,6 +4825,78 @@
         ],
         "type": "object"
       },
+      "OmnigentCapsuleStateItem": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "retained",
+              "retained_orphan",
+              "would_purge",
+              "purged",
+              "purge_recorded",
+              "conflict",
+              "missing"
+            ],
+            "type": "string"
+          },
+          "reason": {
+            "description": "Stable non-secret explanation for the factual action.",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Gas City session ID, or provider-recorded session ID for an orphan.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "action",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "OmnigentCapsuleStatePurgeBody": {
+        "additionalProperties": false,
+        "properties": {
+          "dry_run": {
+            "description": "When true, perform fresh safety checks without recording authorization or deleting state.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "dry_run"
+        ],
+        "type": "object"
+      },
+      "OmnigentCapsuleStateReportBody": {
+        "additionalProperties": false,
+        "properties": {
+          "dry_run": {
+            "type": "boolean"
+          },
+          "ignored_foreign": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/OmnigentCapsuleStateItem"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "dry_run",
+          "items",
+          "ignored_foreign"
+        ],
+        "type": "object"
+      },
       "OptionChoiceDTO": {
         "additionalProperties": false,
         "properties": {
@@ -5601,6 +5675,26 @@
         ],
         "type": "object"
       },
+      "ProviderCapsuleSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "Catalog": {
+            "type": "string"
+          },
+          "Kind": {
+            "type": "string"
+          },
+          "ProfileOption": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "Kind",
+          "ProfileOption",
+          "Catalog"
+        ],
+        "type": "object"
+      },
       "ProviderCreateInputBody": {
         "additionalProperties": false,
         "properties": {
@@ -5795,6 +5889,9 @@
               "null"
             ]
           },
+          "Capsule": {
+            "$ref": "#/components/schemas/ProviderCapsuleSpec"
+          },
           "Command": {
             "type": [
               "string",
@@ -5850,6 +5947,7 @@
         },
         "required": [
           "Name",
+          "Capsule",
           "Base",
           "Command",
           "ACPCommand",
@@ -34688,6 +34786,321 @@
           }
         },
         "summary": "Get v0 city by city name maintenance status"
+      }
+    },
+    "/v0/city/{cityName}/omnigent/capsule-state": {
+      "get": {
+        "operationId": "get-v0-city-by-city-name-omnigent-capsule-state",
+        "parameters": [
+          {
+            "description": "City name.",
+            "in": "path",
+            "name": "cityName",
+            "required": true,
+            "schema": {
+              "description": "City name.",
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OmnigentCapsuleStateReportBody"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-GC-Request-Id": {
+                "$ref": "#/components/headers/X-GC-Request-Id"
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Conflict",
+            "headers": {
+              "X-GC-Request-Id": {
+                "$ref": "#/components/headers/X-GC-Request-Id"
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Unprocessable Entity",
+            "headers": {
+              "X-GC-Request-Id": {
+                "$ref": "#/components/headers/X-GC-Request-Id"
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "headers": {
+              "X-GC-Request-Id": {
+                "$ref": "#/components/headers/X-GC-Request-Id"
+              }
+            }
+          },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Not Implemented",
+            "headers": {
+              "X-GC-Request-Id": {
+                "$ref": "#/components/headers/X-GC-Request-Id"
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "headers": {
+              "X-GC-Request-Id": {
+                "$ref": "#/components/headers/X-GC-Request-Id"
+              }
+            }
+          }
+        },
+        "summary": "Get v0 city by city name omnigent capsule state"
+      }
+    },
+    "/v0/city/{cityName}/omnigent/capsule-state/{id}/purge": {
+      "post": {
+        "operationId": "post-v0-city-by-city-name-omnigent-capsule-state-by-id-purge",
+        "parameters": [
+          {
+            "description": "Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.",
+            "in": "header",
+            "name": "X-GC-Request",
+            "required": true,
+            "schema": {
+              "description": "Anti-CSRF header required on mutation requests. Any non-empty value is accepted; the header's presence is what the server checks.",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "City name.",
+            "in": "path",
+            "name": "cityName",
+            "required": true,
+            "schema": {
+              "description": "City name.",
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Closed Gas City session ID whose capsule state should be previewed or purged.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "description": "Closed Gas City session ID whose capsule state should be previewed or purged.",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OmnigentCapsuleStatePurgeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OmnigentCapsuleStateReportBody"
+                }
+              }
+            },
+            "description": "OK",
+            "headers": {
+              "X-GC-Request-Id": {
+                "$ref": "#/components/headers/X-GC-Request-Id"
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Bad Request",
+            "headers": {
+              "X-GC-Request-Id": {
+                "$ref": "#/components/headers/X-GC-Request-Id"
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Unauthorized",
+            "headers": {
+              "X-GC-Request-Id": {
+                "$ref": "#/components/headers/X-GC-Request-Id"
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Forbidden",
+            "headers": {
+              "X-GC-Request-Id": {
+                "$ref": "#/components/headers/X-GC-Request-Id"
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Not Found",
+            "headers": {
+              "X-GC-Request-Id": {
+                "$ref": "#/components/headers/X-GC-Request-Id"
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Conflict",
+            "headers": {
+              "X-GC-Request-Id": {
+                "$ref": "#/components/headers/X-GC-Request-Id"
+              }
+            }
+          },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Unprocessable Entity",
+            "headers": {
+              "X-GC-Request-Id": {
+                "$ref": "#/components/headers/X-GC-Request-Id"
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Internal Server Error",
+            "headers": {
+              "X-GC-Request-Id": {
+                "$ref": "#/components/headers/X-GC-Request-Id"
+              }
+            }
+          },
+          "501": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Not Implemented",
+            "headers": {
+              "X-GC-Request-Id": {
+                "$ref": "#/components/headers/X-GC-Request-Id"
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorModel"
+                }
+              }
+            },
+            "description": "Service Unavailable",
+            "headers": {
+              "X-GC-Request-Id": {
+                "$ref": "#/components/headers/X-GC-Request-Id"
+              }
+            }
+          }
+        },
+        "summary": "Post v0 city by city name omnigent capsule state by ID purge"
       }
     },
     "/v0/city/{cityName}/omnigent/status": {

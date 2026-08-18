@@ -81,6 +81,9 @@ var (
 	Forbidden           = Register(ProblemType{Code: "forbidden", Status: http.StatusForbidden, Title: "Forbidden"})
 	NotImplemented      = Register(ProblemType{Code: "not-implemented", Status: http.StatusNotImplemented, Title: "Not Implemented"})
 	TerminalUnsupported = Register(ProblemType{Code: "terminal-unsupported", Status: http.StatusNotImplemented, Title: "Remote Terminal Unsupported"})
+	// CapsuleStateUnsupported reports that the selected session runtime has no
+	// durable capsule-state inventory and purge capability.
+	CapsuleStateUnsupported = Register(ProblemType{Code: "capsule-state-unsupported", Status: http.StatusNotImplemented, Title: "Capsule State Unsupported"})
 
 	// Idempotency (two-phase reserve/complete).
 	IdempotencyInFlight = Register(ProblemType{Code: "idempotency-in-flight", Status: http.StatusConflict, Title: "Idempotency Key In Flight"})

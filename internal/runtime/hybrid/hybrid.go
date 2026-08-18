@@ -4,6 +4,7 @@ package hybrid
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/gastownhall/gascity/internal/runtime"
@@ -30,6 +31,9 @@ var (
 	_ runtime.InstanceTokenFencedStopProvider = (*Provider)(nil)
 	_ runtime.InstanceTokenFencedStopResolver = (*Provider)(nil)
 	_ runtime.TerminalProvider                = (*Provider)(nil)
+	_ runtime.CapsuleRouteResolver            = (*Provider)(nil)
+	_ runtime.CapsuleStateRuntime             = (*Provider)(nil)
+	_ runtime.CapsuleCityScopeProvider        = (*Provider)(nil)
 )
 
 func (p *Provider) terminal(name string) (runtime.TerminalProvider, error) {
@@ -105,6 +109,78 @@ func (p *Provider) route(name string) runtime.Provider {
 		return p.remote
 	}
 	return p.local
+}
+
+// ResolveCapsuleRoute reports the exact backend selected for sessionName and,
+// for remote routes, returns its durable-state capability and stable scope.
+func (p *Provider) ResolveCapsuleRoute(sessionName string) (bool, runtime.CapsuleStateRuntime, string, error) {
+	if !p.isRemote(sessionName) {
+		return false, nil, "", nil
+	}
+	state, ok := p.remote.(runtime.CapsuleStateRuntime)
+	if !ok {
+		return true, nil, "", fmt.Errorf("hybrid remote route for %q does not provide capsule state", sessionName)
+	}
+	var cityScope string
+	if scoped, ok := p.remote.(runtime.CapsuleCityScopeProvider); ok {
+		cityScope = scoped.CapsuleCityScope()
+	}
+	return true, state, cityScope, nil
+}
+
+func (p *Provider) capsuleStateRuntime() (runtime.CapsuleStateRuntime, error) {
+	state, ok := p.remote.(runtime.CapsuleStateRuntime)
+	if !ok {
+		return nil, fmt.Errorf("hybrid remote runtime does not provide capsule state")
+	}
+	return state, nil
+}
+
+// CapsuleCityScope returns the remote backend's stable capsule scope. Local
+// hybrid routes do not own capsule state.
+func (p *Provider) CapsuleCityScope() string {
+	if scoped, ok := p.remote.(runtime.CapsuleCityScopeProvider); ok {
+		return scoped.CapsuleCityScope()
+	}
+	return ""
+}
+
+// EnsureCapsuleState forwards durable allocation to the remote backend.
+func (p *Provider) EnsureCapsuleState(ctx context.Context, key runtime.CapsuleKey) (runtime.CapsuleStateReference, bool, error) {
+	state, err := p.capsuleStateRuntime()
+	if err != nil {
+		return runtime.CapsuleStateReference{}, false, err
+	}
+	return state.EnsureCapsuleState(ctx, key)
+}
+
+// OpenCapsuleState forwards exact allocation lookup to the remote backend.
+func (p *Provider) OpenCapsuleState(ctx context.Context, key runtime.CapsuleKey) (runtime.CapsuleStateReference, bool, error) {
+	state, err := p.capsuleStateRuntime()
+	if err != nil {
+		return runtime.CapsuleStateReference{}, false, err
+	}
+	return state.OpenCapsuleState(ctx, key)
+}
+
+// ListCapsuleStates forwards provider-ground-truth inventory to the remote
+// backend. Local hybrid routes never own capsule allocations.
+func (p *Provider) ListCapsuleStates(ctx context.Context) ([]runtime.CapsuleStateReference, error) {
+	state, err := p.capsuleStateRuntime()
+	if err != nil {
+		return nil, err
+	}
+	return state.ListCapsuleStates(ctx)
+}
+
+// PurgeCapsuleState forwards exact, ownership-fenced deletion to the remote
+// backend.
+func (p *Provider) PurgeCapsuleState(ctx context.Context, key runtime.CapsuleKey) error {
+	state, err := p.capsuleStateRuntime()
+	if err != nil {
+		return err
+	}
+	return state.PurgeCapsuleState(ctx, key)
 }
 
 // ConfigureServer forwards shared local-server setup when the local backend

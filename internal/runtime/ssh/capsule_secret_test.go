@@ -15,7 +15,7 @@ func TestSSHCapsuleProjectsSelectedProfileCredentialsThroughPrivateLauncher(t *t
 	cfg := testSSHCapsuleConfig(t)
 	cfg.SecretReferences = []runtime.SecretReference{
 		{
-			ID: "claude-primary-home", MountPath: "/run/gascity/omnigent/credentials/claude-primary",
+			ID: "claude-primary-home", Environment: "CLAUDE_CONFIG_DIR", MountPath: "/run/gascity/omnigent/credentials/claude-primary",
 			SSH: &runtime.SSHSecretPathReference{Path: "/srv/gascity/secrets/claude-primary"},
 		},
 		{
@@ -59,6 +59,9 @@ func TestSSHCapsuleProjectsSelectedProfileCredentialsThroughPrivateLauncher(t *t
 	if strings.Contains(launcher, credentialSentinel) {
 		t.Fatal("private launcher contains credential value returned by remote command")
 	}
+	if !strings.Contains(launcher, "export CLAUDE_CONFIG_DIR='/run/gascity/omnigent/credentials/claude-primary'") {
+		t.Fatalf("private launcher does not project Claude auth home to mounted path: %s", launcher)
+	}
 
 	newSession := firstCall(f, isTmux("new-session"))
 	if newSession == nil {
@@ -66,7 +69,7 @@ func TestSSHCapsuleProjectsSelectedProfileCredentialsThroughPrivateLauncher(t *t
 	}
 	command := newSession[len(newSession)-1]
 	for _, forbidden := range []string{
-		credentialSentinel, "CLAUDE_PRIMARY_TOKEN", "/srv/gascity/secrets",
+		credentialSentinel, "CLAUDE_PRIMARY_TOKEN", "CLAUDE_CONFIG_DIR", "/srv/gascity/secrets",
 		"claude-primary-home", "claude-secondary-home", "primary-backend-token",
 	} {
 		if strings.Contains(command, forbidden) {

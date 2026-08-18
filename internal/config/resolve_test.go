@@ -2170,6 +2170,7 @@ func TestMergeProviderOverBuiltinFieldSync(t *testing.T) {
 	basePtr := "builtin:custom"
 	city := ProviderSpec{
 		Base:                   &basePtr,
+		Capsule:                ProviderCapsuleSpec{Kind: "omnigent", ProfileOption: "profile", Catalog: "profiles.yaml"},
 		ArgsAppend:             []string{"--extra"},
 		OptionsSchemaMerge:     "by_key",
 		DisplayName:            "Custom",

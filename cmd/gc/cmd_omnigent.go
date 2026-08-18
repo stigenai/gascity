@@ -23,7 +23,7 @@ import (
 func newOmnigentCmd(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "omnigent",
-		Short: "Run the opt-in local Omnigent compatibility adapter",
+		Short: "Control the opt-in Omnigent compatibility adapter",
 		Args:  cobra.NoArgs,
 	}
 	cmd.AddCommand(
@@ -32,6 +32,7 @@ func newOmnigentCmd(stdout, stderr io.Writer) *cobra.Command {
 		newOmnigentExplainCmd(stdout, stderr),
 		newOmnigentStatusCmd(stdout, stderr),
 		newOmnigentDoctorCmd(stdout, stderr),
+		newOmnigentStateCmd(stdout, stderr),
 	)
 	return cmd
 }

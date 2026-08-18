@@ -363,6 +363,10 @@ func (sm *SupervisorMux) registerCityRoutes() {
 	cityGet(sm, "/omnigent/status", (*Server).humaHandleOmnigentStatusList,
 		errorStatuses(http.StatusBadRequest, http.StatusNotFound, http.StatusServiceUnavailable),
 		listOrder("(created_at DESC, id DESC) — newest Omnigent sessions first"))
+	cityGet(sm, "/omnigent/capsule-state", (*Server).humaHandleOmnigentCapsuleStateInspect,
+		errorStatuses(http.StatusConflict, http.StatusNotImplemented, http.StatusServiceUnavailable))
+	cityPost(sm, "/omnigent/capsule-state/{id}/purge", (*Server).humaHandleOmnigentCapsuleStatePurge,
+		errorStatuses(http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict, http.StatusNotImplemented, http.StatusServiceUnavailable))
 
 	// Sessions (non-stream — stream is the SSE registration below).
 	cityRegister(sm, huma.Operation{

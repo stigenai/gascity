@@ -78,7 +78,7 @@ func TestValidateSecretReferencesRejectsAmbiguityAndNeverFormatsValues(t *testin
 	t.Parallel()
 	valid := []SecretReference{
 		{
-			ID: "codex-home", MountPath: "/run/secrets/codex",
+			ID: "codex-home", Environment: "CODEX_HOME", MountPath: "/run/secrets/codex",
 			Kubernetes: &KubernetesSecretKeyReference{Name: "codex-auth", Key: "config"},
 			SSH:        &SSHSecretPathReference{Path: "/srv/gc-secrets/codex"},
 		},
@@ -94,7 +94,6 @@ func TestValidateSecretReferencesRejectsAmbiguityAndNeverFormatsValues(t *testin
 	for name, refs := range map[string][]SecretReference{
 		"empty id":             {{Environment: "TOKEN", Kubernetes: &KubernetesSecretKeyReference{Name: "s", Key: "k"}}},
 		"bad id":               {{ID: "bad/id", Environment: "TOKEN", Kubernetes: &KubernetesSecretKeyReference{Name: "s", Key: "k"}}},
-		"both destinations":    {{ID: "a", Environment: "TOKEN", MountPath: "/secret", Kubernetes: &KubernetesSecretKeyReference{Name: "s", Key: "k"}}},
 		"no destination":       {{ID: "a", Kubernetes: &KubernetesSecretKeyReference{Name: "s", Key: "k"}}},
 		"relative mount":       {{ID: "a", MountPath: "secret", Kubernetes: &KubernetesSecretKeyReference{Name: "s", Key: "k"}}},
 		"reserved environment": {{ID: "a", Environment: "GC_SESSION_ID", Kubernetes: &KubernetesSecretKeyReference{Name: "s", Key: "k"}}},
@@ -124,7 +123,7 @@ func TestValidateSecretReferencesRejectsAmbiguityAndNeverFormatsValues(t *testin
 func TestSelectSecretReferencesConfinesSourcesToSelectedProvider(t *testing.T) {
 	t.Parallel()
 	refs := []SecretReference{{
-		ID: "claude", Environment: "CLAUDE_AUTH_TOKEN",
+		ID: "claude", Environment: "CLAUDE_CONFIG_DIR", MountPath: "/run/gascity/omnigent/credentials/claude",
 		Kubernetes: &KubernetesSecretKeyReference{Name: "claude-primary", Key: "token"},
 		SSH:        &SSHSecretPathReference{Path: "/srv/gc-secrets/claude-primary-token"},
 	}}
@@ -135,12 +134,18 @@ func TestSelectSecretReferencesConfinesSourcesToSelectedProvider(t *testing.T) {
 	if kubernetes[0].Kubernetes == nil || kubernetes[0].SSH != nil {
 		t.Fatalf("kubernetes selection leaked another provider source: %+v", kubernetes[0])
 	}
+	if kubernetes[0].Environment != refs[0].Environment || kubernetes[0].MountPath != refs[0].MountPath {
+		t.Fatalf("kubernetes selection lost destination projection: %+v", kubernetes[0])
+	}
 	ssh, err := SelectSecretReferences(SecretProviderSSH, refs)
 	if err != nil {
 		t.Fatalf("SelectSecretReferences(ssh): %v", err)
 	}
 	if ssh[0].SSH == nil || ssh[0].Kubernetes != nil {
 		t.Fatalf("SSH selection leaked another provider source: %+v", ssh[0])
+	}
+	if ssh[0].Environment != refs[0].Environment || ssh[0].MountPath != refs[0].MountPath {
+		t.Fatalf("SSH selection lost destination projection: %+v", ssh[0])
 	}
 
 	missing := []SecretReference{{

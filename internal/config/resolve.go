@@ -237,6 +237,9 @@ func lookupProvider(name string, cityProviders map[string]ProviderSpec, lookPath
 // suppresses the feature even when inherited from a built-in with &true.
 func MergeProviderOverBuiltin(base, city ProviderSpec) ProviderSpec {
 	result := base
+	if city.Capsule.Kind != "" {
+		result.Capsule = city.Capsule
+	}
 
 	// Inheritance control fields: presence-aware for Base.
 	if city.Base != nil {
@@ -619,6 +622,7 @@ func detectProviderName(lookPath LookPathFunc) (string, error) {
 func specToResolved(name string, spec *ProviderSpec) *ResolvedProvider {
 	rp := &ResolvedProvider{
 		Name:                   name,
+		Capsule:                spec.Capsule,
 		Command:                spec.Command,
 		PromptMode:             spec.PromptMode,
 		PromptFlag:             spec.PromptFlag,
@@ -814,6 +818,9 @@ func mergeAgentOverrides(rp *ResolvedProvider, agent *Agent) {
 // doesn't carry (DisplayName, PathCheck).
 func resolvedChainToSpec(r ResolvedProvider, leaf ProviderSpec) ProviderSpec {
 	out := leaf
+	if r.Capsule.Kind != "" {
+		out.Capsule = r.Capsule
+	}
 	out.Command = r.Command
 	if r.Args != nil {
 		out.Args = append([]string(nil), r.Args...)

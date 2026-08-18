@@ -40,7 +40,7 @@ func projectK8sSecretReferences(cfg runtime.Config) (k8sSecretProjection, error)
 	for _, ref := range refs {
 		source := ref.Kubernetes
 		optional := source.Optional
-		if ref.Environment != "" {
+		if ref.Environment != "" && ref.MountPath == "" {
 			if _, exists := cfg.Env[ref.Environment]; exists {
 				return k8sSecretProjection{}, fmt.Errorf("secret reference %q: environment %s must not also have a literal Pod value", ref.ID, ref.Environment)
 			}
@@ -52,6 +52,15 @@ func projectK8sSecretReferences(cfg runtime.Config) (k8sSecretProjection, error)
 				}},
 			})
 			continue
+		}
+		if ref.Environment != "" {
+			if _, exists := cfg.Env[ref.Environment]; exists {
+				return k8sSecretProjection{}, fmt.Errorf("secret reference %q: environment %s must not also have a literal Pod value", ref.ID, ref.Environment)
+			}
+			projection.environment = append(projection.environment, corev1.EnvVar{
+				Name:  ref.Environment,
+				Value: ref.MountPath,
+			})
 		}
 		if source.Key == "." || source.Key == ".." {
 			return k8sSecretProjection{}, fmt.Errorf("secret reference %q: Kubernetes key is not a safe projected filename", ref.ID)

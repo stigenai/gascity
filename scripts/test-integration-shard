@@ -34,7 +34,14 @@ export CGO_CPPFLAGS="${cgo_cppflags}"
 export CGO_LDFLAGS="${cgo_ldflags}"
 
 run_go() {
-  env -i \
+  local isolation_env=()
+  if [[ -n "${ZDOTDIR-}" ]]; then
+    isolation_env+=("ZDOTDIR=$ZDOTDIR")
+  fi
+  if [[ -n "${GIT_CONFIG_GLOBAL-}" ]]; then
+    isolation_env+=("GIT_CONFIG_GLOBAL=$GIT_CONFIG_GLOBAL")
+  fi
+  env -i "${isolation_env[@]}" \
     PATH="${PATH}" \
     HOME="${HOME:-}" \
     USER="${USER:-}" \

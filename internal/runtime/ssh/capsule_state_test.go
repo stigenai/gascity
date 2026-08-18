@@ -156,7 +156,7 @@ func TestSSHCapsuleStatePersistsAcrossProviderRestartAndPurgesExplicitly(t *test
 	if err := os.Mkdir(root, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	provider := providerWithLocalCapsuleStateRoot(root)
+	provider := providerWithLocalCapsuleStateRoot(t, root)
 	key, err := runtime.NewCapsuleKey("ssh://box/city", "session 多")
 	if err != nil {
 		t.Fatal(err)
@@ -178,7 +178,7 @@ func TestSSHCapsuleStatePersistsAcrossProviderRestartAndPurgesExplicitly(t *test
 
 	// A new Provider models controller/SSH connection restart. The allocation
 	// is discovered from remote ground truth, not process memory.
-	restarted := providerWithLocalCapsuleStateRoot(root)
+	restarted := providerWithLocalCapsuleStateRoot(t, root)
 	reopened, created, err := restarted.EnsureCapsuleState(context.Background(), key)
 	if err != nil || created || reopened != ref {
 		t.Fatalf("restarted EnsureCapsuleState = %#v, %t, %v; want %#v", reopened, created, err, ref)
@@ -283,7 +283,7 @@ func TestSSHCapsuleConversationStateSurvivesDisconnectTmuxLossAndControllerResta
 func TestSSHCapsuleStateConcurrentSessionsAreIsolatedAndListed(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	provider := providerWithLocalCapsuleStateRoot(root)
+	provider := providerWithLocalCapsuleStateRoot(t, root)
 	keys := make([]runtime.CapsuleKey, 2)
 	for i, id := range []string{"session-a", "session-b"} {
 		key, err := runtime.NewCapsuleKey("city", id)
@@ -338,6 +338,7 @@ func TestSSHCapsuleStateConcurrentSessionsAreIsolatedAndListed(t *testing.T) {
 func TestSSHCapsuleStateRecoversCommittedOperationsAfterLostSSHResponse(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
+	secureLocalCapsuleStateRoot(t, root)
 	key, _ := runtime.NewCapsuleKey("city", "lost-response")
 	ensureRunner := &lostStateResponseRunner{delegate: localCommandRunner{}, script: remoteEnsureCapsuleStateScript}
 	provider := &Provider{
@@ -361,7 +362,7 @@ func TestSSHCapsuleStateRecoversCommittedOperationsAfterLostSSHResponse(t *testi
 func TestSSHCapsulePurgeRecoversVerifiedRenameTombstone(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	provider := providerWithLocalCapsuleStateRoot(root)
+	provider := providerWithLocalCapsuleStateRoot(t, root)
 	key, _ := runtime.NewCapsuleKey("city", "purge-crash")
 	ref, _, err := provider.EnsureCapsuleState(context.Background(), key)
 	if err != nil {
@@ -382,7 +383,7 @@ func TestSSHCapsulePurgeRecoversVerifiedRenameTombstone(t *testing.T) {
 func TestSSHCapsuleStateRejectsTamperAndForgedIdentity(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	provider := providerWithLocalCapsuleStateRoot(root)
+	provider := providerWithLocalCapsuleStateRoot(t, root)
 	key, _ := runtime.NewCapsuleKey("city", "session")
 	ref, _, err := provider.EnsureCapsuleState(context.Background(), key)
 	if err != nil {
@@ -405,10 +406,19 @@ func TestSSHCapsuleStateRejectsTamperAndForgedIdentity(t *testing.T) {
 	}
 }
 
-func providerWithLocalCapsuleStateRoot(root string) *Provider {
+func providerWithLocalCapsuleStateRoot(t *testing.T, root string) *Provider {
+	t.Helper()
+	secureLocalCapsuleStateRoot(t, root)
 	return &Provider{
 		conn:             &Conn{ep: Endpoint{Host: "local-test"}, run: localCommandRunner{}},
 		capsuleStateRoot: root,
 		workDirs:         make(map[string]string),
+	}
+}
+
+func secureLocalCapsuleStateRoot(t *testing.T, root string) {
+	t.Helper()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatalf("secure local capsule state root: %v", err)
 	}
 }

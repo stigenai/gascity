@@ -24,7 +24,64 @@ type freshListProvider struct {
 	freshCalls int
 }
 
-type noFencedStopProvider struct{ runtime.Provider }
+type (
+	noFencedStopProvider   struct{ runtime.Provider }
+	noCapsuleStateProvider struct{ runtime.Provider }
+)
+
+func TestProvider_ResolvesCapsuleRouteThroughSelectedBackend(t *testing.T) {
+	local := runtime.NewFake()
+	remote := runtime.NewFake()
+	h := New(local, remote, isRemote)
+
+	remoteRoute, state, scope, err := h.ResolveCapsuleRoute("local-agent")
+	if err != nil || remoteRoute || state != nil || scope != "" {
+		t.Fatalf("local capsule route = (%t,%T,%q,%v), want local without capsule state", remoteRoute, state, scope, err)
+	}
+	remoteRoute, state, scope, err = h.ResolveCapsuleRoute("remote-agent-1")
+	if err != nil || !remoteRoute || state != remote || scope != "" {
+		t.Fatalf("remote capsule route = (%t,%T,%q,%v), want remote fake", remoteRoute, state, scope, err)
+	}
+}
+
+func TestProvider_ForwardsCapsuleStateInventoryToRemoteBackend(t *testing.T) {
+	t.Parallel()
+
+	local := runtime.NewFake()
+	remote := runtime.NewFake()
+	h := New(local, remote, isRemote)
+	key, err := runtime.NewCapsuleKey("city", "remote-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, _, err := remote.EnsureCapsuleState(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	state, ok := any(h).(runtime.CapsuleStateRuntime)
+	if !ok {
+		t.Fatal("hybrid provider does not expose remote capsule-state inventory")
+	}
+	got, err := state.ListCapsuleStates(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != ref {
+		t.Fatalf("ListCapsuleStates = %#v, want %#v", got, []runtime.CapsuleStateReference{ref})
+	}
+	if local.CountCalls("ListCapsuleStates", "") != 0 || remote.CountCalls("ListCapsuleStates", "") != 1 {
+		t.Fatalf("inventory calls local=%d remote=%d, want 0/1", local.CountCalls("ListCapsuleStates", ""), remote.CountCalls("ListCapsuleStates", ""))
+	}
+}
+
+func TestProvider_RejectsRemoteCapsuleRouteWithoutStateCapability(t *testing.T) {
+	h := New(runtime.NewFake(), noCapsuleStateProvider{Provider: runtime.NewFake()}, isRemote)
+	remoteRoute, state, _, err := h.ResolveCapsuleRoute("remote-agent-1")
+	if err == nil || !remoteRoute || state != nil || !strings.Contains(err.Error(), "capsule state") {
+		t.Fatalf("remote capsule route = (%t,%T,%v), want missing state error", remoteRoute, state, err)
+	}
+}
 
 func TestProvider_ResolvesFencedStopPerRoute(t *testing.T) {
 	local := noFencedStopProvider{Provider: runtime.NewFake()}

@@ -125,6 +125,15 @@ func (r CapsuleStateReconciler) Reconcile(ctx context.Context, cityScope string,
 			report.Items = append(report.Items, CapsuleStateReconcileItem{SessionID: fact.Key.SessionID, Action: CapsuleStateConflict, Reason: "ambiguous_provider_state"})
 			continue
 		}
+		if fact.PurgeCompleted {
+			if hasState {
+				report.Items = append(report.Items, CapsuleStateReconcileItem{SessionID: fact.Key.SessionID, Action: CapsuleStateConflict, Reason: "state_present_after_recorded_purge"})
+				reconcileErrs = append(reconcileErrs, fmt.Errorf("%w: capsule state reappeared after recorded purge for session %q", runtime.ErrCapsuleStateConflict, fact.Key.SessionID))
+			} else {
+				report.Items = append(report.Items, CapsuleStateReconcileItem{SessionID: fact.Key.SessionID, Action: CapsuleStatePurgeRecorded, Reason: "purge_already_completed"})
+			}
+			continue
+		}
 		if !hasState {
 			if fact.PurgeAuthorized && fact.Terminal && !fact.Live {
 				if dryRun {

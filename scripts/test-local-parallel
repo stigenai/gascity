@@ -216,6 +216,8 @@ export TEST_LOCAL_GOCACHE="$gocache_val"
 export TEST_LOCAL_GOMODCACHE="$gomodcache_val"
 export TEST_LOCAL_GOTMPDIR="$gotmpdir_val"
 export TEST_LOCAL_GOROOT="${GOROOT:-$goroot_val}"
+export TEST_LOCAL_ZDOTDIR="${TEST_LOCAL_ZDOTDIR-}"
+export TEST_LOCAL_GIT_CONFIG_GLOBAL="${TEST_LOCAL_GIT_CONFIG_GLOBAL-}"
 
 # Lower each shard's CPU and I/O priority (best-effort) so the parallel fan-out
 # yields to interactive work and does not livelock constrained hosts during the
@@ -249,19 +251,38 @@ set +e
   set -euo pipefail
   spec="$1"
   label="${spec%%::*}"
-  command="${spec#*::}"
-  safe_label="$(printf "%s" "$label" | tr -c "A-Za-z0-9._-" "_")"
-  log="$LOCAL_TEST_LOG_DIR/${safe_label}.log"
+	command="${spec#*::}"
+	safe_label="$(printf "%s" "$label" | tr -c "A-Za-z0-9._-" "_")"
+	log="$LOCAL_TEST_LOG_DIR/${safe_label}.log"
+	tmux_tmpdir="$LOCAL_TEST_LOG_DIR/.tmux-$safe_label"
+	mkdir -p "$tmux_tmpdir"
+	tmux_socket="$tmux_tmpdir/tmux-$(id -u)/default"
+	cleanup_job_tmux() {
+		if command -v tmux >/dev/null 2>&1 && [[ -S "$tmux_socket" ]]; then
+			tmux -S "$tmux_socket" kill-server >/dev/null 2>&1 || true
+		fi
+		rm -rf -- "$tmux_tmpdir"
+  }
+  trap cleanup_job_tmux EXIT
+
+  isolation_env=()
+  if [[ -n "$TEST_LOCAL_ZDOTDIR" ]]; then
+    isolation_env+=("ZDOTDIR=$TEST_LOCAL_ZDOTDIR")
+  fi
+  if [[ -n "$TEST_LOCAL_GIT_CONFIG_GLOBAL" ]]; then
+    isolation_env+=("GIT_CONFIG_GLOBAL=$TEST_LOCAL_GIT_CONFIG_GLOBAL")
+  fi
 
   echo "[$label] start"
-  if ${TEST_LOCAL_NICE:-} env -i \
+  if ${TEST_LOCAL_NICE:-} env -i "${isolation_env[@]}" \
     PATH="${PATH}" \
     HOME="${HOME:-}" \
     USER="${USER:-}" \
     LOGNAME="${LOGNAME:-}" \
-    SHELL="${SHELL:-/bin/sh}" \
-    LANG="${LANG:-C.UTF-8}" \
-    TMPDIR="${TMPDIR:-/var/tmp}" \
+		SHELL="${SHELL:-/bin/sh}" \
+		LANG="${LANG:-C.UTF-8}" \
+		TMPDIR="${TMPDIR:-/var/tmp}" \
+		TMUX_TMPDIR="$tmux_tmpdir" \
     OBSERVABLE_TEST_LOG="${OBSERVABLE_TEST_LOG-}" \
     OBSERVABLE_FAILURE_LINES="${OBSERVABLE_FAILURE_LINES-}" \
     GC_TEST_NO_SLICE="${GC_TEST_NO_SLICE-}" \

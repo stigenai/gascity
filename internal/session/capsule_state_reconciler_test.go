@@ -127,6 +127,41 @@ func TestCapsuleStateReconcilerConcurrentPassesAreIdempotent(t *testing.T) {
 	}
 }
 
+func TestCapsuleStateReconcilerHonorsRecordedCompletionAndConflictsOnReappearance(t *testing.T) {
+	t.Parallel()
+
+	provider := runtime.NewFake()
+	ref := ensureCapsuleTestState(t, provider, "city", "completed")
+	if err := provider.PurgeCapsuleState(context.Background(), ref.Key); err != nil {
+		t.Fatal(err)
+	}
+	ledger := newCapsuleStateLedger([]CapsuleStateSessionFact{{
+		Key: ref.Key, Terminal: true, PurgeAuthorized: true, PurgeCompleted: true,
+	}})
+
+	report, err := ledger.reconciler(provider).Reconcile(context.Background(), "city", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := capsuleStateActions(report)[ref.Key.SessionID]; got != CapsuleStatePurgeRecorded {
+		t.Fatalf("completed absent action = %q, want %q", got, CapsuleStatePurgeRecorded)
+	}
+
+	if _, _, err := provider.EnsureCapsuleState(context.Background(), ref.Key); err != nil {
+		t.Fatal(err)
+	}
+	report, err = ledger.reconciler(provider).Reconcile(context.Background(), "city", false)
+	if !errors.Is(err, runtime.ErrCapsuleStateConflict) {
+		t.Fatalf("reappeared state error = %v, want ErrCapsuleStateConflict", err)
+	}
+	if got := capsuleStateActions(report)[ref.Key.SessionID]; got != CapsuleStateConflict {
+		t.Fatalf("reappeared action = %q, want %q", got, CapsuleStateConflict)
+	}
+	if _, ok, err := provider.OpenCapsuleState(context.Background(), ref.Key); err != nil || !ok {
+		t.Fatalf("reappeared state was deleted: exists=%t err=%v", ok, err)
+	}
+}
+
 func TestCapsuleStateReconcilerRetriesFailureAndRejectsStaleAllocation(t *testing.T) {
 	t.Parallel()
 	t.Run("provider unavailable", func(t *testing.T) {

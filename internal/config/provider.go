@@ -43,6 +43,20 @@ type OptionChoice struct {
 	FlagAliases [][]string `toml:"flag_aliases,omitempty" json:"-"`
 }
 
+// ProviderCapsuleSpec declares an optional provider-specific remote capsule
+// adapter. Profile and catalog selection remain ordinary typed provider
+// configuration; the adapter never owns remote placement.
+type ProviderCapsuleSpec struct {
+	// Kind identifies the local compatibility adapter. "omnigent" is the
+	// currently supported adapter; an empty kind disables capsule handling.
+	Kind string `toml:"kind,omitempty" jsonschema:"enum=omnigent"`
+	// ProfileOption names the provider option whose effective default selects
+	// the capsule-local profile.
+	ProfileOption string `toml:"profile_option,omitempty"`
+	// Catalog is a city-relative path to the pinned local profile catalog.
+	Catalog string `toml:"catalog,omitempty"`
+}
+
 // ProviderSpec defines a named provider's startup parameters.
 // Built-in presets are returned by BuiltinProviders(). Users can override
 // or define new providers via [providers.xxx] in city.toml.
@@ -62,6 +76,8 @@ type ProviderSpec struct {
 	OptionsSchemaMerge string `toml:"options_schema_merge,omitempty" jsonschema:"enum=replace,enum=by_key"`
 	// DisplayName is the human-readable name shown in UI and logs.
 	DisplayName string `toml:"display_name,omitempty"`
+	// Capsule declares an optional capsule-local compatibility adapter.
+	Capsule ProviderCapsuleSpec `toml:"capsule,omitempty"`
 	// Command is the executable to run for this provider.
 	Command string `toml:"command,omitempty"`
 	// Args are default command-line arguments passed to the provider. The
@@ -199,7 +215,8 @@ type ChainEntry struct {
 // ResolvedProvider is the fully-merged, ready-to-use provider config.
 // All fields are populated after resolution (built-in + city override + agent override).
 type ResolvedProvider struct {
-	Name string
+	Capsule ProviderCapsuleSpec
+	Name    string
 	// Kind is the canonical builtin provider name when this provider derives
 	// from a builtin (e.g. "claude" even if Name is "my-fast-claude"). Empty
 	// when the provider is fully custom with no builtin base.

@@ -94,7 +94,7 @@ func renderCapsuleCredentialLauncher(refs []runtime.SecretReference) string {
 	script.WriteString("[ \"$#\" -gt 1 ] && [ \"$1\" = -- ] || gc_credential_failure\nshift\n")
 	for _, ref := range refs {
 		source := shellquote.Quote(ref.SSH.Path)
-		if ref.Environment != "" {
+		if ref.Environment != "" && ref.MountPath == "" {
 			script.WriteString("gc_credential_source=" + source + "\n")
 			script.WriteString("gc_validate_credential_source \"$gc_credential_source\"\n")
 			script.WriteString("if [ -d \"$gc_credential_source\" ]; then gc_credential_value=$gc_credential_source; else gc_credential_value=$(cat \"$gc_credential_source\" 2>/dev/null) || gc_credential_failure; fi\n")
@@ -106,6 +106,9 @@ func renderCapsuleCredentialLauncher(refs []runtime.SecretReference) string {
 		script.WriteString("gc_credential_source=" + source + "\ngc_credential_destination=" + destination + "\n")
 		script.WriteString("gc_validate_credential_source \"$gc_credential_source\"\n")
 		script.WriteString("if [ -L \"$gc_credential_destination\" ]; then [ \"$(readlink \"$gc_credential_destination\" 2>/dev/null)\" = \"$gc_credential_source\" ] || gc_credential_failure; elif [ -e \"$gc_credential_destination\" ]; then gc_credential_failure; else ln -s \"$gc_credential_source\" \"$gc_credential_destination\" 2>/dev/null || gc_credential_failure; fi\n")
+		if ref.Environment != "" {
+			script.WriteString("export " + ref.Environment + "=" + destination + "\n")
+		}
 		script.WriteString("unset gc_credential_source gc_credential_destination\n")
 	}
 	script.WriteString("exec \"$@\"\n")

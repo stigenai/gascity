@@ -841,6 +841,30 @@ export const zOkWithIdResponseBody = z.object({
     status: z.string()
 });
 
+export const zOmnigentCapsuleStateItem = z.object({
+    action: z.enum([
+        'retained',
+        'retained_orphan',
+        'would_purge',
+        'purged',
+        'purge_recorded',
+        'conflict',
+        'missing'
+    ]),
+    reason: z.string(),
+    session_id: z.string()
+});
+
+export const zOmnigentCapsuleStatePurgeBody = z.object({
+    dry_run: z.boolean()
+});
+
+export const zOmnigentCapsuleStateReportBody = z.object({
+    dry_run: z.boolean(),
+    ignored_foreign: z.coerce.bigint().gte(BigInt(0)).max(BigInt('9223372036854775807'), { error: 'Invalid value: Expected int64 to be <= 9223372036854775807' }),
+    items: z.array(zOmnigentCapsuleStateItem).nullable()
+});
+
 export const zOptionChoiceDto = z.object({
     label: z.string(),
     value: z.string()
@@ -1044,6 +1068,12 @@ export const zProjectIdentityStampedPayload = z.object({
     source: z.string()
 });
 
+export const zProviderCapsuleSpec = z.object({
+    Catalog: z.string(),
+    Kind: z.string(),
+    ProfileOption: z.string()
+});
+
 export const zProviderCreateInputBody = z.object({
     acp_args: z.array(z.string()).nullish(),
     acp_command: z.string().optional(),
@@ -1081,6 +1111,7 @@ export const zProviderPatch = z.object({
     Args: z.array(z.string()).nullable(),
     ArgsAppend: z.array(z.string()).nullable(),
     Base: z.string().nullable(),
+    Capsule: zProviderCapsuleSpec,
     Command: z.string().nullable(),
     Env: z.record(z.string(), z.string()),
     EnvRemove: z.array(z.string()).nullable(),
@@ -7660,6 +7691,31 @@ export const zGetV0CityByCityNameMaintenanceStatusPath = z.object({
  * OK
  */
 export const zGetV0CityByCityNameMaintenanceStatusResponse = zMaintenanceStatusBody;
+
+export const zGetV0CityByCityNameOmnigentCapsuleStatePath = z.object({
+    cityName: z.string().min(1).regex(/\S/)
+});
+
+/**
+ * OK
+ */
+export const zGetV0CityByCityNameOmnigentCapsuleStateResponse = zOmnigentCapsuleStateReportBody;
+
+export const zPostV0CityByCityNameOmnigentCapsuleStateByIdPurgeBody = zOmnigentCapsuleStatePurgeBody;
+
+export const zPostV0CityByCityNameOmnigentCapsuleStateByIdPurgeHeaders = z.object({
+    'X-GC-Request': z.string().min(1)
+});
+
+export const zPostV0CityByCityNameOmnigentCapsuleStateByIdPurgePath = z.object({
+    cityName: z.string().min(1).regex(/\S/),
+    id: z.string()
+});
+
+/**
+ * OK
+ */
+export const zPostV0CityByCityNameOmnigentCapsuleStateByIdPurgeResponse = zOmnigentCapsuleStateReportBody;
 
 export const zGetV0CityByCityNameOmnigentStatusPath = z.object({
     cityName: z.string().min(1).regex(/\S/)

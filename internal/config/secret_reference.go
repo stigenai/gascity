@@ -28,9 +28,11 @@ type SSHSecretPathReference struct {
 	Path string `toml:"path" jsonschema:"required"`
 }
 
-// SecretReference maps a logical credential to one environment or mount
-// destination. Kubernetes and SSH sources may coexist for hybrid placement;
-// each provider resolves only its own source at the provider edge.
+// SecretReference maps a logical credential to an environment destination, a
+// mount destination, or both. When both are set, providers assign the
+// non-secret mount path to Environment. Kubernetes and SSH sources may coexist
+// for hybrid placement; each provider resolves only its own source at the
+// provider edge.
 type SecretReference struct {
 	ID          string                        `toml:"id" jsonschema:"required"`
 	Environment string                        `toml:"environment,omitempty"`
@@ -52,25 +54,30 @@ func validateSecretReferences(refs []SecretReference) error {
 		}
 		ids[ref.ID] = true
 		hasEnv, hasMount := ref.Environment != "", ref.MountPath != ""
-		if hasEnv == hasMount {
-			return fmt.Errorf("secret reference %q: exactly one environment or mount_path destination is required", ref.ID)
+		if !hasEnv && !hasMount {
+			return fmt.Errorf("secret reference %q: environment or mount_path destination is required", ref.ID)
 		}
-		destination := "env:" + ref.Environment
 		if hasEnv {
 			if !secretEnvironmentPattern.MatchString(ref.Environment) || forbiddenAgentSecretEnvironment(ref.Environment) {
 				return fmt.Errorf("secret reference %q: environment destination is reserved or invalid", ref.ID)
 			}
-		} else {
+			destination := "env:" + ref.Environment
+			if destinations[destination] {
+				return fmt.Errorf("secret reference %q: duplicate destination", ref.ID)
+			}
+			destinations[destination] = true
+		}
+		if hasMount {
 			clean := filepath.Clean(ref.MountPath)
 			if !filepath.IsAbs(ref.MountPath) || clean != ref.MountPath || clean == string(filepath.Separator) {
 				return fmt.Errorf("secret reference %q: mount_path must be a clean absolute path", ref.ID)
 			}
-			destination = "mount:" + clean
+			destination := "mount:" + clean
+			if destinations[destination] {
+				return fmt.Errorf("secret reference %q: duplicate destination", ref.ID)
+			}
+			destinations[destination] = true
 		}
-		if destinations[destination] {
-			return fmt.Errorf("secret reference %q: duplicate destination", ref.ID)
-		}
-		destinations[destination] = true
 		if ref.Kubernetes == nil && ref.SSH == nil {
 			return fmt.Errorf("secret reference %q: at least one provider source is required", ref.ID)
 		}

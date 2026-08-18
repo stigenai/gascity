@@ -10,7 +10,7 @@ func TestValidateAgentsSecretReferences(t *testing.T) {
 	valid := Agent{
 		Name: "worker",
 		SecretReferences: []SecretReference{{
-			ID: "claude-primary", Environment: "CLAUDE_AUTH_TOKEN",
+			ID: "claude-primary", Environment: "CLAUDE_CONFIG_DIR", MountPath: "/run/gascity/omnigent/credentials/claude-primary",
 			Kubernetes: &KubernetesSecretKeyReference{Name: "claude-primary", Key: "token"},
 			SSH:        &SSHSecretPathReference{Path: "/srv/gc-secrets/claude-primary-token"},
 		}},
@@ -32,7 +32,7 @@ func TestValidateAgentsSecretReferences(t *testing.T) {
 	}
 
 	invalid = valid.Clone()
-	invalid.Env = map[string]string{"CLAUDE_AUTH_TOKEN": "ambient-value"}
+	invalid.Env = map[string]string{"CLAUDE_CONFIG_DIR": "ambient-value"}
 	if err := ValidateAgents([]Agent{invalid}); err == nil || !strings.Contains(err.Error(), "also declared in env") {
 		t.Fatalf("ValidateAgents(ambient override) = %v, want conflict", err)
 	}

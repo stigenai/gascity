@@ -38,17 +38,23 @@ Use the SSH runner when a configured GTR host has more available CPU and
 memory than the local workstation:
 
 ```bash
-scripts/test-remote-shards gtr integration 12
-scripts/test-remote-shards gtr full 12
+GTR_HOST=gtr-153
+ssh -o BatchMode=yes -o ConnectTimeout=5 "$GTR_HOST" 'hostname; getconf _NPROCESSORS_ONLN'
+scripts/test-remote-shards "$GTR_HOST" integration 12
+scripts/test-remote-shards "$GTR_HOST" full 12
 ```
 
-The runner uses non-interactive SSH, synchronizes only tracked and non-ignored
-workspace files, creates an isolated `/var/tmp/gascity-remote-tests.*`
-workspace, invokes the canonical `scripts/test-local-parallel` entrypoint, and
-retrieves every shard log before deleting the remote workspace. The final
-`artifacts:` line names the retained local evidence directory. Omit the job
-count to let the remote host select its machine-aware limit. Set
-`GC_REMOTE_TEST_CGO_ENABLED=1` only when the target gate needs CGO.
+Use any reachable concrete GTR SSH alias; `gtr-153` is an example, not a
+required host. The runner uses non-interactive SSH, synchronizes only tracked
+and non-ignored workspace files, creates an isolated
+`/var/tmp/gascity-remote-tests.*` workspace, and commits an unsigned local Git
+snapshot so VCS-aware builds and tests behave normally. Shards receive a
+run-scoped home while retaining the host account's shared Go caches. The runner
+invokes the canonical `scripts/test-local-parallel` entrypoint, retrieves every
+shard log, and then deletes the remote workspace. The final `artifacts:` line
+names the retained local evidence directory. Omit the job count to let the
+remote host select its machine-aware limit. Set `GC_REMOTE_TEST_CGO_ENABLED=1`
+only when the target gate needs CGO.
 
 The SSH alias must already resolve and authenticate with `BatchMode=yes`; the
 runner never prompts for a password and never copies ignored credential files.
