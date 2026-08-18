@@ -9,6 +9,30 @@ Start with [Run Agents Through Local Omnigent](/guides/local-omnigent) to create
 
 ## Prepare the runtime
 
+### Set the Kubernetes agent sandbox
+
+A Kubernetes capsule is already the outer sandbox. Its restricted Pod sets
+`allowPrivilegeEscalation=false`, drops every capability, and uses the
+`RuntimeDefault` seccomp profile. Bubblewrap cannot safely create a second
+mount namespace inside that boundary without weakening the Pod.
+
+In every agent YAML referenced by a Kubernetes profile, make the nested
+sandbox choice explicit in Omnigent's local configuration:
+
+```yaml
+os_env:
+  cwd: .
+  sandbox:
+    type: none
+```
+
+Do not grant `SYS_ADMIN`, enable privilege escalation, or relax the Pod's
+seccomp profile to make a nested Bubblewrap sandbox start. If the same harness
+runs on an SSH host that supports Bubblewrap, use a separate agent file for SSH
+so that profile can keep Omnigent's `linux_bwrap` sandbox.
+
+### Pin the executable and credentials
+
 The executable named by `<city>/.gc/services/omnigent/config/profiles.yaml` must already exist in the Kubernetes image or on the SSH host. Its version, reviewed commit, and SHA-256 must match the catalog exactly. A mismatch stops the session before a harness starts.
 
 Each catalog profile names one or more `secret_references`. Give every profile a distinct reference ID and backing credential. Gas City passes only the reference metadata during planning. Kubernetes resolves a Secret; SSH resolves an owner-readable path already present on the host.
