@@ -42,6 +42,7 @@ type SidecarConfig struct {
 const (
 	defaultSidecarStartupTimeout  = 15 * time.Second
 	defaultSidecarShutdownTimeout = 2 * time.Second
+	sidecarResponseHeaderTimeout  = 2 * time.Minute
 	sidecarHealthInterval         = 50 * time.Millisecond
 )
 
@@ -827,7 +828,7 @@ func localStreamingHTTPClient() *http.Client {
 	return &http.Client{Transport: &http.Transport{
 		Proxy:                 nil,
 		DisableCompression:    true,
-		ResponseHeaderTimeout: 30 * time.Second,
+		ResponseHeaderTimeout: sidecarResponseHeaderTimeout,
 	}}
 }
 

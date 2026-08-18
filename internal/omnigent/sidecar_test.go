@@ -668,6 +668,50 @@ func startSidecarFixture(t *testing.T, cfg SidecarConfig) (*APIClient, func()) {
 	return client, stop
 }
 
+func TestLocalStreamingHTTPClientAllowsColdHarnessStartup(t *testing.T) {
+	t.Parallel()
+
+	client := localStreamingHTTPClient()
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T, want *http.Transport", client.Transport)
+	}
+	if transport.ResponseHeaderTimeout < 2*time.Minute {
+		t.Fatalf("response header timeout = %s, want at least 2m for cold harness startup", transport.ResponseHeaderTimeout)
+	}
+}
+
+func TestLocalStreamingHTTPClientHonorsRequestCancellation(t *testing.T) {
+	t.Parallel()
+
+	entered := make(chan struct{})
+	server := newOmnigentHTTPTestServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		resp, requestErr := localStreamingHTTPClient().Do(req)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		done <- requestErr
+	}()
+
+	<-entered
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("request error = %v, want context cancellation", err)
+	}
+}
+
 func assertPersistentSidecarTranscript(t *testing.T, client *APIClient, conversationID, text string) {
 	t.Helper()
 	snapshot, err := client.GetSession(context.Background(), conversationID)
