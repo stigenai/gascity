@@ -63,6 +63,27 @@ func TestContainerCLIToolsRebuildWithPatchedGRPC(t *testing.T) {
 	}
 }
 
+func TestAgentBasePinsNativeCodexForEveryArchitecture(t *testing.T) {
+	base := readFile(t, repoRoot(t), "contrib/k8s/Dockerfile.base")
+	for _, want := range []string{
+		"ARG CODEX_CLI_VERSION=0.144.1",
+		"ARG CODEX_X86_64_SHA256=84091ae20c65fcc7d4120db97d1bd57d7ff8df9c7609fb781c78c2ebbd4f5a28",
+		"ARG CODEX_AARCH64_SHA256=b9f8ef5f98e46ced4dbbd3756a4223e3ee299a457ff488a3305bea455da8b5b8",
+		`codex-${codex_arch}-unknown-linux-musl.tar.gz`,
+		`${codex_sha256} /tmp/codex.tar.gz`,
+		`codex --version | grep -Fq "codex-cli ${CODEX_CLI_VERSION}"`,
+	} {
+		if !strings.Contains(base, want) {
+			t.Errorf("contrib/k8s/Dockerfile.base must pin native Codex on amd64 and arm64; missing %q", want)
+		}
+	}
+
+	verify := readFile(t, repoRoot(t), ".github/scripts/verify-omnigent-image.sh")
+	if !strings.Contains(verify, "codex --version") {
+		t.Error("published Omnigent image verification must smoke-test the Codex harness")
+	}
+}
+
 func TestAgentImageRebuildsBDAndGCWithPatchedGRPC(t *testing.T) {
 	const (
 		bdSourceRef    = "8e4e59d39f3459a43cf21a3236a13eca4dd874f7"

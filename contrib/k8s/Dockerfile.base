@@ -1,7 +1,7 @@
 # Gas City agent base image — system dependencies.
 #
 # Contains everything an agent needs EXCEPT gc/bd/br binaries: OS packages,
-# Claude Code CLI, Dolt. Rebuild only when system dependencies change
+# Claude Code and Codex CLIs, and Dolt. Rebuild only when system dependencies change
 # (~2.5 min). Agent image rebuilds on top take ~5s.
 #
 # Build:
@@ -107,6 +107,10 @@ FROM ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194
 
 ENV DEBIAN_FRONTEND=noninteractive
 ARG CLAUDE_CODE_VERSION=2.1.123
+ARG CODEX_CLI_VERSION=0.144.1
+ARG CODEX_X86_64_SHA256=84091ae20c65fcc7d4120db97d1bd57d7ff8df9c7609fb781c78c2ebbd4f5a28
+ARG CODEX_AARCH64_SHA256=b9f8ef5f98e46ced4dbbd3756a4223e3ee299a457ff488a3305bea455da8b5b8
+ARG TARGETARCH
 
 # System packages.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -130,6 +134,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY .github/scripts/install-claude-native.sh /tmp/install-claude-native.sh
 RUN /tmp/install-claude-native.sh "${CLAUDE_CODE_VERSION}" \
     && rm -f /tmp/install-claude-native.sh
+
+# Codex CLI, checksum-pinned native release for every published architecture.
+RUN case "${TARGETARCH}" in \
+      amd64) codex_arch=x86_64; codex_sha256="${CODEX_X86_64_SHA256}" ;; \
+      arm64) codex_arch=aarch64; codex_sha256="${CODEX_AARCH64_SHA256}" ;; \
+      *) echo "unsupported target architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
+      "https://github.com/openai/codex/releases/download/rust-v${CODEX_CLI_VERSION}/codex-${codex_arch}-unknown-linux-musl.tar.gz" \
+      -o /tmp/codex.tar.gz \
+    && echo "${codex_sha256} /tmp/codex.tar.gz" | sha256sum --check --strict \
+    && tar -xzf /tmp/codex.tar.gz -C /tmp \
+    && install -m 0755 "/tmp/codex-${codex_arch}-unknown-linux-musl" /usr/local/bin/codex \
+    && rm -f /tmp/codex.tar.gz "/tmp/codex-${codex_arch}-unknown-linux-musl" \
+    && codex --version | grep -Fq "codex-cli ${CODEX_CLI_VERSION}"
 
 # GitHub CLI and Dolt, rebuilt above with the patched grpc-go dependency.
 COPY --from=tool-builder /out/gh /usr/bin/gh

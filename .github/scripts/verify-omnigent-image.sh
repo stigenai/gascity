@@ -47,6 +47,7 @@ omnigent server --help >/dev/null
 /opt/omnigent/bin/python3 -c "import importlib.util; assert importlib.util.find_spec(\"daytona\") is None; assert importlib.util.find_spec(\"kubernetes\") is None"
 gc version >/dev/null
 BD_DISABLE_METRICS=1 BD_DISABLE_EVENT_FLUSH=1 bd --version >/dev/null
+codex --version >/dev/null
 br --version >/dev/null
 printf "OMNIGENT_IMAGE_SMOKE_OK %s %s\n" "$OMNIGENT_SOURCE_REF" "$actual"
 '
