@@ -214,6 +214,9 @@ jobs:
             -t "gc-mcp-mail:${IMAGE_TAG}" \
             .
 
+      - name: Verify Omnigent image provenance and startup
+        run: .github/scripts/verify-omnigent-image.sh "gc-agent:${IMAGE_TAG}"
+
       - name: Generate image SARIF and SBOMs
         run: |
           set -euo pipefail

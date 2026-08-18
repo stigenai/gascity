@@ -17,7 +17,66 @@
 # Local build-layer image produced by Dockerfile.base, not a registry pull.
 ARG BASE_IMAGE=gc-agent-base:latest
 
-FROM golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651 AS bd-builder
+FROM ghcr.io/astral-sh/uv:0.11.8@sha256:3b7b60a81d3c57ef471703e5c83fd4aaa33abcd403596fb22ab07db85ae91347 AS uv
+
+FROM ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b AS omnigent-builder
+
+ARG OMNIGENT_VERSION=0.10.0.dev0
+ARG OMNIGENT_SOURCE_REF=2aba5079d4d3a2a84d8c9927884fc4b8ce0eeecc
+ARG OMNIGENT_SOURCE_SHA256=62eb5cc546128758211826e4ebb698f813ffd634cf403b34849d132ec18a6ee9
+ARG OMNIGENT_SOURCE_DATE_EPOCH=1786796166
+ARG OMNIGENT_CRYPTOGRAPHY_CUTOFF=2026-08-15T12:16:06Z
+ARG OMNIGENT_CRYPTOGRAPHY_VERSION=50.0.0
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV OMNIGENT_SKIP_WEB_UI=true
+ENV UV_PROJECT_ENVIRONMENT=/opt/omnigent
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+	build-essential \
+	ca-certificates \
+	curl \
+	python3 \
+	python3-venv \
+	&& rm -rf /var/lib/apt/lists/*
+
+COPY --from=uv /uv /usr/local/bin/uv
+
+RUN mkdir -p /src/omnigent /out \
+	&& curl -fsSL --retry 3 \
+		"https://github.com/omnigent-ai/omnigent/archive/${OMNIGENT_SOURCE_REF}.tar.gz" \
+		-o /tmp/omnigent-source.tar.gz \
+	&& echo "${OMNIGENT_SOURCE_SHA256}  /tmp/omnigent-source.tar.gz" | sha256sum --check --strict \
+	&& tar -xzf /tmp/omnigent-source.tar.gz --strip-components=1 -C /src/omnigent \
+	&& rm -f /tmp/omnigent-source.tar.gz
+
+WORKDIR /src/omnigent
+RUN uv sync --locked --no-dev --no-editable \
+	&& uv pip install --python /opt/omnigent/bin/python3 \
+		--exclude-newer-package "cryptography=${OMNIGENT_CRYPTOGRAPHY_CUTOFF}" \
+		"cryptography==${OMNIGENT_CRYPTOGRAPHY_VERSION}" --no-deps \
+	&& /opt/omnigent/bin/python3 -c "import cryptography; assert cryptography.__version__ == '${OMNIGENT_CRYPTOGRAPHY_VERSION}'" \
+	&& site_dir="$(/opt/omnigent/bin/python3 -c 'import site; print(site.getsitepackages()[0])')" \
+	&& printf '%s\n' \
+		'"""Gas City image provenance for the pinned Omnigent build."""' \
+		'from __future__ import annotations' \
+		'' \
+		"BUILD_TIME_EPOCH: int = ${OMNIGENT_SOURCE_DATE_EPOCH}" \
+		"COMMIT_SHA: str = '${OMNIGENT_SOURCE_REF}'" \
+		> "${site_dir}/omnigent/_build_info.py" \
+	&& omnigent_short_ref="$(printf '%s' "${OMNIGENT_SOURCE_REF}" | cut -c1-8)" \
+	&& /opt/omnigent/bin/omnigent --version \
+		| grep -Fq "omnigent ${OMNIGENT_VERSION} (${omnigent_short_ref}," \
+	&& omnigent_digest="$(sha256sum /opt/omnigent/bin/omnigent | cut -d ' ' -f1)" \
+	&& printf '%s\n' \
+		"OMNIGENT_VERSION=${OMNIGENT_VERSION}" \
+		"OMNIGENT_SOURCE_REF=${OMNIGENT_SOURCE_REF}" \
+		"OMNIGENT_SOURCE_SHA256=sha256:${OMNIGENT_SOURCE_SHA256}" \
+		"OMNIGENT_SOURCE_DATE_EPOCH=${OMNIGENT_SOURCE_DATE_EPOCH}" \
+		"OMNIGENT_EXECUTABLE_SHA256=sha256:${omnigent_digest}" \
+		> /out/omnigent-provenance.env
+
+FROM golang:1.26.6-bookworm@sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36 AS bd-builder
 
 ARG BD_VERSION=v1.1.0
 ARG BD_SOURCE_REF=8e4e59d39f3459a43cf21a3236a13eca4dd874f7
@@ -39,9 +98,10 @@ RUN mkdir -p /src/bd /out \
 
 WORKDIR /src/bd
 RUN bd_version="${BD_VERSION#v}" \
-    && grep -Fq "Version = \"${bd_version}\"" cmd/bd/version.go \
-    && go get "google.golang.org/grpc@v${GRPC_VERSION}" \
-    && CGO_ENABLED=1 go build \
+	&& grep -Fq "Version = \"${bd_version}\"" cmd/bd/version.go \
+	&& go get "google.golang.org/grpc@v${GRPC_VERSION}" \
+	&& go get "golang.org/x/crypto@v0.53.0" "golang.org/x/net@v0.56.0" "golang.org/x/text@v0.39.0" \
+	&& CGO_ENABLED=1 go build \
        -tags="gms_pure_go" \
        -trimpath \
        -ldflags="-s -w -X main.Version=${bd_version} -X main.Build=${BD_BUILD} -X main.Commit=${BD_SOURCE_REF} -X main.Branch=${BD_BRANCH}" \
@@ -52,9 +112,36 @@ RUN bd_version="${BD_VERSION#v}" \
 
 FROM ${BASE_IMAGE}
 
+ARG OMNIGENT_VERSION=0.10.0.dev0
+ARG OMNIGENT_SOURCE_REF=2aba5079d4d3a2a84d8c9927884fc4b8ce0eeecc
+
+LABEL io.gascity.omnigent.version="${OMNIGENT_VERSION}" \
+	io.gascity.omnigent.source-ref="${OMNIGENT_SOURCE_REF}"
+
+ENV PATH="/opt/omnigent/bin:${PATH}" \
+	OMNIGENT_NO_UPDATE_CHECK=1 \
+	OMNIGENT_DISABLE_TELEMETRY=true \
+	OMNIGENT_TELEMETRY_ENABLED=0 \
+	OMNIGENT_OTEL_CAPTURE_CONTENT=0 \
+	OMNIGENT_DISABLE_KEYRING=1 \
+	DO_NOT_TRACK=1
+
 # Build-time copies and ownership fixes require root; the final image drops
 # back to gcagent below.
 USER root
+
+# Omnigent owns only the capsule-local harness lifecycle. Gas City owns remote
+# placement; no hosted auth, managed-host, Daytona, or Kubernetes extra is
+# installed. Runtime credentials and conversation state are mounted later.
+COPY --from=omnigent-builder /opt/omnigent /opt/omnigent
+COPY --from=omnigent-builder /out/omnigent-provenance.env /usr/share/gascity/omnigent-provenance.env
+RUN ln -s /opt/omnigent/bin/omnigent /usr/local/bin/omnigent \
+	&& ln -s /opt/omnigent/bin/omni /usr/local/bin/omni \
+	&& HOME=/tmp/omnigent-build-home \
+		OMNIGENT_CONFIG_HOME=/tmp/omnigent-build-config \
+		OMNIGENT_DATA_DIR=/tmp/omnigent-build-data \
+		omnigent --version \
+	&& rm -rf /tmp/omnigent-build-home /tmp/omnigent-build-config /tmp/omnigent-build-data
 
 # bd (beads) CLI, rebuilt above from checksum-pinned release source.
 COPY --from=bd-builder /out/bd /usr/local/bin/bd

@@ -128,6 +128,168 @@ func TestAgentImageRebuildsBDAndGCWithPatchedGRPC(t *testing.T) {
 	}
 }
 
+func TestAgentImagePackagesPinnedOmnigentOfflineByDefault(t *testing.T) {
+	const (
+		omnigentVersion      = "0.10.0.dev0"
+		omnigentSourceRef    = "2aba5079d4d3a2a84d8c9927884fc4b8ce0eeecc"
+		omnigentSourceSHA    = "62eb5cc546128758211826e4ebb698f813ffd634cf403b34849d132ec18a6ee9"
+		omnigentSourceEpoch  = "1786796166"
+		omnigentCryptoCutoff = "2026-08-15T12:16:06Z"
+		omnigentCrypto       = "50.0.0"
+		uvVersion            = "0.11.8"
+		uvImageDigest        = "sha256:3b7b60a81d3c57ef471703e5c83fd4aaa33abcd403596fb22ab07db85ae91347"
+		goToolchainVersion   = "1.26.6"
+		goToolchainDigest    = "sha256:116d58cbd88c1297624acc6e967a060012422bacf9930927e23fb719189c6f36"
+	)
+
+	root := repoRoot(t)
+	pins := readDotenv(t, root+"/deps.env")
+	for key, want := range map[string]string{
+		"OMNIGENT_VERSION":              omnigentVersion,
+		"OMNIGENT_SOURCE_REF":           omnigentSourceRef,
+		"OMNIGENT_SOURCE_SHA256":        omnigentSourceSHA,
+		"OMNIGENT_SOURCE_DATE_EPOCH":    omnigentSourceEpoch,
+		"OMNIGENT_CRYPTOGRAPHY_CUTOFF":  omnigentCryptoCutoff,
+		"OMNIGENT_CRYPTOGRAPHY_VERSION": omnigentCrypto,
+		"OMNIGENT_UV_VERSION":           uvVersion,
+		"OMNIGENT_UV_IMAGE_DIGEST":      uvImageDigest,
+	} {
+		if got := pins[key]; got != want {
+			t.Errorf("deps.env %s = %q, want %q", key, got, want)
+		}
+	}
+
+	base := readFile(t, root, "contrib/k8s/Dockerfile.base")
+	if !strings.Contains(base, "python3-venv") {
+		t.Error("agent base image must provide the Python runtime used by the copied Omnigent venv")
+	}
+	for _, want := range []string{
+		"FROM golang:" + goToolchainVersion + "-bookworm@" + goToolchainDigest + " AS go-toolchain",
+		`go get "golang.org/x/crypto@v0.53.0" "golang.org/x/net@v0.56.0" "golang.org/x/text@v0.39.0"`,
+		`go get "github.com/apache/thrift@v0.23.0"`,
+	} {
+		if !strings.Contains(base, want) {
+			t.Errorf("contrib/k8s/Dockerfile.base missing security rebuild input %q", want)
+		}
+	}
+
+	agent := readFile(t, root, "contrib/k8s/Dockerfile.agent")
+	for _, want := range []string{
+		"ARG OMNIGENT_VERSION=" + omnigentVersion,
+		"ARG OMNIGENT_SOURCE_REF=" + omnigentSourceRef,
+		"ARG OMNIGENT_SOURCE_SHA256=" + omnigentSourceSHA,
+		"ARG OMNIGENT_SOURCE_DATE_EPOCH=" + omnigentSourceEpoch,
+		"ARG OMNIGENT_CRYPTOGRAPHY_CUTOFF=" + omnigentCryptoCutoff,
+		"ARG OMNIGENT_CRYPTOGRAPHY_VERSION=" + omnigentCrypto,
+		"FROM ghcr.io/astral-sh/uv:" + uvVersion + "@" + uvImageDigest + " AS uv",
+		`https://github.com/omnigent-ai/omnigent/archive/${OMNIGENT_SOURCE_REF}.tar.gz`,
+		`echo "${OMNIGENT_SOURCE_SHA256}  /tmp/omnigent-source.tar.gz" | sha256sum --check --strict`,
+		`uv sync --locked --no-dev --no-editable`,
+		`--exclude-newer-package "cryptography=${OMNIGENT_CRYPTOGRAPHY_CUTOFF}"`,
+		`uv pip install --python /opt/omnigent/bin/python3`,
+		`"cryptography==${OMNIGENT_CRYPTOGRAPHY_VERSION}" --no-deps`,
+		`cryptography.__version__ == '${OMNIGENT_CRYPTOGRAPHY_VERSION}'`,
+		`COMMIT_SHA: str = '${OMNIGENT_SOURCE_REF}'`,
+		`BUILD_TIME_EPOCH: int = ${OMNIGENT_SOURCE_DATE_EPOCH}`,
+		`omnigent ${OMNIGENT_VERSION} (${omnigent_short_ref},`,
+		`sha256sum /opt/omnigent/bin/omnigent`,
+		`COPY --from=omnigent-builder /opt/omnigent /opt/omnigent`,
+		`COPY --from=omnigent-builder /out/omnigent-provenance.env /usr/share/gascity/omnigent-provenance.env`,
+		`ln -s /opt/omnigent/bin/omnigent /usr/local/bin/omnigent`,
+		`HOME=/tmp/omnigent-build-home`,
+		`OMNIGENT_CONFIG_HOME=/tmp/omnigent-build-config`,
+		`OMNIGENT_DATA_DIR=/tmp/omnigent-build-data`,
+		`rm -rf /tmp/omnigent-build-home /tmp/omnigent-build-config /tmp/omnigent-build-data`,
+		`OMNIGENT_NO_UPDATE_CHECK=1`,
+		`OMNIGENT_DISABLE_TELEMETRY=true`,
+		`OMNIGENT_TELEMETRY_ENABLED=0`,
+		`OMNIGENT_OTEL_CAPTURE_CONTENT=0`,
+		`OMNIGENT_DISABLE_KEYRING=1`,
+		`DO_NOT_TRACK=1`,
+		"FROM golang:" + goToolchainVersion + "-bookworm@" + goToolchainDigest + " AS bd-builder",
+		`go get "golang.org/x/crypto@v0.53.0" "golang.org/x/net@v0.56.0" "golang.org/x/text@v0.39.0"`,
+	} {
+		if !strings.Contains(agent, want) {
+			t.Errorf("contrib/k8s/Dockerfile.agent missing %q", want)
+		}
+	}
+
+	goMod := readFile(t, root, "go.mod")
+	if !strings.Contains(goMod, "\ngo "+goToolchainVersion+"\n") {
+		t.Errorf("go.mod must require patched Go %s", goToolchainVersion)
+	}
+
+	for _, forbidden := range []string{
+		"pip install omnigent",
+		"omnigent-ai/omnigent@main",
+		"OMNIGENT_AUTH_ENABLED=",
+		"OMNIGENT_REMOTE_AUTH_TOKEN=",
+		"DAYTONA_API_KEY",
+		"OMNIGENT_KUBERNETES_HOST_IMAGE",
+	} {
+		if strings.Contains(agent, forbidden) {
+			t.Errorf("contrib/k8s/Dockerfile.agent must not contain %q", forbidden)
+		}
+	}
+}
+
+func TestOmnigentAgentImageReleaseIsMultiArchAttestedAndSmokeTested(t *testing.T) {
+	root := repoRoot(t)
+	workflow := readFile(t, root, ".github/workflows/omnigent-agent-image.yml")
+	for _, want := range []string{
+		`architecture: [amd64, arm64]`,
+		`ghcr.io/${{ github.repository_owner }}/gascity-agent`,
+		`ghcr.io/${{ github.repository_owner }}/gascity-agent-base`,
+		`--platform "linux/${TARGET_ARCH}"`,
+		`--provenance=mode=max`,
+		`--sbom=true`,
+		`.github/scripts/prepare-agent-image-inputs.sh "${TARGET_ARCH}"`,
+		`.github/scripts/verify-omnigent-image.sh "${AGENT_ARCH_REF}"`,
+		`docker buildx imagetools create`,
+		`sha-${GITHUB_SHA}`,
+	} {
+		if !strings.Contains(workflow, want) {
+			t.Errorf("Omnigent image workflow missing %q", want)
+		}
+	}
+
+	prepare := readFile(t, root, ".github/scripts/prepare-agent-image-inputs.sh")
+	for _, want := range []string{
+		`GOOS=linux GOARCH="$target_arch"`,
+		`br-v${version_no_v}-linux_${target_arch}.tar.gz`,
+		`sha256sum --check --strict`,
+		`CGO_ENABLED=0`,
+	} {
+		if !strings.Contains(prepare, want) {
+			t.Errorf("agent image input preparer missing %q", want)
+		}
+	}
+
+	verify := readFile(t, root, ".github/scripts/verify-omnigent-image.sh")
+	for _, want := range []string{
+		`/usr/share/gascity/omnigent-provenance.env`,
+		`OMNIGENT_EXECUTABLE_SHA256`,
+		`OMNIGENT_NO_UPDATE_CHECK`,
+		`OMNIGENT_DISABLE_TELEMETRY`,
+		`OMNIGENT_TELEMETRY_ENABLED`,
+		`OMNIGENT_OTEL_CAPTURE_CONTENT`,
+		`OMNIGENT_DISABLE_KEYRING`,
+		`OMNIGENT_AUTH_ENABLED`,
+		`OMNIGENT_REMOTE_AUTH_TOKEN`,
+		`omnigent server --help`,
+		`test ! -e /home/gcagent/.omnigent`,
+	} {
+		if !strings.Contains(verify, want) {
+			t.Errorf("Omnigent image verifier missing %q", want)
+		}
+	}
+
+	scanWorkflow := readFile(t, root, ".github/workflows/container-scan.yml")
+	if !strings.Contains(scanWorkflow, `.github/scripts/verify-omnigent-image.sh "gc-agent:${IMAGE_TAG}"`) {
+		t.Error("container scan must run the Omnigent image startup/provenance smoke")
+	}
+}
+
 func TestMCPMailImagePinsPatchedGitPythonAndPillow(t *testing.T) {
 	root := repoRoot(t)
 	input := readFile(t, root, ".github/requirements/mcp-agent-mail.in")
