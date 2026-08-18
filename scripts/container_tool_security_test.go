@@ -290,6 +290,16 @@ func TestOmnigentAgentImageReleaseIsMultiArchAttestedAndSmokeTested(t *testing.T
 	}
 }
 
+func TestRCReleaseCanPublishFromEnabledForks(t *testing.T) {
+	workflow := readFile(t, repoRoot(t), ".github/workflows/rc-release.yml")
+	if strings.Contains(workflow, "github.repository == 'gastownhall/gascity'") {
+		t.Fatal("RC release workflow must not silently skip an enabled fork's own tagged release")
+	}
+	if !strings.Contains(workflow, "contents: write") {
+		t.Fatal("RC release workflow must retain repository-scoped release write permission")
+	}
+}
+
 func TestMCPMailImagePinsPatchedGitPythonAndPillow(t *testing.T) {
 	root := repoRoot(t)
 	input := readFile(t, root, ".github/requirements/mcp-agent-mail.in")

@@ -25,7 +25,6 @@ permissions: {}
 jobs:
   rc-release:
     name: Draft RC release
-    if: ${{ github.repository == 'gastownhall/gascity' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
