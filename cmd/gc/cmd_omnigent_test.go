@@ -485,6 +485,90 @@ func TestRunOmnigentAttachPersistenceFailureStopsFreshConversationBeforeStreamin
 	}
 }
 
+func TestRunOmnigentAttachAbnormalStreamStopsConversationRuntime(t *testing.T) {
+	for _, fresh := range []bool{true, false} {
+		name := "resume"
+		if fresh {
+			name = "fresh"
+		}
+		t.Run(name, func(t *testing.T) {
+			stopped := make(chan struct{}, 1)
+			server := newCommandHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/gascity/v1/profiles":
+					writeOmnigentTestJSON(t, w, http.StatusOK, []omnigent.PublicProfile{{
+						ID: "profile", DisplayName: "Profile", Blurb: "Local.",
+						Harness: "codex", Backend: "openai", Network: "external-model",
+						Availability: "available", Chain: []string{"profile"},
+					}})
+				case r.Method == http.MethodPost && r.URL.Path == "/gascity/v1/attachments":
+					writeOmnigentTestJSON(t, w, http.StatusOK, omnigent.AttachmentDescriptor{
+						ConversationID: "conv_abnormal", ProfileID: "profile", Fresh: fresh,
+						ActiveProfile: "profile", ActiveIndex: 0,
+					})
+				case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions/conv_abnormal/stream":
+					w.Header().Set("Content-Type", "text/event-stream")
+					w.WriteHeader(http.StatusOK)
+					_, _ = io.WriteString(w, "data: {not-json}\n\n")
+				case r.Method == http.MethodGet && r.URL.Path == "/v1/sessions/conv_abnormal":
+					writeOmnigentTestJSON(t, w, http.StatusOK, omnigent.Session{
+						ID: "conv_abnormal", Workspace: "/work/assigned",
+						Labels: map[string]string{
+							"gascity.omnigent.failover.version":   "1",
+							"gascity.omnigent.profile.chain":      `["profile"]`,
+							"gascity.omnigent.profile.active":     "0",
+							"gascity.omnigent.failover.exhausted": "false",
+						},
+					})
+				case r.Method == http.MethodPost && r.URL.Path == "/v1/sessions/conv_abnormal/events":
+					var request struct {
+						Type string `json:"type"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+						t.Errorf("decode control request: %v", err)
+					}
+					if request.Type != "stop_session" {
+						t.Errorf("control type = %q, want stop_session", request.Type)
+					}
+					stopped <- struct{}{}
+					writeOmnigentTestJSON(t, w, http.StatusAccepted, map[string]bool{"queued": true})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+
+			client, err := omnigent.NewAPIClient(server.URL, server.Client())
+			if err != nil {
+				t.Fatal(err)
+			}
+			reader, writer := io.Pipe()
+			defer func() {
+				if err := writer.Close(); err != nil {
+					t.Errorf("close input writer: %v", err)
+				}
+			}()
+			input := omnigent.AttachmentOpenInput{
+				ProfileID: "profile", Workspace: "/work/assigned",
+			}
+			if !fresh {
+				input.ConversationID = "conv_abnormal"
+			}
+			err = runOmnigentAttach(context.Background(), client, input,
+				func(candidate string) (string, error) { return candidate, nil },
+				nil, nil, reader, io.Discard, io.Discard, make(chan os.Signal))
+			if err == nil || !strings.Contains(err.Error(), "stream") {
+				t.Fatalf("error = %v, want abnormal stream failure", err)
+			}
+			select {
+			case <-stopped:
+			default:
+				t.Fatal("abnormal attachment exit did not stop conversation runtime")
+			}
+		})
+	}
+}
+
 func TestRunOmnigentAttachSIGTERMStopsDurableConversationWithoutClearingIdentity(t *testing.T) {
 	streamOpened := make(chan struct{})
 	stopped := make(chan struct{})

@@ -362,7 +362,14 @@ func runOmnigentAttach(ctx context.Context, client *omnigent.APIClient, input om
 		return fmt.Errorf("open conversation attachment: %w", err)
 	}
 	defer func() {
-		returnErr = errors.Join(returnErr, attachment.Close())
+		closeErr := attachment.Close()
+		var stopErr error
+		if returnErr != nil || closeErr != nil {
+			if err := stopOmnigentConversation(ctx, client, attachment.ConversationID); err != nil {
+				stopErr = fmt.Errorf("stop conversation runtime after abnormal attachment exit: %w", err)
+			}
+		}
+		returnErr = errors.Join(returnErr, closeErr, stopErr)
 	}()
 	activeProfile := rootProfile
 	if attachment.State.ActiveProfileID != rootProfile.ID {
