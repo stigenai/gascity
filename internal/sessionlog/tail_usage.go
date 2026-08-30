@@ -56,7 +56,7 @@ func ExtractTailUsage(path string) ([]TailUsage, error) {
 	}
 	defer f.Close() //nolint:errcheck // best-effort close on read-only file
 
-	data, _, err := readTail(f, tailChunkSize)
+	data, _, err := readTail(f)
 	if err != nil {
 		return nil, err
 	}
