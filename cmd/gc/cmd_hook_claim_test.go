@@ -392,7 +392,7 @@ func TestDoHookClaimTreatsLostReclaimRaceAsNoWorkNotError(t *testing.T) {
 		ReclaimStaleAssignee: func(context.Context, string, []string, string, beads.Bead) bool {
 			return false // lost the race: assignment changed underneath the check
 		},
-		Claim: func(_ context.Context, _ string, _ []string, beadID, assignee string) (beads.Bead, bool, error) {
+		Claim: func(_ context.Context, _ string, _ []string, _, _ string) (beads.Bead, bool, error) {
 			t.Fatal("Claim called after a lost reclaim race")
 			return beads.Bead{}, false, nil
 		},

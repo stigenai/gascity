@@ -12,9 +12,9 @@ import (
 )
 
 func TestRealK8sOpsDeletePodUsesUIDPrecondition(t *testing.T) {
-	client := fake.NewSimpleClientset()
+	client := fake.NewClientset()
 	var got metav1.DeleteOptions
-	client.Fake.PrependReactor(
+	client.PrependReactor(
 		"delete",
 		"pods",
 		func(action k8stesting.Action) (bool, k8sruntime.Object, error) {
@@ -44,7 +44,7 @@ func TestRealK8sOpsDeletePodUsesUIDPrecondition(t *testing.T) {
 }
 
 func TestRealK8sOpsDeletePodRejectsMissingUID(t *testing.T) {
-	client := fake.NewSimpleClientset()
+	client := fake.NewClientset()
 	ops := &realK8sOps{clientset: client, namespace: "workers"}
 
 	if err := ops.deletePod(context.Background(), "worker", "", 5); err == nil {

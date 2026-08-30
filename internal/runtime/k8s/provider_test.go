@@ -426,7 +426,7 @@ func TestIsAttached(t *testing.T) {
 }
 
 // TestIsAttachedCheckedDistinguishesConfirmedFromInconclusive is the
-// IsAttached analogue of TestIsRunningCheckedDistinguishesConfirmedFromInconclusive.
+// IsAttached analog of TestIsRunningCheckedDistinguishesConfirmedFromInconclusive.
 func TestIsAttachedCheckedDistinguishesConfirmedFromInconclusive(t *testing.T) {
 	fake := newFakeK8sOps()
 	p := newProviderWithOps(fake)
@@ -1539,7 +1539,7 @@ func TestProcessAlive(t *testing.T) {
 }
 
 // TestProcessAliveCheckedDistinguishesConfirmedFromInconclusive is the
-// ProcessAlive analogue of TestIsRunningCheckedDistinguishesConfirmedFromInconclusive.
+// ProcessAlive analog of TestIsRunningCheckedDistinguishesConfirmedFromInconclusive.
 func TestProcessAliveCheckedDistinguishesConfirmedFromInconclusive(t *testing.T) {
 	fake := newFakeK8sOps()
 	p := newProviderWithOps(fake)

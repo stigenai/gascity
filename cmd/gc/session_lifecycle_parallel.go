@@ -1862,25 +1862,25 @@ func claimAsyncStartCleanupObligation(sessFront *sessionpkg.Store, item prepared
 	return raw, nil
 }
 
-func armAsyncStartCleanupObligation(sessFront *sessionpkg.Store, sessionID, raw string) (string, bool, error) {
+func armAsyncStartCleanupObligation(sessFront *sessionpkg.Store, sessionID, raw string) (bool, error) {
 	obligation, err := decodeAsyncStartCleanupObligation(raw)
 	if err != nil {
-		return "", false, err
+		return false, err
 	}
 	if obligation.Mode == "cleanup" {
-		return raw, true, nil
+		return true, nil
 	}
 	obligation.Mode = "cleanup"
 	encoded, err := json.Marshal(obligation)
 	if err != nil {
-		return "", false, fmt.Errorf("encoding armed async-start cleanup obligation: %w", err)
+		return false, fmt.Errorf("encoding armed async-start cleanup obligation: %w", err)
 	}
 	armedRaw := string(encoded)
 	armed, err := sessFront.ReplaceAsyncStartCleanupObligation(sessionID, raw, armedRaw)
 	if err != nil {
-		return "", false, redactAsyncStartTokenError(err, obligation.InstanceToken)
+		return false, redactAsyncStartTokenError(err, obligation.InstanceToken)
 	}
-	return armedRaw, armed, nil
+	return armed, nil
 }
 
 func armAsyncStartCleanupObligationContext(ctx context.Context, sessFront *sessionpkg.Store, sessionID, raw string) (string, bool, error) {

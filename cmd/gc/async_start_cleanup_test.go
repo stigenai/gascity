@@ -235,7 +235,7 @@ func TestSweepAsyncStartCleanupObligationsFailsClosedUnlessTokenExactlyMatches(t
 			store := beads.NewMemStore()
 			item, raw := seedAsyncStartCleanupObligation(t, store)
 			if tt.arm {
-				if _, armed, err := armAsyncStartCleanupObligation(sessionFrontDoor(store), item.candidate.info.ID, raw); err != nil || !armed {
+				if armed, err := armAsyncStartCleanupObligation(sessionFrontDoor(store), item.candidate.info.ID, raw); err != nil || !armed {
 					t.Fatalf("arm obligation = (%t,%v), want true,nil", armed, err)
 				}
 			}
@@ -309,7 +309,7 @@ func TestSweepAsyncStartCleanupObligationsMissingExpectedTokenFailsClosed(t *tes
 func TestSweepAsyncStartCleanupObligationsRefusesNameStopWithoutAtomicFence(t *testing.T) {
 	store := beads.NewMemStore()
 	item, raw := seedAsyncStartCleanupObligation(t, store)
-	if _, armed, err := armAsyncStartCleanupObligation(sessionFrontDoor(store), item.candidate.info.ID, raw); err != nil || !armed {
+	if armed, err := armAsyncStartCleanupObligation(sessionFrontDoor(store), item.candidate.info.ID, raw); err != nil || !armed {
 		t.Fatalf("arm obligation = (%t,%v), want true,nil", armed, err)
 	}
 	provider := &unsafeNameStopProbeProvider{Provider: runtime.NewFake()}
@@ -371,7 +371,7 @@ func TestSweepAsyncStartCleanupObligationsBoundsProbesPerSweep(t *testing.T) {
 func TestAsyncStartTrackerWaitsForBlockedProviderStopAndMarkerSettlement(t *testing.T) {
 	store := beads.NewMemStore()
 	item, raw := seedAsyncStartCleanupObligation(t, store)
-	if _, armed, err := armAsyncStartCleanupObligation(sessionFrontDoor(store), item.candidate.info.ID, raw); err != nil || !armed {
+	if armed, err := armAsyncStartCleanupObligation(sessionFrontDoor(store), item.candidate.info.ID, raw); err != nil || !armed {
 		t.Fatalf("pre-shutdown arm = (%t,%v), want true,nil", armed, err)
 	}
 	provider := &asyncCleanupProbeProvider{
@@ -859,7 +859,7 @@ func TestAsyncStartCleanupObligationChildHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	if os.Getenv("GC_TEST_ASYNC_CLEANUP_ARM") == "1" {
-		if _, armed, err := armAsyncStartCleanupObligation(sessionFrontDoor(store), sessionID, raw); err != nil || !armed {
+		if armed, err := armAsyncStartCleanupObligation(sessionFrontDoor(store), sessionID, raw); err != nil || !armed {
 			t.Fatalf("arm obligation = (%t,%v), want true,nil", armed, err)
 		}
 	}
