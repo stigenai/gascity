@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gastownhall/gascity/internal/omnigent/inputframe"
 	"github.com/gastownhall/gascity/internal/runtime"
 )
 
@@ -14,9 +15,13 @@ func TestOmnigentRawPaneUsesStableBindingForLiveAttachAndInput(t *testing.T) {
 	p, session, state := newFakeHerdrProvider(t)
 	listenHerdrSocket(t, session)
 	const name = "BrightLights--worker"
-	const command = "gc omnigent attach --profile claude-primary"
+	const command = "gc omnigent attach --mode controller --profile claude-primary"
 	workdir := t.TempDir()
-	if err := p.Start(context.Background(), name, runtime.Config{Command: command, WorkDir: workdir}); err != nil {
+	if err := p.Start(context.Background(), name, runtime.Config{
+		Command: command,
+		WorkDir: workdir,
+		Env:     map[string]string{"GC_PROVIDER": inputframe.ControllerProvider},
+	}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if err := p.Attach(name); err != nil {
@@ -52,7 +57,7 @@ func TestOmnigentRawPaneUsesStableBindingForLiveAttachAndInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(gotPrompt) != prompt {
-		t.Fatalf("prompt = %q", gotPrompt)
+	if string(gotPrompt) != inputframe.Encode(prompt) {
+		t.Fatalf("prompt = %q, want one framed message", gotPrompt)
 	}
 }

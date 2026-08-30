@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gastownhall/gascity/internal/execgrace"
+	"github.com/gastownhall/gascity/internal/omnigent/inputframe"
 	"github.com/gastownhall/gascity/internal/runtime"
 	"github.com/gastownhall/gascity/internal/runtime/proctable"
 	"github.com/gastownhall/gascity/internal/shellquote"
@@ -299,6 +300,7 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 	// already-primed agent, and re-delivering would inject the startup prime into
 	// a working session.
 	if startupText := startupDeliveryText(cfg); !adopted && startupText != "" && info.PaneID != "" {
+		startupText = inputframe.EncodeForProvider(cfg.Env["GC_PROVIDER"], startupText)
 		// A freshly-spawned agent boots through a shell→TUI handoff before its
 		// input prompt is listening. The paste buffers and survives that window,
 		// but the submit CR does not: delivered too early it is swallowed, leaving
@@ -858,7 +860,12 @@ func (p *Provider) Nudge(name string, content []runtime.ContentBlock) error {
 	if pid == "" {
 		return runtime.ErrSessionNotFound
 	}
-	if err := p.c.deliverNudge(ctx, pid, runtime.FlattenText(content)); err != nil {
+	provider, err := p.GetMeta(name, "GC_PROVIDER")
+	if err != nil {
+		return fmt.Errorf("herdr nudge %q: resolve provider framing: %w", name, err)
+	}
+	message := inputframe.EncodeForProvider(provider, runtime.FlattenText(content))
+	if err := p.c.deliverNudge(ctx, pid, message); err != nil {
 		if code := herdrErrorCode(err); code == "pane_not_found" || code == "agent_not_found" {
 			return fmt.Errorf("herdr nudge %q: %w: %w", name, runtime.ErrSessionNotFound, err)
 		}

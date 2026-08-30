@@ -18,6 +18,7 @@ import (
 
 	"github.com/gastownhall/gascity/internal/api"
 	"github.com/gastownhall/gascity/internal/omnigent"
+	"github.com/gastownhall/gascity/internal/omnigent/inputframe"
 )
 
 func newCommandHTTPTestServer(handler http.Handler) *httptest.Server {
@@ -343,7 +344,7 @@ func TestRunOmnigentAttachPreservesInputAndOrderedLiveOutput(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("stream was not opened")
 	}
-	if _, err := io.WriteString(writer, prompt+"\n"); err != nil {
+	if _, err := io.WriteString(writer, inputframe.Encode(prompt)+"\n"); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -652,16 +653,56 @@ func TestRunOmnigentAttachSIGTERMStopsDurableConversationWithoutClearingIdentity
 func TestReadOmnigentInputSupportsLargeLinesAndRejectsOversize(t *testing.T) {
 	large := strings.Repeat("界", 100_000)
 	results := make(chan omnigentInputResult)
-	go readOmnigentInput(strings.NewReader(large+"\n"), results)
+	go readOmnigentInput(strings.NewReader(large+"\n"), omnigent.AttachmentLocationCapsule, results)
 	result := <-results
 	if result.err != nil || result.text != large {
 		t.Fatalf("large input bytes=%d error=%v", len(result.text), result.err)
 	}
 	oversize := strings.Repeat("x", maxOmnigentInputBytes+1)
 	results = make(chan omnigentInputResult)
-	go readOmnigentInput(strings.NewReader(oversize), results)
+	go readOmnigentInput(strings.NewReader(oversize), omnigent.AttachmentLocationCapsule, results)
 	if result = <-results; result.err == nil || !strings.Contains(result.err.Error(), "exceeds") {
 		t.Fatalf("oversize result = %#v", result)
+	}
+}
+
+func TestReadOmnigentControllerInputPreservesFramedMultilineBoundary(t *testing.T) {
+	message := "first line\n\nsecond line\nUser message:\nship it"
+	results := make(chan omnigentInputResult)
+	go readOmnigentInput(
+		strings.NewReader(inputframe.Encode(message)+"\n"),
+		omnigent.AttachmentLocationController,
+		results,
+	)
+	result := <-results
+	if result.err != nil || result.text != message {
+		t.Fatalf("controller input = %#v, want one multiline message", result)
+	}
+	if _, open := <-results; open {
+		t.Fatal("controller input emitted more than one message")
+	}
+}
+
+func TestReadOmnigentControllerInputRejectsUnframedAndOversizeMessages(t *testing.T) {
+	results := make(chan omnigentInputResult)
+	go readOmnigentInput(
+		strings.NewReader("first line\nsecond line\n"),
+		omnigent.AttachmentLocationController,
+		results,
+	)
+	if result := <-results; result.err == nil || !strings.Contains(result.err.Error(), "missing Omnigent controller input frame") {
+		t.Fatalf("unframed controller result = %#v", result)
+	}
+
+	results = make(chan omnigentInputResult)
+	oversize := inputframe.Encode(strings.Repeat("x", maxOmnigentInputBytes+1))
+	go readOmnigentInput(
+		strings.NewReader(oversize+"\n"),
+		omnigent.AttachmentLocationController,
+		results,
+	)
+	if result := <-results; result.err == nil || !strings.Contains(result.err.Error(), "exceeds") {
+		t.Fatalf("oversize framed controller result = %#v", result)
 	}
 }
 

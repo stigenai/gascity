@@ -1,6 +1,10 @@
 package tmux
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/gastownhall/gascity/internal/omnigent/inputframe"
+)
 
 // TestProviderEnvSkipsEscapeBeforeEnter pins the per-provider escape-skip
 // behavior for nudge submission. Providers in
@@ -20,6 +24,7 @@ func TestProviderEnvSkipsEscapeBeforeEnter(t *testing.T) {
 		{provider: "grok", want: true},
 		{provider: "kimi", want: true},
 		{provider: "omnigent", want: true},
+		{provider: inputframe.ControllerProvider, want: true},
 		{provider: "opencode", want: true},
 		{provider: "pi", want: true},
 		{provider: "antigravity", want: true},

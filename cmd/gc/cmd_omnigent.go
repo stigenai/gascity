@@ -17,6 +17,7 @@ import (
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/mail"
 	"github.com/gastownhall/gascity/internal/omnigent"
+	"github.com/gastownhall/gascity/internal/omnigent/inputframe"
 	"github.com/spf13/cobra"
 )
 
@@ -470,7 +471,7 @@ func runOmnigentAttach(ctx context.Context, client *omnigent.APIClient, input om
 		})
 	}()
 	inputEvents := make(chan omnigentInputResult)
-	go readOmnigentInput(stdin, inputEvents)
+	go readOmnigentInput(stdin, input.Location, inputEvents)
 
 	for {
 		select {
@@ -537,16 +538,33 @@ func stopOmnigentConversation(ctx context.Context, client *omnigent.APIClient, c
 	return client.PostControl(stopCtx, conversationID, "stop_session")
 }
 
-func readOmnigentInput(input io.Reader, out chan<- omnigentInputResult) {
+func readOmnigentInput(input io.Reader, location omnigent.AttachmentLocation, out chan<- omnigentInputResult) {
 	defer close(out)
 	reader := bufio.NewReaderSize(input, 64<<10)
 	for {
 		line, err := reader.ReadString('\n')
-		if len(line) > maxOmnigentInputBytes {
+		line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+		if location == omnigent.AttachmentLocationController {
+			if len(line) > inputframe.MaxEncodedLen(maxOmnigentInputBytes) {
+				out <- omnigentInputResult{err: fmt.Errorf("omnigent input exceeds %d bytes", maxOmnigentInputBytes)}
+				return
+			}
+			if line != "" {
+				decoded, decodeErr := inputframe.Decode(line)
+				if decodeErr != nil {
+					out <- omnigentInputResult{err: fmt.Errorf("read Omnigent controller input: %w", decodeErr)}
+					return
+				}
+				if len(decoded) > maxOmnigentInputBytes {
+					out <- omnigentInputResult{err: fmt.Errorf("omnigent input exceeds %d bytes", maxOmnigentInputBytes)}
+					return
+				}
+				line = decoded
+			}
+		} else if len(line) > maxOmnigentInputBytes {
 			out <- omnigentInputResult{err: fmt.Errorf("omnigent input exceeds %d bytes", maxOmnigentInputBytes)}
 			return
 		}
-		line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
 		if line != "" {
 			out <- omnigentInputResult{text: line}
 		}
