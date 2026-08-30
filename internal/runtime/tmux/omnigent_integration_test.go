@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/omnigent/inputframe"
 	"github.com/gastownhall/gascity/internal/runtime"
 	"github.com/gastownhall/gascity/test/tmuxtest"
 )
@@ -39,7 +40,8 @@ func TestOmnigentInteractiveViewUsesOnlyIsolatedTmuxSession(t *testing.T) {
 		_ = p.Stop(session)
 	})
 	if err := p.Start(context.Background(), session, runtime.Config{
-		Command: script, WorkDir: workdir, ProviderName: "omnigent",
+		Command: script, WorkDir: workdir, ProviderName: inputframe.ControllerProvider,
+		Env: map[string]string{"GC_PROVIDER": inputframe.ControllerProvider},
 	}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -54,14 +56,18 @@ func TestOmnigentInteractiveViewUsesOnlyIsolatedTmuxSession(t *testing.T) {
 	if err := p.Nudge(session, runtime.TextContent("second line\nthird line")); err != nil {
 		t.Fatalf("multiline Nudge: %v", err)
 	}
-	waitTmuxOmnigentOutput(t, p, session, "OMNI_ECHO:third line")
+	waitTmuxOmnigentOutput(t, p, session, "OMNI_ECHO:"+inputframe.Encode("second line\nthird line"))
 	deadline := time.NewTimer(5 * time.Second)
 	defer deadline.Stop()
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		got, err := os.ReadFile(filepath.Join(workdir, "received-input"))
-		if err == nil && strings.Contains(string(got), first+"\n") && strings.Contains(string(got), "second line\nthird line\n") {
+		want := strings.Join([]string{
+			inputframe.Encode(first),
+			inputframe.Encode("second line\nthird line"),
+		}, "\n") + "\n"
+		if err == nil && string(got) == want {
 			break
 		}
 		select {

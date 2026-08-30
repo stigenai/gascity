@@ -19,6 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/omnigent/inputframe"
 	"github.com/gastownhall/gascity/internal/runtime"
 	"github.com/gastownhall/gascity/internal/sessionlog"
 	"github.com/gastownhall/gascity/internal/shellquote"
@@ -46,7 +47,7 @@ const pollInterval = 100 * time.Millisecond
 // GC_PROVIDER env var; mimocode's binary names differ from its provider
 // name ("mimo" wrapper, ".mimocode" compiled child), so both are listed
 // alongside the family name.
-var providersSkippingEscapeBeforeEnter = []string{"claude", "codex", "copilot", "gemini", "grok", "kimi", "mimocode", "mimo", ".mimocode", "omnigent", "opencode", "pi", "antigravity"}
+var providersSkippingEscapeBeforeEnter = []string{"claude", "codex", "copilot", "gemini", "grok", "kimi", "mimocode", "mimo", ".mimocode", "omnigent", inputframe.ControllerProvider, "opencode", "pi", "antigravity"}
 
 // Config holds configurable timeouts and intervals for the tmux provider.
 // All fields have sensible defaults matching the original hardcoded values.
@@ -1846,6 +1847,7 @@ func (t *Tmux) NudgeSession(session, message string) error {
 	if agentPane, err := t.FindAgentPane(session); err == nil && agentPane != "" {
 		target = agentPane
 	}
+	message = inputframe.EncodeForProvider(t.providerEnv(target), message)
 
 	// Snapshot genuine activity BEFORE the first keystroke, and stamp the poke
 	// only once delivery is actually confirmed (see delivered below). This
