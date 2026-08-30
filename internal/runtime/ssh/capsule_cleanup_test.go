@@ -54,7 +54,7 @@ func TestSSHCapsuleStopTerminatesOnlyFencedProcessGroupAndRemovesEphemeralPaths(
 	script := call[2]
 	for _, required := range []string{
 		`pane_pid=$(tmux display-message`, `pane_pgid=$(ps`, `--state-root`,
-		`tmux kill-session -t "$name"`, `kill -TERM -- "-$pane_pgid"`, `kill -KILL -- "-$pane_pgid"`,
+		`tmux kill-session -t "$name"`, `kill -TERM "-$pane_pgid"`, `kill -KILL "-$pane_pgid"`,
 		`run_path=$run_root/$resource`, `catalog_path=$catalog_root/$resource`, `rm -rf -- "$target"`,
 	} {
 		if !strings.Contains(script, required) {

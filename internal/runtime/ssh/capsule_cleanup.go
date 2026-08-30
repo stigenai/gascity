@@ -156,15 +156,15 @@ fi
 if [ -n "$pane_pgid" ]; then
   self_pgid=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ') || exit 74
   [ "$pane_pgid" -gt 1 ] && [ "$pane_pgid" != "$self_pgid" ] || exit 73
-  if kill -0 -- "-$pane_pgid" 2>/dev/null; then
-    kill -TERM -- "-$pane_pgid" 2>/dev/null || exit 74
+  if kill -0 "-$pane_pgid" 2>/dev/null; then
+    kill -TERM "-$pane_pgid" 2>/dev/null || exit 74
     attempts=0
-    while kill -0 -- "-$pane_pgid" 2>/dev/null && [ "$attempts" -lt 20 ]; do
+    while kill -0 "-$pane_pgid" 2>/dev/null && [ "$attempts" -lt 20 ]; do
       sleep 0.05
       attempts=$((attempts + 1))
     done
-    if kill -0 -- "-$pane_pgid" 2>/dev/null; then
-      kill -KILL -- "-$pane_pgid" 2>/dev/null || exit 74
+    if kill -0 "-$pane_pgid" 2>/dev/null; then
+      kill -KILL "-$pane_pgid" 2>/dev/null || exit 74
     fi
   fi
 fi
