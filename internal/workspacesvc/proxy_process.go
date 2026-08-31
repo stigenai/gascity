@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -13,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -28,6 +31,28 @@ const (
 )
 
 var errProxyProcessExitedEarly = errors.New("process exited before listener became ready")
+
+const proxySSEPrelude = ":\n\n"
+
+type prefixedReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
+func prependSSEPrelude(resp *http.Response) error {
+	mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil || mediaType != "text/event-stream" {
+		return nil
+	}
+
+	resp.Body = prefixedReadCloser{
+		Reader: io.MultiReader(strings.NewReader(proxySSEPrelude), resp.Body),
+		Closer: resp.Body,
+	}
+	resp.ContentLength = -1
+	resp.Header.Del("Content-Length")
+	return nil
+}
 
 // extraHelperEnv is an env-list builder that proxy_process tests can augment
 // to inject additional KEY=VALUE entries into the helper subprocess
@@ -121,7 +146,8 @@ func (p *proxyProcessInstance) HandleHTTP(w http.ResponseWriter, r *http.Request
 
 	target := &url.URL{Scheme: "http", Host: "gc-service"}
 	proxy := &httputil.ReverseProxy{
-		Transport: transport,
+		Transport:      transport,
+		ModifyResponse: prependSSEPrelude,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, err error) {
 			http.Error(w, fmt.Sprintf("service unavailable: %v", err), http.StatusBadGateway)
 		},
