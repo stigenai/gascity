@@ -118,6 +118,9 @@ profiles:
     # Availability requires every named variable to be nonempty. Names and
     # values never appear in Gas City discovery, state, or logs.
     environment: [CODEX_HOME]
+    # Optional values are forwarded only when the workspace supplies them and
+    # do not affect profile availability.
+    optional_environment: [GITHUB_TOKEN, GIT_SSL_CAINFO, HOME]
 
   claude-primary:
     display_name: Claude primary
@@ -128,6 +131,7 @@ profiles:
     agent: agents/claude-primary.yaml
     fallbacks: [claude-secondary]
     environment: [CLAUDE_PRIMARY_TOKEN]
+    optional_environment: [GITHUB_TOKEN, GIT_SSL_CAINFO, HOME]
 
   claude-secondary:
     display_name: Claude secondary
@@ -137,6 +141,7 @@ profiles:
     network: external-model
     agent: agents/claude-secondary.yaml
     environment: [CLAUDE_SECONDARY_TOKEN]
+    optional_environment: [GITHUB_TOKEN, GIT_SSL_CAINFO, HOME]
 ```
 
 Profile IDs are the map keys. They must be stable, nonempty, bounded ASCII
@@ -144,11 +149,13 @@ identifiers. `display_name`, `blurb`, `harness`, `backend`, and `network` are
 non-secret display metadata. `agent` resolves beneath the catalog directory;
 absolute paths, `..`, symlinks escaping the root, duplicate IDs, missing agent
 files, unknown fallback IDs, self-links, cycles, and cross-harness chains fail
-validation. `environment` is an explicit allowlist of process-only variable
-names: all must be present for the profile to be available, but neither their
-names nor their values enter public discovery. An agent spec may refer to auth
-through `$ENV`, a Databricks profile, or a named Omnigent provider; the adapter
-never expands it.
+validation. `environment` is an explicit allowlist of required process-only
+variable names: all must be present for the profile to be available.
+`optional_environment` is a separate allowlist forwarded only when a value is
+present; an absent optional value does not affect availability. A name may not
+appear in both lists. Neither names nor values enter public discovery. An agent
+spec may refer to auth through `$ENV`, a Databricks profile, or a named Omnigent
+provider; the adapter never expands it.
 
 The public discovery response contains:
 

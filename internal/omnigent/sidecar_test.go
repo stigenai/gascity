@@ -56,6 +56,7 @@ profiles:
     network: external-model
     agent: agents/primary.yaml
     environment: [CLAUDE_PRIMARY_TOKEN]
+    optional_environment: [HOME, GITHUB_TOKEN, GIT_SSL_CAINFO]
 `, executable, sum)
 	catalogPath := filepath.Join(configDir, "profiles.yaml")
 	if err := os.WriteFile(catalogPath, []byte(catalogText), 0o600); err != nil {
@@ -63,6 +64,8 @@ profiles:
 	}
 	t.Setenv("HOME", "/operator/home")
 	t.Setenv("CLAUDE_PRIMARY_TOKEN", "fixture-secret-value")
+	t.Setenv("GITHUB_TOKEN", "installation-token-placeholder")
+	t.Setenv("GIT_SSL_CAINFO", "")
 	t.Setenv("UNRELATED_SECRET", "must-not-pass")
 
 	prepared, err := PrepareSidecar(context.Background(), SidecarConfig{
@@ -105,8 +108,14 @@ profiles:
 		t.Fatalf("host must remain foreground-supervised: %v", prepared.Plan.HostArgs)
 	}
 	env := envListMap(prepared.Plan.Env)
-	if env["HOME"] != prepared.Paths.DataDir || env["CLAUDE_PRIMARY_TOKEN"] != "fixture-secret-value" {
+	if env["HOME"] != "/operator/home" || env["CLAUDE_PRIMARY_TOKEN"] != "fixture-secret-value" {
 		t.Fatalf("explicit environment missing: keys=%v", sortedMapKeys(env))
+	}
+	if env["GITHUB_TOKEN"] != "installation-token-placeholder" {
+		t.Fatalf("optional GitHub environment missing: keys=%v", sortedMapKeys(env))
+	}
+	if _, ok := env["GIT_SSL_CAINFO"]; ok {
+		t.Fatal("empty optional environment must not be forwarded")
 	}
 	if _, ok := env["UNRELATED_SECRET"]; ok {
 		t.Fatal("unrelated ambient secret forwarded")
@@ -118,7 +127,7 @@ profiles:
 		"OMNIGENT_DISABLE_TELEMETRY":      "true",
 		"OMNIGENT_TELEMETRY_ENABLED":      "0",
 		"OMNIGENT_OTEL_CAPTURE_CONTENT":   "0",
-		"OMNIGENT_RUNNER_ENV_PASSTHROUGH": "CLAUDE_PRIMARY_TOKEN",
+		"OMNIGENT_RUNNER_ENV_PASSTHROUGH": "CLAUDE_PRIMARY_TOKEN,GITHUB_TOKEN,GIT_SSL_CAINFO,HOME",
 	} {
 		if env[key] != want {
 			t.Fatalf("env[%s] = %q, want %q", key, env[key], want)
