@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -24,6 +25,51 @@ import (
 	"github.com/gastownhall/gascity/internal/runtime"
 	"github.com/gastownhall/gascity/internal/supervisor"
 )
+
+func TestPrependSSEPrelude(t *testing.T) {
+	const event = "event: ready\ndata: {}\n\n"
+	resp := &http.Response{
+		Header:        http.Header{"Content-Type": []string{"text/event-stream; charset=utf-8"}, "Content-Length": []string{"24"}},
+		Body:          io.NopCloser(strings.NewReader(event)),
+		ContentLength: 24,
+	}
+
+	if err := prependSSEPrelude(resp); err != nil {
+		t.Fatalf("prependSSEPrelude: %v", err)
+	}
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read prefixed body: %v", err)
+	}
+	if want := proxySSEPrelude + event; string(got) != want {
+		t.Fatalf("prefixed body = %q, want %q", got, want)
+	}
+	if resp.ContentLength != -1 {
+		t.Fatalf("ContentLength = %d, want -1", resp.ContentLength)
+	}
+	if got := resp.Header.Get("Content-Length"); got != "" {
+		t.Fatalf("Content-Length = %q, want absent", got)
+	}
+}
+
+func TestPrependSSEPreludeLeavesNonSSEBodyUnchanged(t *testing.T) {
+	body := io.NopCloser(strings.NewReader(`{"status":"ok"}`))
+	resp := &http.Response{
+		Header:        http.Header{"Content-Type": []string{"application/json"}},
+		Body:          body,
+		ContentLength: 15,
+	}
+
+	if err := prependSSEPrelude(resp); err != nil {
+		t.Fatalf("prependSSEPrelude: %v", err)
+	}
+	if resp.Body != body {
+		t.Fatal("non-SSE body was replaced")
+	}
+	if resp.ContentLength != 15 {
+		t.Fatalf("ContentLength = %d, want 15", resp.ContentLength)
+	}
+}
 
 const proxyProcessPythonHelper = `
 import json
