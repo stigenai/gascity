@@ -345,7 +345,7 @@ func validatePublicProfile(profile PublicProfile) error {
 	if len(profile.Blurb) > 240 || secretBlurb.MatchString(profile.Blurb) {
 		return fmt.Errorf("profile %q blurb is unsafe", profile.ID)
 	}
-	if profile.Harness != "claude-sdk" && profile.Harness != "codex" {
+	if profile.Harness != "claude-sdk" && profile.Harness != "claude-native" && profile.Harness != "codex" {
 		return fmt.Errorf("profile %q harness %q is unsupported", profile.ID, profile.Harness)
 	}
 	if strings.TrimSpace(profile.Backend) == "" {

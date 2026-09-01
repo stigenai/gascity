@@ -24,6 +24,9 @@ profiles:
     network: external-model
     agent: agents/codex.yaml
     environment: [CODEX_HOME]
+    # Forward these only when the supervising workspace supplies them. Their
+    # absence does not make the model profile unavailable.
+    optional_environment: [GITHUB_TOKEN, GIT_SSL_CAINFO, HOME]
     secret_references: [codex-home]
 
   claude-primary:
@@ -35,6 +38,7 @@ profiles:
     agent: agents/claude-primary.yaml
     fallbacks: [claude-secondary]
     environment: [CLAUDE_PRIMARY_TOKEN]
+    optional_environment: [GITHUB_TOKEN, GIT_SSL_CAINFO, HOME]
     secret_references: [claude-primary-home]
 
   claude-secondary:
@@ -45,4 +49,5 @@ profiles:
     network: external-model
     agent: agents/claude-secondary.yaml
     environment: [CLAUDE_SECONDARY_TOKEN]
+    optional_environment: [GITHUB_TOKEN, GIT_SSL_CAINFO, HOME]
     secret_references: [claude-secondary-home]

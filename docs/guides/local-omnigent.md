@@ -48,10 +48,13 @@ directory-bundle format and is rejected before startup. Keep the files
 owner-readable only. Replace a digest only after reviewing the build for that
 platform. A mismatch fails closed with an installation diagnostic.
 
-The catalog contains profile IDs and display metadata, never credentials. An
-environment list names only the variables Omnigent needs for that profile; Gas
-City forwards those names explicitly and does not persist or display their
-values. Provider secrets remain in the operator-owned Omnigent configuration.
+The catalog contains profile IDs and display metadata, never credentials. The
+`environment` list names values required for profile availability. The
+`optional_environment` list names values that are forwarded only when the
+supervising workspace supplies them; their absence does not disable the
+profile. Gas City forwards only names on one of these allowlists and does not
+persist or display their values. Provider secrets remain in the operator-owned
+Omnigent configuration.
 
 ## Import the pack and choose a profile
 

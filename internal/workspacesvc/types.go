@@ -46,7 +46,9 @@ type RuntimeContext interface {
 	Poke()
 }
 
-// Instance is one runtime service implementation.
+// Instance is one runtime service implementation. Its methods may run
+// concurrently: an HTTP request can remain active while Tick or Close runs.
+// Implementations must synchronize their own lifecycle state.
 type Instance interface {
 	Status() Status
 	HandleHTTP(w http.ResponseWriter, r *http.Request, subpath string) bool

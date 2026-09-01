@@ -80,6 +80,32 @@ profiles:
 	}
 }
 
+func TestLoadCatalogAcceptsClaudeNativeHarness(t *testing.T) {
+	root := t.TempDir()
+	writeCatalogTestFile(t, root, "agents/claude.yaml", "name: claude-native\nprompt: work\n")
+	catalogPath := writeCatalogTestFile(t, root, "catalog.yaml", validCatalogHeader()+`profiles:
+  claude-native:
+    display_name: Claude native
+    blurb: Native Claude Code subscription.
+    harness: claude-native
+    backend: claude-subscription
+    network: external-model
+    agent: agents/claude.yaml
+`)
+
+	catalog, err := LoadCatalog(catalogPath)
+	if err != nil {
+		t.Fatalf("LoadCatalog: %v", err)
+	}
+	profile, ok := catalog.Profile("claude-native")
+	if !ok {
+		t.Fatal("Profile(claude-native) missing")
+	}
+	if profile.Harness != "claude-native" {
+		t.Fatalf("Harness = %q, want claude-native", profile.Harness)
+	}
+}
+
 func TestLoadCatalogRejectsNativeSpecAsStandaloneAgentFile(t *testing.T) {
 	root := t.TempDir()
 	writeCatalogTestFile(t, root, "agents/codex.yaml", "spec_version: 1\nname: codex-bundle\nprompt: work\n")
@@ -264,26 +290,32 @@ func TestCatalogEnvironmentAllowlistControlsAvailabilityWithoutPublicNamesOrValu
     backend: compatible-gateway
     network: external-model
     agent: agents/agent.yaml
-    environment: [HOME, CLAUDE_PROFILE_TOKEN]
+    environment: [CLAUDE_PROFILE_TOKEN]
+    optional_environment: [HOME, GITHUB_TOKEN, GIT_SSL_CAINFO]
 `)
 	catalog, err := LoadCatalog(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	profile, ok := catalog.Profile("claude-profile")
-	if !ok || !equalStrings(profile.Environment, []string{"HOME", "CLAUDE_PROFILE_TOKEN"}) {
+	if !ok || !equalStrings(profile.Environment, []string{"CLAUDE_PROFILE_TOKEN"}) {
 		t.Fatalf("profile environment = %#v", profile.Environment)
 	}
-	missing := catalog.PublicProfilesWithEnvironment(func(name string) (string, bool) {
-		if name == "HOME" {
-			return "/operator", true
-		}
+	if !equalStrings(profile.OptionalEnvironment, []string{"HOME", "GITHUB_TOKEN", "GIT_SSL_CAINFO"}) {
+		t.Fatalf("profile optional environment = %#v", profile.OptionalEnvironment)
+	}
+	missing := catalog.PublicProfilesWithEnvironment(func(string) (string, bool) {
 		return "", false
 	})
 	if len(missing) != 1 || missing[0].Availability != "unavailable" {
 		t.Fatalf("missing availability = %#v", missing)
 	}
-	available := catalog.PublicProfilesWithEnvironment(func(string) (string, bool) { return "configured", true })
+	available := catalog.PublicProfilesWithEnvironment(func(name string) (string, bool) {
+		if name == "CLAUDE_PROFILE_TOKEN" {
+			return "configured", true
+		}
+		return "", false
+	})
 	if available[0].Availability != "available" {
 		t.Fatalf("available profile = %#v", available[0])
 	}
@@ -291,12 +323,12 @@ func TestCatalogEnvironmentAllowlistControlsAvailabilityWithoutPublicNamesOrValu
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"HOME", "CLAUDE_PROFILE_TOKEN", "configured"} {
+	for _, forbidden := range []string{"HOME", "GITHUB_TOKEN", "GIT_SSL_CAINFO", "CLAUDE_PROFILE_TOKEN", "configured"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("public profiles leaked %q: %s", forbidden, encoded)
 		}
 	}
-	if got := catalog.EnvironmentNames(); !equalStrings(got, []string{"CLAUDE_PROFILE_TOKEN", "HOME"}) {
+	if got := catalog.EnvironmentNames(); !equalStrings(got, []string{"CLAUDE_PROFILE_TOKEN", "GITHUB_TOKEN", "GIT_SSL_CAINFO", "HOME"}) {
 		t.Fatalf("EnvironmentNames = %v", got)
 	}
 }
@@ -330,6 +362,25 @@ func TestLoadCatalogRejectsUnsafeEnvironmentAllowlist(t *testing.T) {
 				t.Fatalf("LoadCatalog error = %v, want environment rejection", err)
 			}
 		})
+	}
+}
+
+func TestLoadCatalogRejectsEnvironmentNameSharedByRequiredAndOptionalLists(t *testing.T) {
+	root := t.TempDir()
+	writeCatalogTestFile(t, root, "agent.yaml", "name: fixture\nprompt: work\n")
+	path := writeCatalogTestFile(t, root, "catalog.yaml", validCatalogHeader()+`profiles:
+  p:
+    display_name: P
+    blurb: Profile metadata.
+    harness: codex
+    backend: local
+    network: offline
+    agent: agent.yaml
+    environment: [HOME]
+    optional_environment: [HOME]
+`)
+	if _, err := LoadCatalog(path); err == nil || !strings.Contains(err.Error(), "both environment and optional_environment") {
+		t.Fatalf("LoadCatalog error = %v, want cross-list duplicate rejection", err)
 	}
 }
 

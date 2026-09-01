@@ -77,6 +77,22 @@ func TestBindProfileChainRejectsMissingAmbiguousAndWrongHarnessAgents(t *testing
 	}
 }
 
+func TestBindProfileChainCanonicalizesClaudeNativeHarness(t *testing.T) {
+	catalog := loadFailoverCatalogWithHarness(t, "claude-native")
+	agents := []Agent{
+		{ID: "ag_primary", Name: "claude-primary", Harness: "claude_native"},
+		{ID: "ag_backup", Name: "claude-secondary", Harness: "claude-native"},
+	}
+
+	chain, err := BindProfileChain(catalog, "claude-primary", agents)
+	if err != nil {
+		t.Fatalf("BindProfileChain: %v", err)
+	}
+	if len(chain) != 2 || chain[0].Harness != "claude-native" || chain[1].Harness != "claude-native" {
+		t.Fatalf("BindProfileChain = %#v, want claude-native chain", chain)
+	}
+}
+
 func TestFailoverControllerAdvancesOnceStaysStickyAndExhausts(t *testing.T) {
 	catalog := loadFailoverCatalog(t)
 	fake := newFailoverAPIFake(t, initialFailoverLabels(t, catalog))
@@ -327,15 +343,19 @@ func errorStreamEvent(sequence *int64, code string, statusCode int) StreamEvent 
 }
 
 func loadFailoverCatalog(t *testing.T) *Catalog {
+	return loadFailoverCatalogWithHarness(t, "claude-sdk")
+}
+
+func loadFailoverCatalogWithHarness(t *testing.T, harness string) *Catalog {
 	t.Helper()
 	root := t.TempDir()
 	writeCatalogTestFile(t, root, "agents/primary.yaml", "name: claude-primary\nprompt: work\n")
 	writeCatalogTestFile(t, root, "agents/secondary.yaml", "name: claude-secondary\nprompt: work\n")
-	path := writeCatalogTestFile(t, root, "catalog.yaml", validCatalogHeader()+`profiles:
+	path := writeCatalogTestFile(t, root, "catalog.yaml", validCatalogHeader()+fmt.Sprintf(`profiles:
   claude-primary:
     display_name: Claude primary
     blurb: Primary compatible backend.
-    harness: claude-sdk
+    harness: %s
     backend: primary-gateway
     network: external-model
     agent: agents/primary.yaml
@@ -343,11 +363,11 @@ func loadFailoverCatalog(t *testing.T) *Catalog {
   claude-secondary:
     display_name: Claude secondary
     blurb: Independent backup backend.
-    harness: claude-sdk
+    harness: %s
     backend: backup-gateway
     network: external-model
     agent: agents/secondary.yaml
-`)
+`, harness, harness))
 	catalog, err := LoadCatalog(path)
 	if err != nil {
 		t.Fatal(err)

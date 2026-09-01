@@ -22,6 +22,7 @@ import (
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/runtime"
 	"github.com/gastownhall/gascity/internal/supervisor"
+	"github.com/gastownhall/gascity/internal/testutil"
 )
 
 var uniqueContractSeq atomic.Uint64
@@ -70,6 +71,32 @@ func (t *testInstance) Close() error {
 	t.closed = true
 	return t.closeErr
 }
+
+type blockingStreamInstance struct {
+	status        Status
+	streamStarted chan struct{}
+	releaseStream chan struct{}
+	tickStarted   chan struct{}
+	streamOnce    sync.Once
+	tickOnce      sync.Once
+}
+
+func (b *blockingStreamInstance) Status() Status { return b.status }
+
+func (b *blockingStreamInstance) HandleHTTP(w http.ResponseWriter, _ *http.Request, subpath string) bool {
+	if subpath == "/stream" {
+		b.streamOnce.Do(func() { close(b.streamStarted) })
+		<-b.releaseStream
+	}
+	w.WriteHeader(http.StatusOK)
+	return true
+}
+
+func (b *blockingStreamInstance) Tick(context.Context, time.Time) {
+	b.tickOnce.Do(func() { close(b.tickStarted) })
+}
+
+func (b *blockingStreamInstance) Close() error { return nil }
 
 func uniqueContract(t *testing.T) string {
 	t.Helper()
@@ -886,6 +913,105 @@ func TestManagerServeHTTPUsesBuiltinHealthzWorkflow(t *testing.T) {
 	}
 	if got["contract"] != HealthzWorkflowContract {
 		t.Fatalf("contract = %#v, want %s", got["contract"], HealthzWorkflowContract)
+	}
+}
+
+func TestManagerStreamingRequestDoesNotBlockReconciliation(t *testing.T) {
+	releaseStream := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseStream) }) }
+	t.Cleanup(release)
+
+	inst := &blockingStreamInstance{
+		status: Status{
+			ServiceName: "omnigent",
+			State:       "ready",
+			LocalState:  "ready",
+		},
+		streamStarted: make(chan struct{}),
+		releaseStream: releaseStream,
+		tickStarted:   make(chan struct{}),
+	}
+	rt := &testRuntime{
+		cityPath: t.TempDir(),
+		cityName: "test-city",
+		cfg: &config.City{Services: []config.Service{{
+			Name: "omnigent",
+		}}},
+		sp:    runtime.NewFake(),
+		store: beads.NewMemStore(),
+	}
+	mgr := &Manager{
+		rt: rt,
+		entries: map[string]*entry{
+			"omnigent": {
+				spec:   rt.cfg.Services[0],
+				status: inst.status,
+				inst:   inst,
+			},
+		},
+	}
+
+	streamDone := make(chan bool, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/svc/omnigent/stream", nil)
+		streamDone <- mgr.ServeHTTP(httptest.NewRecorder(), req)
+	}()
+	select {
+	case <-inst.streamStarted:
+	case <-time.After(testutil.GoroutineRaceTimeout):
+		t.Fatal("stream handler did not start")
+	}
+
+	tickDone := make(chan struct{})
+	go func() {
+		mgr.Tick(context.Background(), time.Now().UTC())
+		close(tickDone)
+	}()
+	select {
+	case <-inst.tickStarted:
+	case <-time.After(testutil.GoroutineRaceTimeout):
+		t.Fatal("service reconciliation did not reach the instance")
+	}
+	select {
+	case <-tickDone:
+	case <-time.After(testutil.GoroutineRaceTimeout):
+		t.Fatal("service reconciliation blocked behind an open streaming response")
+	}
+
+	type healthResult struct {
+		served bool
+		status int
+	}
+	healthDone := make(chan healthResult, 1)
+	go func() {
+		healthReq := httptest.NewRequest(http.MethodGet, "/svc/omnigent/health", nil)
+		healthRec := httptest.NewRecorder()
+		healthDone <- healthResult{
+			served: mgr.ServeHTTP(healthRec, healthReq),
+			status: healthRec.Code,
+		}
+	}()
+	select {
+	case result := <-healthDone:
+		if !result.served {
+			t.Fatal("concurrent health request was not served")
+		}
+		if result.status != http.StatusOK {
+			t.Fatalf("concurrent health status = %d, want %d", result.status, http.StatusOK)
+		}
+	case <-time.After(testutil.GoroutineRaceTimeout):
+		t.Fatal("concurrent health request blocked behind an open streaming response")
+	}
+
+	release()
+	select {
+	case served := <-streamDone:
+		if !served {
+			t.Fatal("stream ServeHTTP returned false, want true")
+		}
+	case <-time.After(testutil.GoroutineRaceTimeout):
+		t.Fatal("stream handler did not return after release")
 	}
 }
 

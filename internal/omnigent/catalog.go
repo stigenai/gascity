@@ -117,6 +117,7 @@ type ResolvedProfile struct {
 	AgentRelativePath   string
 	Fallbacks           []string
 	Environment         []string
+	OptionalEnvironment []string
 	SecretReferences    []string
 	PolicyMailRecipient string
 }
@@ -149,6 +150,7 @@ type profileDocument struct {
 	Agent               string   `yaml:"agent"`
 	Fallbacks           []string `yaml:"fallbacks"`
 	Environment         []string `yaml:"environment"`
+	OptionalEnvironment []string `yaml:"optional_environment"`
 	SecretReferences    []string `yaml:"secret_references"`
 	PolicyMailRecipient string   `yaml:"policy_mail_recipient"`
 }
@@ -276,6 +278,7 @@ func resolveProfile(root, resolvedRoot, id string, raw profileDocument) (Resolve
 		Network:             strings.TrimSpace(raw.Network),
 		Fallbacks:           append([]string(nil), raw.Fallbacks...),
 		Environment:         append([]string(nil), raw.Environment...),
+		OptionalEnvironment: append([]string(nil), raw.OptionalEnvironment...),
 		SecretReferences:    append([]string(nil), raw.SecretReferences...),
 		PolicyMailRecipient: strings.TrimSpace(raw.PolicyMailRecipient),
 	}
@@ -300,9 +303,9 @@ func resolveProfile(root, resolvedRoot, id string, raw profileDocument) (Resolve
 		}
 	}
 	switch profile.Harness {
-	case "claude-sdk", "codex":
+	case "claude-sdk", "claude-native", "codex":
 	default:
-		return ResolvedProfile{}, fmt.Errorf("omnigent profile %q: harness must be claude-sdk or codex, got %q", id, profile.Harness)
+		return ResolvedProfile{}, fmt.Errorf("omnigent profile %q: harness must be claude-sdk, claude-native, or codex, got %q", id, profile.Harness)
 	}
 	if profile.Backend == "" {
 		return ResolvedProfile{}, fmt.Errorf("omnigent profile %q: backend is required", id)
@@ -315,20 +318,32 @@ func resolveProfile(root, resolvedRoot, id string, raw profileDocument) (Resolve
 	default:
 		return ResolvedProfile{}, fmt.Errorf("omnigent profile %q: network must be offline or external-model, got %q", id, profile.Network)
 	}
-	seenEnvironment := make(map[string]bool, len(profile.Environment))
-	for i, name := range profile.Environment {
-		name = strings.TrimSpace(name)
-		if !environmentNamePattern.MatchString(name) {
-			return ResolvedProfile{}, fmt.Errorf("omnigent profile %q: environment[%d] is not a valid uppercase environment name", id, i)
+	seenEnvironment := make(map[string]string, len(profile.Environment)+len(profile.OptionalEnvironment))
+	validateEnvironment := func(kind string, names []string) error {
+		for i, name := range names {
+			name = strings.TrimSpace(name)
+			if !environmentNamePattern.MatchString(name) {
+				return fmt.Errorf("omnigent profile %q: %s[%d] is not a valid uppercase environment name", id, kind, i)
+			}
+			if unsafeProfileEnvironmentName(name) {
+				return fmt.Errorf("omnigent profile %q: %s name %q is managed or unsafe", id, kind, name)
+			}
+			if previous := seenEnvironment[name]; previous != "" {
+				if previous != kind {
+					return fmt.Errorf("omnigent profile %q: environment name %q appears in both environment and optional_environment", id, name)
+				}
+				return fmt.Errorf("omnigent profile %q: duplicate %s name %q", id, kind, name)
+			}
+			seenEnvironment[name] = kind
+			names[i] = name
 		}
-		if unsafeProfileEnvironmentName(name) {
-			return ResolvedProfile{}, fmt.Errorf("omnigent profile %q: environment name %q is managed or unsafe", id, name)
-		}
-		if seenEnvironment[name] {
-			return ResolvedProfile{}, fmt.Errorf("omnigent profile %q: duplicate environment name %q", id, name)
-		}
-		seenEnvironment[name] = true
-		profile.Environment[i] = name
+		return nil
+	}
+	if err := validateEnvironment("environment", profile.Environment); err != nil {
+		return ResolvedProfile{}, err
+	}
+	if err := validateEnvironment("optional_environment", profile.OptionalEnvironment); err != nil {
+		return ResolvedProfile{}, err
 	}
 	seenSecretReferences := make(map[string]bool, len(profile.SecretReferences))
 	for i, id := range profile.SecretReferences {
@@ -496,6 +511,7 @@ func (c *Catalog) Profile(id string) (ResolvedProfile, bool) {
 	profile, ok := c.profiles[id]
 	profile.Fallbacks = append([]string(nil), profile.Fallbacks...)
 	profile.Environment = append([]string(nil), profile.Environment...)
+	profile.OptionalEnvironment = append([]string(nil), profile.OptionalEnvironment...)
 	profile.SecretReferences = append([]string(nil), profile.SecretReferences...)
 	return profile, ok
 }
@@ -531,8 +547,9 @@ func (c *Catalog) PublicProfiles() []PublicProfile {
 }
 
 // PublicProfilesWithEnvironment returns stable non-secret discovery metadata.
-// Availability means every explicitly allowed environment reference is
-// present and nonempty; neither names nor values enter the public shape.
+// Availability means every required environment reference is present and
+// nonempty. Optional references do not affect availability. Neither names nor
+// values enter the public shape.
 func (c *Catalog) PublicProfilesWithEnvironment(lookup func(string) (string, bool)) []PublicProfile {
 	if c == nil {
 		return nil
@@ -572,8 +589,9 @@ func (c *Catalog) PublicProfilesWithEnvironment(lookup func(string) (string, boo
 	return out
 }
 
-// EnvironmentNames returns the sorted union of explicit process-only
-// environment references. Callers use it to construct a minimal child env.
+// EnvironmentNames returns the sorted union of required and optional
+// process-only environment references. Callers use it to construct a minimal
+// child environment from the names that are actually present.
 func (c *Catalog) EnvironmentNames() []string {
 	if c == nil {
 		return nil
@@ -581,6 +599,9 @@ func (c *Catalog) EnvironmentNames() []string {
 	set := make(map[string]bool)
 	for _, profile := range c.profiles {
 		for _, name := range profile.Environment {
+			set[name] = true
+		}
+		for _, name := range profile.OptionalEnvironment {
 			set[name] = true
 		}
 	}

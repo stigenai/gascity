@@ -301,6 +301,8 @@ func canonicalHarness(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "claude-sdk", "claude_sdk":
 		return "claude-sdk"
+	case "claude-native", "claude_native":
+		return "claude-native"
 	case "codex":
 		return "codex"
 	default:

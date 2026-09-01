@@ -456,6 +456,34 @@ func TestAPIClientResolveProfileValidatesPublicDiscovery(t *testing.T) {
 	}
 }
 
+func TestAPIClientListProfilesAcceptsClaudeNativeHarness(t *testing.T) {
+	profiles := []PublicProfile{{
+		ID: "claude-native", DisplayName: "Claude native", Blurb: "Native Claude Code subscription.",
+		Harness: "claude-native", Backend: "claude-subscription", Network: "external-model",
+		Availability: "available", Chain: []string{"claude-native"},
+	}}
+	server := newOmnigentHTTPTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/gascity/v1/profiles" {
+			http.NotFound(w, r)
+			return
+		}
+		writeClientTestJSON(t, w, http.StatusOK, profiles)
+	}))
+	defer server.Close()
+	client, err := NewAPIClient(server.URL, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := client.ListProfiles(context.Background())
+	if err != nil {
+		t.Fatalf("ListProfiles: %v", err)
+	}
+	if len(got) != 1 || got[0].Harness != "claude-native" {
+		t.Fatalf("ListProfiles = %#v, want one claude-native profile", got)
+	}
+}
+
 func TestAPIClientListProfilesRejectsMalformedDiscovery(t *testing.T) {
 	valid := PublicProfile{
 		ID: "codex", DisplayName: "Codex", Blurb: "Codex through local authentication.",

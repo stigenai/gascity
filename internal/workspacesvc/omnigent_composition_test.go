@@ -35,6 +35,10 @@ func TestOmnigentProxyProcessComposition(t *testing.T) {
 		runOmnigentCompositionHelper(mode)
 		return
 	}
+	t.Setenv("HOME", "/fixture/operator-home")
+	t.Setenv("GITHUB_TOKEN", "fixture-agent-vault-placeholder")
+	t.Setenv("GIT_SSL_CAINFO", "/fixture/agent-vault-ca.pem")
+	t.Setenv("UNRELATED_OMNIGENT_SECRET", "must-not-reach-runner")
 
 	cityPath := t.TempDir()
 	stateRoot := filepath.Join(cityPath, ".gc", "services", "omnigent")
@@ -75,6 +79,7 @@ profiles:
     backend: loopback
     network: offline
     agent: mock-agent.yaml
+    optional_environment: [HOME, GITHUB_TOKEN, GIT_SSL_CAINFO]
 `, wrapper, digest)
 	if err := os.WriteFile(filepath.Join(configDir, "profiles.yaml"), []byte(catalog), 0o600); err != nil {
 		t.Fatal(err)
@@ -231,6 +236,18 @@ func runOmnigentCompositionHelper(mode string) {
 		}
 		os.Exit(0)
 	case "child-helper":
+		for key, want := range map[string]string{
+			"HOME":           "/fixture/operator-home",
+			"GITHUB_TOKEN":   "fixture-agent-vault-placeholder",
+			"GIT_SSL_CAINFO": "/fixture/agent-vault-ca.pem",
+		} {
+			if os.Getenv(key) != want {
+				os.Exit(76)
+			}
+		}
+		if os.Getenv("UNRELATED_OMNIGENT_SECRET") != "" {
+			os.Exit(77)
+		}
 		if slices.Contains(os.Args, "host") {
 			stopping := make(chan os.Signal, 1)
 			signal.Notify(stopping, syscall.SIGINT, syscall.SIGTERM)
