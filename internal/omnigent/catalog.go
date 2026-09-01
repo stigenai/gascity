@@ -303,9 +303,9 @@ func resolveProfile(root, resolvedRoot, id string, raw profileDocument) (Resolve
 		}
 	}
 	switch profile.Harness {
-	case "claude-sdk", "codex":
+	case "claude-sdk", "claude-native", "codex":
 	default:
-		return ResolvedProfile{}, fmt.Errorf("omnigent profile %q: harness must be claude-sdk or codex, got %q", id, profile.Harness)
+		return ResolvedProfile{}, fmt.Errorf("omnigent profile %q: harness must be claude-sdk, claude-native, or codex, got %q", id, profile.Harness)
 	}
 	if profile.Backend == "" {
 		return ResolvedProfile{}, fmt.Errorf("omnigent profile %q: backend is required", id)

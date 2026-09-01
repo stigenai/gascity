@@ -80,6 +80,32 @@ profiles:
 	}
 }
 
+func TestLoadCatalogAcceptsClaudeNativeHarness(t *testing.T) {
+	root := t.TempDir()
+	writeCatalogTestFile(t, root, "agents/claude.yaml", "name: claude-native\nprompt: work\n")
+	catalogPath := writeCatalogTestFile(t, root, "catalog.yaml", validCatalogHeader()+`profiles:
+  claude-native:
+    display_name: Claude native
+    blurb: Native Claude Code subscription.
+    harness: claude-native
+    backend: claude-subscription
+    network: external-model
+    agent: agents/claude.yaml
+`)
+
+	catalog, err := LoadCatalog(catalogPath)
+	if err != nil {
+		t.Fatalf("LoadCatalog: %v", err)
+	}
+	profile, ok := catalog.Profile("claude-native")
+	if !ok {
+		t.Fatal("Profile(claude-native) missing")
+	}
+	if profile.Harness != "claude-native" {
+		t.Fatalf("Harness = %q, want claude-native", profile.Harness)
+	}
+}
+
 func TestLoadCatalogRejectsNativeSpecAsStandaloneAgentFile(t *testing.T) {
 	root := t.TempDir()
 	writeCatalogTestFile(t, root, "agents/codex.yaml", "spec_version: 1\nname: codex-bundle\nprompt: work\n")
