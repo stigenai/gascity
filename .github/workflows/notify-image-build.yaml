@@ -27,6 +27,9 @@ permissions: {}
 
 jobs:
   notify:
+    # This dispatch belongs to Gas City's hosted control plane. Forks pin and
+    # rebuild their own runtime images through their deployment repositories.
+    if: github.repository == 'gascity/gascity'
     runs-on: ubuntu-latest
     steps:
       - name: Trigger runtime image rebuild
