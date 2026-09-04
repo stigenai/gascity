@@ -43,7 +43,7 @@ func ExtractTailMeta(path string) (*TailMeta, error) {
 	}
 	defer f.Close() //nolint:errcheck // best-effort close on read-only file
 
-	data, startsMidLine, err := readTail(f, tailChunkSize)
+	data, startsMidLine, err := readTail(f)
 	if err != nil {
 		return nil, err
 	}
@@ -88,8 +88,8 @@ func validateSearchPathFile(searchPaths []string, path string) (string, error) {
 }
 
 // readTail reads the last n bytes of r (or the whole thing if smaller).
-func readTail(r io.ReadSeeker, n int64) ([]byte, bool, error) {
-	data, startsMidLine, _, err := readTailWindow(r, n)
+func readTail(r io.ReadSeeker) ([]byte, bool, error) {
+	data, startsMidLine, _, err := readTailWindow(r, tailChunkSize)
 	return data, startsMidLine, err
 }
 

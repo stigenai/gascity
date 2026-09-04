@@ -618,7 +618,7 @@ func (p *Provider) IsAttached(name string) bool {
 	return attached
 }
 
-// IsAttachedChecked is the IsAttached analogue of IsRunningChecked.
+// IsAttachedChecked is the IsAttached analog of IsRunningChecked.
 func (p *Provider) IsAttachedChecked(name string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), runningPodSnapshotTimeout)
 	defer cancel()
