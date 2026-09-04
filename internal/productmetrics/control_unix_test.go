@@ -1639,9 +1639,16 @@ func TestDisableAndPurgeRejectsUnprovenPeerSuccessor(t *testing.T) {
 				t.Fatal(err)
 			}
 			var armed atomic.Bool
+			ownerDurable := make(chan struct{})
+			var ownerDurableOnce sync.Once
 			injected := errors.New("injected peer-successor root sync failure")
 			deps := defaultTestServiceDependencies(home, 2)
 			crossDeviceOpens := 0
+			deps.storageHooks.afterAtomicWrite = func(path string, outcome storageWriteState) {
+				if path == filepath.Join(home.Root(), configFileName) && outcome == storageWriteAppliedDurable {
+					ownerDurableOnce.Do(func() { close(ownerDurable) })
+				}
+			}
 			deps.storageHooks.metadata = func(path string, metadata storageMetadata) storageMetadata {
 				if armed.Load() && test.crossTree && path == queuePath {
 					metadata.dev ^= 1 << 63
@@ -1666,6 +1673,11 @@ func TestDisableAndPurgeRejectsUnprovenPeerSuccessor(t *testing.T) {
 			owner := waitForMetricsState(t, home, func(state persistedState) bool {
 				return state.Preference == preferenceDisabled && state.CleanupKind == cleanupDisable
 			})
+			select {
+			case <-ownerDurable:
+			case <-time.After(testutil.GoroutineRaceTimeout):
+				t.Fatal("timed out waiting for durable cleanup owner")
+			}
 			successor := cleanupSuccessorState(owner)
 			if test.change != nil {
 				test.change(&successor)
