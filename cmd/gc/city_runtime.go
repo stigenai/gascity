@@ -2552,12 +2552,14 @@ func (cr *CityRuntime) recordReconcileTraceInputs(
 		templateNames[template] = struct{}{}
 	}
 	for _, template := range traceSetStrings(templateNames) {
-		status := TraceEvaluationEligible
-		reason := TraceReasonRetained
-		if desiredCounts[template] == 0 && poolDesired[template] == 0 && openCounts[template] == 0 {
-			status = TraceEvaluationSkipped
-			reason = TraceReasonNoDemand
-		}
+		status, reason := templateTraceEvaluation(
+			desiredCounts[template],
+			poolDesired[template],
+			openCounts[template],
+			traceWorkRequested[template],
+			result.ScaleCheckCounts[template],
+			trace.TemplateCapRejectionReason(template),
+		)
 		trace.RecordTemplateSummary(template, "", status, reason, map[string]any{
 			"desired_count":  desiredCounts[template],
 			"open_count":     openCounts[template],
@@ -2608,6 +2610,19 @@ func (cr *CityRuntime) recordReconcileTraceInputs(
 		"template_count": len(templateNames),
 		"open_count":     len(openInfos),
 	})
+}
+
+func templateTraceEvaluation(desiredCount, poolDesired, openCount int, workRequested bool, scaleCheckCount int, capReason TraceReasonCode) (TraceEvaluationStatus, TraceReasonCode) {
+	if desiredCount != 0 || poolDesired != 0 || openCount != 0 {
+		return TraceEvaluationEligible, TraceReasonRetained
+	}
+	if capReason != "" {
+		return TraceEvaluationSkipped, capReason
+	}
+	if workRequested || scaleCheckCount > 0 {
+		return TraceEvaluationEligible, TraceReasonRetained
+	}
+	return TraceEvaluationSkipped, TraceReasonNoDemand
 }
 
 // recordReconcileTraceResults records the per-session terminal result for one
