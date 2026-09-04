@@ -203,7 +203,7 @@ func TestShouldSkipTickForFSPressure_EnvThresholdOverride(t *testing.T) {
 	}
 }
 
-func TestCityRuntimeTickSkipsBeforeManagedDoltAndDemandUnderFSPressure(t *testing.T) {
+func TestCityRuntimeTickPreflightsManagedDoltButSkipsDemandUnderFSPressure(t *testing.T) {
 	withFakePressureFile(t, []byte(samplePressureHigh), nil)
 	t.Setenv(fsPressureThresholdEnv, "")
 
@@ -246,8 +246,8 @@ func TestCityRuntimeTickSkipsBeforeManagedDoltAndDemandUnderFSPressure(t *testin
 	prevPoolRunning := map[string]bool{}
 	cr.tick(context.Background(), dirty, &lastProviderName, cr.cityPath, &prevPoolRunning, "patrol")
 
-	if got := managedDoltCalls.Load(); got != 0 {
-		t.Fatalf("managed dolt calls = %d, want 0 before pressure-skip gate", got)
+	if got := managedDoltCalls.Load(); got != 2 {
+		t.Fatalf("managed dolt calls = %d, want ownership and health preflight before session-store access", got)
 	}
 	if got := buildCalls.Load(); got != 0 {
 		t.Fatalf("build desired calls = %d, want 0 before pressure-skip gate", got)
@@ -313,6 +313,7 @@ func TestCityRuntimeTickSkipsDueOrderDispatchUnderFSPressure(t *testing.T) {
 	t.Cleanup(func() { close(releaseExec) })
 
 	var buildCalls atomic.Int32
+	var preflightCalls atomic.Int32
 	var stderr bytes.Buffer
 	rec := events.NewFake()
 	sp := runtime.NewFake()
@@ -334,7 +335,7 @@ func TestCityRuntimeTickSkipsDueOrderDispatchUnderFSPressure(t *testing.T) {
 		stdout:        io.Discard,
 		stderr:        &stderr,
 		managedDoltOwned: func(string) (bool, error) {
-			t.Fatal("managed dolt preflight should not run before pressure-skip gate")
+			preflightCalls.Add(1)
 			return false, nil
 		},
 	}
@@ -344,6 +345,9 @@ func TestCityRuntimeTickSkipsDueOrderDispatchUnderFSPressure(t *testing.T) {
 	prevPoolRunning := map[string]bool{}
 	cr.tick(context.Background(), dirty, &lastProviderName, cr.cityPath, &prevPoolRunning, "patrol")
 
+	if got := preflightCalls.Load(); got != 1 {
+		t.Fatalf("managed dolt preflight calls = %d, want 1 before any session-store access", got)
+	}
 	if got := buildCalls.Load(); got != 0 {
 		t.Fatalf("build desired calls = %d, want 0 before pressure-skip gate", got)
 	}
