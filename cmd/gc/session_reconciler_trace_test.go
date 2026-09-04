@@ -324,6 +324,34 @@ func TestTraceAutoArmPromotesBufferedDetail(t *testing.T) {
 	}
 }
 
+func TestTraceCycleRecordsTemplateCapRejectionWithoutDetailArm(t *testing.T) {
+	trace := newPoolDesiredStateTestTrace()
+	trace.RecordDecision(
+		TraceSitePoolWorkspaceCap,
+		TraceReasonWorkspaceCap,
+		TraceOutcomeRejected,
+		"factory-planner/five.planner",
+		"",
+		nil,
+	)
+
+	if got := trace.TemplateCapRejectionReason("factory-planner/five.planner"); got != TraceReasonWorkspaceCap {
+		t.Fatalf("cap rejection reason = %q, want workspace_cap", got)
+	}
+}
+
+func TestTemplateTraceEvaluationReportsCapInsteadOfNoDemand(t *testing.T) {
+	status, reason := templateTraceEvaluation(0, 0, 0, true, 1, TraceReasonWorkspaceCap)
+	if status != TraceEvaluationSkipped || reason != TraceReasonWorkspaceCap {
+		t.Fatalf("evaluation = (%q, %q), want (skipped, workspace_cap)", status, reason)
+	}
+
+	status, reason = templateTraceEvaluation(0, 0, 0, false, 0, "")
+	if status != TraceEvaluationSkipped || reason != TraceReasonNoDemand {
+		t.Fatalf("empty evaluation = (%q, %q), want (skipped, no_demand)", status, reason)
+	}
+}
+
 func TestTraceRecoveryQuarantinesInteriorCorruption(t *testing.T) {
 	cityDir := t.TempDir()
 	store, err := newSessionReconcilerTraceStore(cityDir, io.Discard)

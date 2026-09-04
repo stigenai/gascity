@@ -144,15 +144,6 @@ func poolTraceFieldInt(t *testing.T, fields map[string]any, key string) int {
 	return got
 }
 
-func poolTraceFieldStrings(t *testing.T, fields map[string]any, key string) []string {
-	t.Helper()
-	got, ok := fields[key].([]string)
-	if !ok {
-		t.Fatalf("trace field %s = %#v, want []string", key, fields[key])
-	}
-	return got
-}
-
 func newPoolDesiredStateTestTrace(templates ...string) *sessionReconcilerTraceCycle {
 	detail := make(map[string]TraceSource, len(templates))
 	for _, template := range templates {
@@ -516,24 +507,18 @@ func TestComputePoolDesiredStates_TraceListsActiveCapacityBlockers(t *testing.T)
 	if len(result) != 1 || len(result[0].Requests) != 1 || result[0].Requests[0].Tier != "resume" {
 		t.Fatalf("result = %#v, want only the active resume request under max_active_sessions=1", result)
 	}
-	if got := trace.decisionCounts[string(TraceSitePoolNewDemandCap)]; got != 1 {
-		t.Fatalf("new-demand cap trace decisions = %d, want 1; records=%#v", got, trace.records)
+	if got := trace.decisionCounts[string(TraceSitePoolAgentCap)]; got != 1 {
+		t.Fatalf("agent-cap trace decisions = %d, want 1; records=%#v", got, trace.records)
 	}
-	rec := poolTraceDecision(t, trace, TraceSitePoolNewDemandCap)
-	for key, want := range map[string]int{
-		"scale_check":  1,
-		"accepted_new": 0,
-		"blocked_new":  1,
-	} {
-		if got := poolTraceFieldInt(t, rec.Fields, key); got != want {
-			t.Fatalf("%s = %d, want %d", key, got, want)
-		}
+	rec := poolTraceDecision(t, trace, TraceSitePoolAgentCap)
+	if rec.ReasonCode != TraceReasonAgentCap {
+		t.Fatalf("reason = %q, want agent_cap", rec.ReasonCode)
 	}
-	if got := poolTraceFieldStrings(t, rec.Fields, "blocking_sessions"); len(got) != 1 || got[0] != "sess-active" {
-		t.Fatalf("blocking_sessions = %#v, want [sess-active]", got)
+	if got := poolTraceFieldInt(t, rec.Fields, "agent_max"); got != 1 {
+		t.Fatalf("agent_max = %d, want 1", got)
 	}
-	if got := poolTraceFieldStrings(t, rec.Fields, "blocking_work_beads"); len(got) != 1 || got[0] != "w-active" {
-		t.Fatalf("blocking_work_beads = %#v, want [w-active]", got)
+	if got := poolTraceFieldInt(t, rec.Fields, "current"); got != 1 {
+		t.Fatalf("current = %d, want 1", got)
 	}
 }
 
@@ -1032,7 +1017,7 @@ func TestComputePoolDesiredStates_ScaleCheckRespectsCaps(t *testing.T) {
 	}
 }
 
-func TestComputePoolDesiredStates_CapsNewDemandBeforeMaterializingRequests(t *testing.T) {
+func TestComputePoolDesiredStates_AppliesCapsOnceAfterMaterializingAllCandidates(t *testing.T) {
 	workspaceMax := 2
 	cfg := &config.City{
 		Workspace: config.Workspace{MaxActiveSessions: &workspaceMax},
@@ -1064,8 +1049,8 @@ func TestComputePoolDesiredStates_CapsNewDemandBeforeMaterializingRequests(t *te
 	capRejections := trace.decisionCounts[string(TraceSitePoolAgentCap)] +
 		trace.decisionCounts[string(TraceSitePoolRigCap)] +
 		trace.decisionCounts[string(TraceSitePoolWorkspaceCap)]
-	if capRejections != 0 {
-		t.Fatalf("cap rejections = %d, want 0; new demand should be capped before request materialization", capRejections)
+	if capRejections != 9 {
+		t.Fatalf("cap rejections = %d, want 9; every rejected candidate should carry its actual cap reason", capRejections)
 	}
 }
 
@@ -1542,8 +1527,8 @@ func TestComputePoolDesiredStates_InFlightDemandRecordsTraceWhenCapsSuppressReus
 	for key, want := range map[string]int{
 		"scale_check":   5,
 		"in_flight":     2,
-		"reused":        0,
-		"anonymous_new": 0,
+		"reused":        2,
+		"anonymous_new": 3,
 	} {
 		if got := poolTraceFieldInt(t, rec.Fields, key); got != want {
 			t.Fatalf("%s = %d, want %d", key, got, want)
@@ -1578,6 +1563,80 @@ func TestApplyNestedCaps_DedupsConcreteSessionRequestsAcrossTiers(t *testing.T) 
 	}
 	if seenSess1 != 1 {
 		t.Fatalf("sess-1 accepted %d times, want once; requests=%#v", seenSess1, reqs)
+	}
+}
+
+func TestComputePoolDesiredStates_ScaleDemandPriorityBeatsConfigOrderBeforeWorkspaceCap(t *testing.T) {
+	workspaceMax := 2
+	orders := [][]config.Agent{
+		{
+			poolAgent("dog", "", intPtr(1), 0),
+			poolAgent("planner", "", intPtr(1), 0),
+			poolAgent("core", "", intPtr(1), 0),
+		},
+		{
+			poolAgent("planner", "", intPtr(1), 0),
+			poolAgent("dog", "", intPtr(1), 0),
+			poolAgent("core", "", intPtr(1), 0),
+		},
+	}
+
+	for index, agents := range orders {
+		cfg := &config.City{
+			Workspace: config.Workspace{MaxActiveSessions: &workspaceMax},
+			Agents:    agents,
+		}
+		work := []beads.Bead{
+			workBead("core-work", "core", "core-session", "in_progress", 100),
+		}
+		sessions := []beads.Bead{sessionBead("core-session", "open")}
+		demand := map[string]scaleCheckDemand{
+			"dog": {
+				Count:       1,
+				WorkBeadIDs: []string{"dog-work"},
+				Priorities:  map[string]int{"dog-work": 1},
+			},
+			"planner": {
+				Count:       1,
+				WorkBeadIDs: []string{"planner-work"},
+				Priorities:  map[string]int{"planner-work": 10},
+			},
+		}
+		trace := newPoolDesiredStateTestTrace("core", "dog", "planner")
+
+		result := computePoolDesiredStates(
+			cfg,
+			work,
+			sessionInfosFromBeads(sessions),
+			map[string]int{"dog": 1, "planner": 1},
+			demand,
+			trace,
+		)
+
+		accepted := make(map[string]SessionRequest)
+		for _, state := range result {
+			for _, request := range state.Requests {
+				accepted[request.WorkBeadID] = request
+			}
+		}
+		if _, ok := accepted["core-work"]; !ok {
+			t.Fatalf("order %d: core resume missing: %#v", index, result)
+		}
+		planner, ok := accepted["planner-work"]
+		if !ok {
+			t.Fatalf("order %d: higher-priority Planner demand missing: %#v", index, result)
+		}
+		if planner.BeadPriority != 10 {
+			t.Fatalf("order %d: Planner priority = %d, want 10", index, planner.BeadPriority)
+		}
+		if _, ok := accepted["dog-work"]; ok {
+			t.Fatalf("order %d: lower-priority dog demand consumed the final slot: %#v", index, result)
+		}
+
+		rejected := poolTraceDecision(t, trace, TraceSitePoolWorkspaceCap)
+		if rejected.Template != "dog" || rejected.ReasonCode != TraceReasonWorkspaceCap {
+			t.Fatalf("order %d: rejection = %#v, want dog workspace_cap", index, rejected)
+		}
 	}
 }
 

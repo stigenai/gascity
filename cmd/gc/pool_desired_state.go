@@ -249,8 +249,6 @@ func computePoolDesiredStates(
 		}
 	}
 
-	limits := newNestedCapLimits(cfg)
-	usage := acceptedNestedCapUsage(limits, resumeRequests)
 	allRequests := append([]SessionRequest(nil), resumeRequests...)
 	resumeSessionBeadIDs := make(map[string]struct{}, len(resumeRequests))
 	for _, req := range resumeRequests {
@@ -280,25 +278,23 @@ func computePoolDesiredStates(
 			if _, ok := aliasHeldTemplates[template]; ok {
 				continue
 			}
-			newCount := capNewDemandCount(limits, usage, agent, scaleCount)
-			recordNewDemandCapTrace(trace, template, agent, limits, usage, scaleCount, newCount)
 			inFlight := inFlightNewRequests[template]
-			inFlightCount := minInt(len(inFlight), newCount)
+			inFlightCount := minInt(len(inFlight), scaleCount)
 			if scaleCount > 0 && len(inFlight) > 0 && trace != nil {
 				trace.RecordDecision(TraceSitePoolInFlightReuse, TraceReasonInFlightReuse, TraceOutcomeAccepted, template, "", traceRecordPayload{
 					"scale_check":   scaleCount,
 					"in_flight":     len(inFlight),
 					"reused":        inFlightCount,
-					"anonymous_new": newCount - inFlightCount,
+					"anonymous_new": scaleCount - inFlightCount,
 				})
 			}
 			for j := 0; j < inFlightCount; j++ {
-				req := inFlight[j]
+				req := hydrateScaleCheckRequest(inFlight[j], scaleCheckDemand[template], j)
 				allRequests = append(allRequests, req)
-				usage.accept(req, limits)
 			}
-			for j := inFlightCount; j < newCount; j++ {
+			for j := inFlightCount; j < scaleCount; j++ {
 				workBeadID := ""
+				workBeadPriority := 0
 				workBeadTitle := ""
 				workPack := ""
 				workWorkspace := ""
@@ -306,6 +302,9 @@ func computePoolDesiredStates(
 				workParentSID := ""
 				if demand := scaleCheckDemand[template]; len(demand.WorkBeadIDs) > j {
 					workBeadID = strings.TrimSpace(demand.WorkBeadIDs[j])
+					if demand.Priorities != nil {
+						workBeadPriority = demand.Priorities[workBeadID]
+					}
 					if demand.Titles != nil {
 						workBeadTitle = strings.TrimSpace(demand.Titles[workBeadID])
 					}
@@ -324,6 +323,7 @@ func computePoolDesiredStates(
 				}
 				req := SessionRequest{
 					Template:       template,
+					BeadPriority:   workBeadPriority,
 					Tier:           "new",
 					WorkBeadID:     workBeadID,
 					WorkBeadTitle:  workBeadTitle,
@@ -333,12 +333,39 @@ func computePoolDesiredStates(
 					BrainParentSID: workParentSID,
 				}
 				allRequests = append(allRequests, req)
-				usage.accept(req, limits)
 			}
 		}
 	}
 
 	return applyNestedCaps(cfg, allRequests, aliasHeldTemplates, trace)
+}
+
+func hydrateScaleCheckRequest(req SessionRequest, demand scaleCheckDemand, index int) SessionRequest {
+	if req.WorkBeadID == "" && index < len(demand.WorkBeadIDs) {
+		req.WorkBeadID = strings.TrimSpace(demand.WorkBeadIDs[index])
+	}
+	if req.WorkBeadID == "" {
+		return req
+	}
+	if demand.Priorities != nil {
+		req.BeadPriority = demand.Priorities[req.WorkBeadID]
+	}
+	if req.WorkBeadTitle == "" && demand.Titles != nil {
+		req.WorkBeadTitle = strings.TrimSpace(demand.Titles[req.WorkBeadID])
+	}
+	if req.WorkPack == "" && demand.Packs != nil {
+		req.WorkPack = strings.TrimSpace(demand.Packs[req.WorkBeadID])
+	}
+	if req.WorkWorkspace == "" && demand.Workspaces != nil {
+		req.WorkWorkspace = strings.TrimSpace(demand.Workspaces[req.WorkBeadID])
+	}
+	if req.WorkStoreRef == "" && demand.StoreRefs != nil {
+		req.WorkStoreRef = strings.TrimSpace(demand.StoreRefs[req.WorkBeadID])
+	}
+	if req.BrainParentSID == "" && demand.ParentSIDs != nil {
+		req.BrainParentSID = strings.TrimSpace(demand.ParentSIDs[req.WorkBeadID])
+	}
+	return req
 }
 
 func canonicalSingletonAliasHeldTemplates(cfg *config.City, sessionInfos []sessionpkg.Info) map[string]struct{} {
@@ -447,16 +474,9 @@ func poolSessionConsumesNewDemandInfo(info sessionpkg.Info) bool {
 // applyNestedCaps enforces workspace, rig, and agent max_active_sessions caps.
 // Accepts requests in priority order, rejecting any that would exceed a cap.
 func applyNestedCaps(cfg *config.City, requests []SessionRequest, aliasHeldTemplates map[string]struct{}, trace *sessionReconcilerTraceCycle) []PoolDesiredState {
-	// Sort by priority DESC, resume tier first within same priority.
+	// Sort the complete candidate set before consuming any shared capacity.
 	sort.SliceStable(requests, func(i, j int) bool {
-		if requests[i].BeadPriority != requests[j].BeadPriority {
-			return requests[i].BeadPriority > requests[j].BeadPriority
-		}
-		// Resume-like tiers before new tier at same priority.
-		if requests[i].Tier != requests[j].Tier {
-			return isResumeLikeTier(requests[i].Tier) && !isResumeLikeTier(requests[j].Tier)
-		}
-		return false
+		return sessionRequestLess(requests[i], requests[j])
 	})
 
 	limits := newNestedCapLimits(cfg)
@@ -534,6 +554,47 @@ func applyNestedCaps(cfg *config.City, requests []SessionRequest, aliasHeldTempl
 	return result
 }
 
+func sessionRequestLess(left, right SessionRequest) bool {
+	if left.BeadPriority != right.BeadPriority {
+		return left.BeadPriority > right.BeadPriority
+	}
+	leftTier := sessionRequestTierRank(left.Tier)
+	rightTier := sessionRequestTierRank(right.Tier)
+	if leftTier != rightTier {
+		return leftTier < rightTier
+	}
+	leftInFlight := left.SessionBeadID != ""
+	rightInFlight := right.SessionBeadID != ""
+	if leftInFlight != rightInFlight {
+		return leftInFlight
+	}
+	leftConcrete := left.WorkBeadID != ""
+	rightConcrete := right.WorkBeadID != ""
+	if leftConcrete != rightConcrete {
+		return leftConcrete
+	}
+	if left.WorkBeadID != right.WorkBeadID {
+		return left.WorkBeadID < right.WorkBeadID
+	}
+	if left.Template != right.Template {
+		return left.Template < right.Template
+	}
+	return left.WorkStoreRef < right.WorkStoreRef
+}
+
+func sessionRequestTierRank(tier string) int {
+	switch tier {
+	case "resume":
+		return 0
+	case "wake-known-identity":
+		return 1
+	case "new":
+		return 2
+	default:
+		return 3
+	}
+}
+
 type nestedCapLimits struct {
 	workspaceMax int
 	rigMax       map[string]int
@@ -588,61 +649,6 @@ func newNestedCapUsage() nestedCapUsage {
 	}
 }
 
-func acceptedNestedCapUsage(limits nestedCapLimits, requests []SessionRequest) nestedCapUsage {
-	usage := newNestedCapUsage()
-	sorted := append([]SessionRequest(nil), requests...)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		if sorted[i].BeadPriority != sorted[j].BeadPriority {
-			return sorted[i].BeadPriority > sorted[j].BeadPriority
-		}
-		if sorted[i].Tier != sorted[j].Tier {
-			return isResumeLikeTier(sorted[i].Tier) && !isResumeLikeTier(sorted[j].Tier)
-		}
-		return false
-	})
-	for _, req := range sorted {
-		if usage.canAccept(req, limits) {
-			usage.accept(req, limits)
-		}
-	}
-	return usage
-}
-
-func capNewDemandCount(limits nestedCapLimits, usage nestedCapUsage, agent *config.Agent, demand int) int {
-	if demand <= 0 {
-		return 0
-	}
-	template := agent.QualifiedName()
-	remaining := demand
-	if agentMax := limits.agentMax[template]; agentMax >= 0 {
-		remaining = minInt(remaining, agentMax-usage.agentCount[template])
-	}
-	if rig := limits.agentRig[template]; rig != "" {
-		rigMax, ok := limits.rigMax[rig]
-		if !ok {
-			rigMax = -1
-		}
-		if rigMax >= 0 {
-			remaining = minInt(remaining, rigMax-usage.rigCount[rig])
-		}
-	}
-	if limits.workspaceMax >= 0 {
-		remaining = minInt(remaining, limits.workspaceMax-usage.workspaceCount)
-	}
-	if remaining < 0 {
-		return 0
-	}
-	return remaining
-}
-
-func (u nestedCapUsage) canAccept(req SessionRequest, limits nestedCapLimits) bool {
-	if u.isDuplicateSessionRequest(req) {
-		return false
-	}
-	_, _, _, rejected := u.rejection(req, limits)
-	return !rejected
-}
-
 func (u nestedCapUsage) isDuplicateSessionRequest(req SessionRequest) bool {
 	return req.SessionBeadID != "" && u.seenSessionBead[req.SessionBeadID]
 }
@@ -693,85 +699,6 @@ func (u *nestedCapUsage) accept(req SessionRequest, limits nestedCapLimits) {
 	u.requests = append(u.requests, req)
 }
 
-func recordNewDemandCapTrace(
-	trace *sessionReconcilerTraceCycle,
-	template string,
-	agent *config.Agent,
-	limits nestedCapLimits,
-	usage nestedCapUsage,
-	scaleCount int,
-	newCount int,
-) {
-	if trace == nil || scaleCount <= 0 || newCount >= scaleCount {
-		return
-	}
-	site, reason, capMax, current, blockers := newDemandBlockingScope(template, agent, limits, usage, newCount)
-	if site == "" {
-		return
-	}
-	blockingSessions := make([]string, 0, len(blockers))
-	blockingWork := make([]string, 0, len(blockers))
-	for _, req := range blockers {
-		if req.SessionBeadID != "" {
-			blockingSessions = append(blockingSessions, req.SessionBeadID)
-		}
-		if req.WorkBeadID != "" {
-			blockingWork = append(blockingWork, req.WorkBeadID)
-		}
-	}
-	trace.RecordDecision(site, reason, TraceOutcomeRejected, template, "", traceRecordPayload{
-		"scale_check":          scaleCount,
-		"accepted_new":         newCount,
-		"blocked_new":          scaleCount - newCount,
-		"current":              current,
-		"max":                  capMax,
-		"blocking_sessions":    blockingSessions,
-		"blocking_work_beads":  blockingWork,
-		"active_capacity_kind": string(reason),
-	})
-}
-
-func newDemandBlockingScope(
-	template string,
-	agent *config.Agent,
-	limits nestedCapLimits,
-	usage nestedCapUsage,
-	newCount int,
-) (TraceSiteCode, TraceReasonCode, int, int, []SessionRequest) {
-	if agentMax := limits.agentMax[template]; agentMax >= 0 && agentMax-usage.agentCount[template] <= newCount {
-		return TraceSitePoolNewDemandCap, TraceReasonAgentCap, agentMax, usage.agentCount[template], filterCapBlockers(usage.requests, func(req SessionRequest) bool {
-			return req.Template == template
-		})
-	}
-	if agent != nil {
-		if rig := limits.agentRig[template]; rig != "" {
-			rigMax, ok := limits.rigMax[rig]
-			if !ok {
-				rigMax = -1
-			}
-			if rigMax >= 0 && rigMax-usage.rigCount[rig] <= newCount {
-				return TraceSitePoolNewDemandCap, TraceReasonRigCap, rigMax, usage.rigCount[rig], filterCapBlockers(usage.requests, func(req SessionRequest) bool {
-					return limits.agentRig[req.Template] == rig
-				})
-			}
-		}
-	}
-	if limits.workspaceMax >= 0 && limits.workspaceMax-usage.workspaceCount <= newCount {
-		return TraceSitePoolNewDemandCap, TraceReasonWorkspaceCap, limits.workspaceMax, usage.workspaceCount, usage.requests
-	}
-	return "", "", 0, 0, nil
-}
-
-func filterCapBlockers(requests []SessionRequest, keep func(SessionRequest) bool) []SessionRequest {
-	out := make([]SessionRequest, 0, len(requests))
-	for _, req := range requests {
-		if keep(req) {
-			out = append(out, req)
-		}
-	}
-	return out
-}
-
 func minInt(a, b int) int {
 	if a < b {
 		return a
@@ -794,10 +721,6 @@ func isKnownPoolTemplate(assignee string, cfg *config.City) bool {
 		}
 	}
 	return false
-}
-
-func isResumeLikeTier(tier string) bool {
-	return tier == "resume" || tier == "wake-known-identity"
 }
 
 // isConfiguredNamedSessionIdentity reports whether assignee names a
