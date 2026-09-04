@@ -855,10 +855,12 @@ func TestDefaultScaleCheckCountsSeesExternalRoutedWorkAfterCachePrime(t *testing
 func TestDefaultScaleCheckDemandCarriesTriggerBeadID(t *testing.T) {
 	const template = "gascity/workflows.codex-min"
 	store := beads.NewMemStore()
+	priority := 7
 	work, err := store.Create(beads.Bead{
-		Title:  "manual order run wisp",
-		Type:   "task",
-		Status: "open",
+		Title:    "manual order run wisp",
+		Type:     "task",
+		Status:   "open",
+		Priority: &priority,
 		Metadata: map[string]string{
 			beadmeta.PackMetadataKey:          "packer",
 			beadmeta.PackWorkspaceMetadataKey: "existing-workspace",
@@ -882,6 +884,9 @@ func TestDefaultScaleCheckDemandCarriesTriggerBeadID(t *testing.T) {
 	}
 	if got := demand[template].WorkBeadIDs; !reflect.DeepEqual(got, []string{work.ID}) {
 		t.Fatalf("WorkBeadIDs = %v, want [%s]", got, work.ID)
+	}
+	if got := demand[template].Priorities[work.ID]; got != priority {
+		t.Fatalf("Priorities[%s] = %d, want %d", work.ID, got, priority)
 	}
 	if got := demand[template].Titles[work.ID]; got != "manual order run wisp" {
 		t.Fatalf("Titles[%s] = %q, want manual order run wisp", work.ID, got)

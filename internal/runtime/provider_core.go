@@ -76,7 +76,7 @@ type ProcessAliveChecker interface {
 	ProcessAliveChecked(name string, processNames []string) (bool, error)
 }
 
-// RunningChecker is the IsRunning analogue of ProcessAliveChecker: an
+// RunningChecker is the IsRunning analog of ProcessAliveChecker: an
 // optional provider capability for callers that need to tell a confirmed
 // "not running" apart from a liveness probe that could not complete, such
 // as an API timeout or transport failure. Provider's IsRunning is the
@@ -91,7 +91,7 @@ type RunningChecker interface {
 	IsRunningChecked(name string) (bool, error)
 }
 
-// AttachedChecker is the IsAttached analogue of RunningChecker.
+// AttachedChecker is the IsAttached analog of RunningChecker.
 type AttachedChecker interface {
 	// IsAttachedChecked reports whether a user terminal is attached to
 	// name's session. A non-nil error means attachment could not be

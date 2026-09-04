@@ -90,6 +90,7 @@ type SessionReconcilerTraceCycle struct {
 	mutationCounts     map[string]int
 	reasonCounts       map[string]int
 	outcomeCounts      map[string]int
+	capRejectionReason map[string]TraceReasonCode
 	autoArmsTriggered  int
 }
 
@@ -679,6 +680,7 @@ func (c *SessionReconcilerTraceCycle) RecordDecision(site TraceSiteCode, reason 
 	if c == nil {
 		return
 	}
+	c.recordTemplateCapRejection(template, reason, outcome)
 	rec := newTraceRecord(TraceRecordDecision).withCycle(c, time.Now().UTC())
 	rec.SiteCode = site
 	rec.ReasonCode = reason
@@ -702,6 +704,34 @@ func (c *SessionReconcilerTraceCycle) RecordDecision(site TraceSiteCode, reason 
 		}
 	}
 	c.addRecord(rec)
+}
+
+func (c *SessionReconcilerTraceCycle) recordTemplateCapRejection(template string, reason TraceReasonCode, outcome TraceOutcomeCode) {
+	if c == nil || outcome != TraceOutcomeRejected || template == "" {
+		return
+	}
+	switch reason {
+	case TraceReasonAgentCap, TraceReasonRigCap, TraceReasonWorkspaceCap:
+	default:
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.capRejectionReason == nil {
+		c.capRejectionReason = make(map[string]TraceReasonCode)
+	}
+	if _, exists := c.capRejectionReason[template]; !exists {
+		c.capRejectionReason[template] = reason
+	}
+}
+
+func (c *SessionReconcilerTraceCycle) TemplateCapRejectionReason(template string) TraceReasonCode {
+	if c == nil {
+		return ""
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.capRejectionReason[template]
 }
 
 func (c *SessionReconcilerTraceCycle) RecordOperation(site TraceSiteCode, reason TraceReasonCode, outcome TraceOutcomeCode, opName, template, sessionName string, duration time.Duration, fields map[string]any) {

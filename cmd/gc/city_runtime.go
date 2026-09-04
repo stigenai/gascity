@@ -363,6 +363,9 @@ func (cr *CityRuntime) crashTrack() crashTracker {
 // wisp GC, and dispatches orders.
 func (cr *CityRuntime) run(ctx context.Context) {
 	defer cr.shutdown()
+	// Establish managed Dolt before startup helpers can inspect session beads.
+	// The startup phase repeats this idempotent check to retain phase telemetry.
+	cr.ensureManagedDoltPublishedForTick()
 
 	dirty := cr.configDirty
 	if dirty == nil {
@@ -1018,6 +1021,9 @@ func (cr *CityRuntime) tick(
 	if ctx.Err() != nil {
 		return
 	}
+	// Establish managed Dolt before cleanup helpers inspect session beads.
+	// The traced phase below repeats this idempotent check for telemetry.
+	cr.ensureManagedDoltPublishedForTick()
 	// Retry durable completion journals that outlived their bounded callback
 	// retry. Entries still owned by an in-flight provider Start are skipped;
 	// their completion callback retains first responsibility.
@@ -2552,12 +2558,14 @@ func (cr *CityRuntime) recordReconcileTraceInputs(
 		templateNames[template] = struct{}{}
 	}
 	for _, template := range traceSetStrings(templateNames) {
-		status := TraceEvaluationEligible
-		reason := TraceReasonRetained
-		if desiredCounts[template] == 0 && poolDesired[template] == 0 && openCounts[template] == 0 {
-			status = TraceEvaluationSkipped
-			reason = TraceReasonNoDemand
-		}
+		status, reason := templateTraceEvaluation(
+			desiredCounts[template],
+			poolDesired[template],
+			openCounts[template],
+			traceWorkRequested[template],
+			result.ScaleCheckCounts[template],
+			trace.TemplateCapRejectionReason(template),
+		)
 		trace.RecordTemplateSummary(template, "", status, reason, map[string]any{
 			"desired_count":  desiredCounts[template],
 			"open_count":     openCounts[template],
@@ -2608,6 +2616,19 @@ func (cr *CityRuntime) recordReconcileTraceInputs(
 		"template_count": len(templateNames),
 		"open_count":     len(openInfos),
 	})
+}
+
+func templateTraceEvaluation(desiredCount, poolDesired, openCount int, workRequested bool, scaleCheckCount int, capReason TraceReasonCode) (TraceEvaluationStatus, TraceReasonCode) {
+	if desiredCount != 0 || poolDesired != 0 || openCount != 0 {
+		return TraceEvaluationEligible, TraceReasonRetained
+	}
+	if capReason != "" {
+		return TraceEvaluationSkipped, capReason
+	}
+	if workRequested || scaleCheckCount > 0 {
+		return TraceEvaluationEligible, TraceReasonRetained
+	}
+	return TraceEvaluationSkipped, TraceReasonNoDemand
 }
 
 // recordReconcileTraceResults records the per-session terminal result for one

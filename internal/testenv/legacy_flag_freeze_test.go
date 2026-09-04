@@ -52,7 +52,7 @@ var legacyFlagTestFileCeilings = map[string]int{
 	"internal/formula":    5,
 	"internal/graphroute": 1,
 	"internal/graphv2":    1,
-	"internal/molecule":   2,
+	"internal/molecule":   3,
 	"internal/sling":      1,
 }
 

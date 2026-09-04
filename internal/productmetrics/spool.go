@@ -2,7 +2,6 @@ package productmetrics
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -212,7 +211,7 @@ func (service *Service) RecordOnce(permit RecordingPermit, commandID CommandID) 
 	if !ok {
 		return RecordDropped
 	}
-	lockContext, cancel := context.WithTimeout(context.Background(), remaining)
+	lockContext, cancel := service.deps.recordLockContext(remaining)
 	defer cancel()
 	lock, err := root.acquireLock(lockContext, stateLockName)
 	if err != nil {

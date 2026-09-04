@@ -563,7 +563,7 @@ func TestRequiredClientResponseShapesFailUnavailable(t *testing.T) {
 		}
 		p, _, state := newFakeHerdrProvider(t)
 		setState(t, state, "workspace_create_incomplete")
-		if _, _, _, err := p.c.workspaceCreate(context.Background(), "rig", "", nil); !errors.Is(err, runtime.ErrRuntimeUnavailable) {
+		if _, _, err := p.c.workspaceCreate(context.Background(), "rig", "", nil); !errors.Is(err, runtime.ErrRuntimeUnavailable) {
 			t.Fatalf("workspaceCreate incomplete response error = %v; want ErrRuntimeUnavailable", err)
 		}
 		p2, _, state2 := newFakeHerdrProvider(t)

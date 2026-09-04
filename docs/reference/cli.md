@@ -1837,6 +1837,9 @@ Finds routed work using the agent's work_query config.
 Without --inject: prints normalized ready-only output, exits 0 if work exists, 1 if empty.
 With --inject: silent legacy Stop-hook compatibility; skips the work query and always exits 0.
 With --claim: runs the standard startup claim protocol for one work item.
+With --claim --json: the process exit code follows the JSON envelope — 0 iff
+ok:true (a no-work drain is ok:true); nonzero only on ok:false. Key on the
+envelope (or just rc==0) rather than special-casing the two.
 
 		The agent is determined from $GC_AGENT or a positional argument.
 

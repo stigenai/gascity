@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/gchome"
 )
@@ -1085,6 +1086,9 @@ func defaultTestServiceDependencies(home gchome.ProductUsageHome, epoch uint64) 
 		getenv: func(string) string { return "" },
 		newUUID: func() (string, error) {
 			return randomUUIDv4(rand.Reader)
+		},
+		recordLockContext: func(time.Duration) (context.Context, context.CancelFunc) {
+			return context.WithCancel(context.Background())
 		},
 		verifyTTY: func(io.Writer) bool { return true },
 	}

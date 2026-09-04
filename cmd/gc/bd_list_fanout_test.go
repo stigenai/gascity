@@ -373,7 +373,7 @@ func writeFanOutTestCity(t *testing.T, cityDir string, rigs []string) {
 // fanOutFakeBdScript writes a fake `bd` that, on `list`, echoes one bead
 // whose id is derived from GC_STORE_SCOPE/GC_RIG so each store's response is
 // distinguishable, and appends an invocation-count line to CAPTURE_PATH.
-func fanOutFakeBdScript(t *testing.T, binDir, capturePath string) {
+func fanOutFakeBdScript(t *testing.T, binDir, _ string) {
 	t.Helper()
 	script := filepath.Join(binDir, "bd")
 	if err := os.WriteFile(script, []byte(`#!/bin/sh
