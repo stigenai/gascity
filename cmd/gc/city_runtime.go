@@ -363,6 +363,9 @@ func (cr *CityRuntime) crashTrack() crashTracker {
 // wisp GC, and dispatches orders.
 func (cr *CityRuntime) run(ctx context.Context) {
 	defer cr.shutdown()
+	// Establish managed Dolt before startup helpers can inspect session beads.
+	// The startup phase repeats this idempotent check to retain phase telemetry.
+	cr.ensureManagedDoltPublishedForTick()
 
 	dirty := cr.configDirty
 	if dirty == nil {
@@ -1018,6 +1021,9 @@ func (cr *CityRuntime) tick(
 	if ctx.Err() != nil {
 		return
 	}
+	// Establish managed Dolt before cleanup helpers inspect session beads.
+	// The traced phase below repeats this idempotent check for telemetry.
+	cr.ensureManagedDoltPublishedForTick()
 	// Retry durable completion journals that outlived their bounded callback
 	// retry. Entries still owned by an in-flight provider Start are skipped;
 	// their completion callback retains first responsibility.
