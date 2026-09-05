@@ -1788,6 +1788,63 @@ func TestReconcileSessionBeads_DrainAckWithAssignedOpenWorkSleepsInsteadOfDraini
 	}
 }
 
+func TestReconcileSessionBeads_DrainAckWithAssignedOpenWorkPreservesUserHold(t *testing.T) {
+	for _, workStatus := range []string{"open", "in_progress"} {
+		t.Run(workStatus, func(t *testing.T) {
+			env := newReconcilerTestEnv()
+			env.cfg = &config.City{Agents: []config.Agent{{Name: "worker"}}}
+			env.addDesired("worker", "worker", true)
+			session := env.createSessionBead("worker", "worker")
+			env.markSessionActive(&session)
+			heldUntil := env.clk.Now().Add(100 * time.Hour).UTC().Format(time.RFC3339)
+			env.setSessionMetadata(&session, map[string]string{
+				"held_until":   heldUntil,
+				"sleep_intent": "user-hold",
+				"state":        "suspended",
+			})
+			if _, err := env.store.Create(beads.Bead{
+				Title: "future work", Type: "task", Status: workStatus, Assignee: session.ID,
+			}); err != nil {
+				t.Fatalf("Create(future work): %v", err)
+			}
+
+			dops := newFakeDrainOps()
+			if err := dops.setDrainAck("worker"); err != nil {
+				t.Fatalf("setDrainAck: %v", err)
+			}
+			if woken := reconcileSessionBeads(
+				context.Background(), []beads.Bead{session}, env.desiredState, map[string]bool{"worker": true},
+				env.cfg, env.sp, env.store, dops, nil, nil, env.dt, nil, false, nil, "", nil,
+				env.clk, env.rec, 0, 0, &env.stdout, &env.stderr,
+			); woken != 0 {
+				t.Fatalf("woken = %d, want 0", woken)
+			}
+
+			got := env.reconcileStopPendingToTerminal(t, env.sp, session, dops, map[string]bool{"worker": true})
+			if got.Status == "closed" {
+				t.Fatalf("session bead closed unexpectedly: metadata=%v", got.Metadata)
+			}
+			if got.Metadata["state"] != "asleep" || got.Metadata["sleep_reason"] != "user-hold" {
+				t.Fatalf("session state=%q sleep_reason=%q, want asleep/user-hold", got.Metadata["state"], got.Metadata["sleep_reason"])
+			}
+			if got.Metadata["held_until"] != heldUntil || got.Metadata["sleep_intent"] != "user-hold" {
+				t.Fatalf("user hold = held_until %q sleep_intent %q, want %q/user-hold", got.Metadata["held_until"], got.Metadata["sleep_intent"], heldUntil)
+			}
+
+			if woken := env.reconcile([]beads.Bead{got}); woken != 0 || env.sp.IsRunning("worker") {
+				t.Fatalf("repeated reconciliation woke user-held session: woken=%d running=%t", woken, env.sp.IsRunning("worker"))
+			}
+			persisted, err := env.store.Get(session.ID)
+			if err != nil {
+				t.Fatalf("store.Get(session): %v", err)
+			}
+			if persisted.Metadata["held_until"] != heldUntil || persisted.Metadata["sleep_intent"] != "user-hold" {
+				t.Fatalf("persisted user hold = held_until %q sleep_intent %q, want %q/user-hold", persisted.Metadata["held_until"], persisted.Metadata["sleep_intent"], heldUntil)
+			}
+		})
+	}
+}
+
 // TestReconcileSessionBeads_DrainAckMidPhaseEmitsAssignedWorkEvent pins
 // gastownhall/gascity#2293's Shape A contract: when a session drain-acks
 // while still holding the assignee on an in-progress work bead (the cap-hit

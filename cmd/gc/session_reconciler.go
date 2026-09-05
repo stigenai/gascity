@@ -693,7 +693,17 @@ func finalizeDrainAckStoppedSession(
 	}
 	batch := sessionpkg.AcknowledgeDrainPatch(info.WakeMode == "fresh")
 	if hasAssignedWork {
-		batch = sessionpkg.CompleteDrainPatch(clk.Now().UTC(), string(sessionpkg.SleepReasonIdle), info.WakeMode == "fresh")
+		reason := sessionpkg.SleepReasonIdle
+		if info.SleepIntent == string(sessionpkg.SleepReasonUserHold) {
+			reason = sessionpkg.SleepReasonUserHold
+		}
+		batch = sessionpkg.CompleteDrainPatch(clk.Now().UTC(), string(reason), info.WakeMode == "fresh")
+		// A managed `gc session suspend` is an explicit user decision. The
+		// drain-ack still completes, but it must not turn that hold into an
+		// idle sleep that assigned work can immediately wake.
+		if reason == sessionpkg.SleepReasonUserHold {
+			batch["sleep_intent"] = info.SleepIntent
+		}
 	}
 	// A drain-ack that completes a restart-request cycle (gc session reset →
 	// agent drain-ack) must also consume restart_requested. The drain-ack
