@@ -10,6 +10,7 @@ import (
 func TestBeadsFromGenList_Valid(t *testing.T) {
 	priority := int64(2)
 	assignee := "builder-1"
+	upstreamStatus := "blocked"
 	desc := "work here"
 	labels := []string{"ready-to-build", "source:actual-pm"}
 	createdAt := time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)
@@ -18,18 +19,19 @@ func TestBeadsFromGenList_Valid(t *testing.T) {
 	ephemeral := true
 	items := []genclient.Bead{
 		{
-			Id:          "gc-1",
-			Title:       "first",
-			IssueType:   "task",
-			Status:      "open",
-			CreatedAt:   createdAt,
-			UpdatedAt:   &updatedAt,
-			Assignee:    &assignee,
-			Priority:    &priority,
-			Description: &desc,
-			Labels:      &labels,
-			DeferUntil:  &deferUntil,
-			Ephemeral:   &ephemeral,
+			Id:             "gc-1",
+			Title:          "first",
+			IssueType:      "task",
+			Status:         "open",
+			UpstreamStatus: &upstreamStatus,
+			CreatedAt:      createdAt,
+			UpdatedAt:      &updatedAt,
+			Assignee:       &assignee,
+			Priority:       &priority,
+			Description:    &desc,
+			Labels:         &labels,
+			DeferUntil:     &deferUntil,
+			Ephemeral:      &ephemeral,
 		},
 		{Id: "gc-2", Title: "second", IssueType: "task", Status: "closed"},
 	}
@@ -45,6 +47,9 @@ func TestBeadsFromGenList_Valid(t *testing.T) {
 	}
 	if got[0].Assignee != "builder-1" {
 		t.Errorf("got[0].Assignee = %q, want builder-1", got[0].Assignee)
+	}
+	if got[0].UpstreamStatus != "blocked" {
+		t.Errorf("got[0].UpstreamStatus = %q, want blocked", got[0].UpstreamStatus)
 	}
 	if got[0].Priority == nil || *got[0].Priority != 2 {
 		t.Errorf("got[0].Priority = %v, want *int(2)", got[0].Priority)

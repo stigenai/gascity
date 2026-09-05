@@ -23,6 +23,10 @@ import (
 const (
 	dockerProtocolContainerID         = "fake-container-id"
 	dockerProtocolObservationInterval = 10 * time.Millisecond
+	// dockerProtocolCommandTimeout bounds synchronous fake-Docker command runs.
+	// These tests assert the fixture's exit status and argv trace, rather than a
+	// scheduler-sensitive response time.
+	dockerProtocolCommandTimeout = testutil.ExecRaceTimeout
 )
 
 func TestDockerSessionProtocol(t *testing.T) {
@@ -44,7 +48,7 @@ func TestDockerSessionProtocol(t *testing.T) {
 		fixture.writeState(t, "tmux-missing", "")
 
 		config := dockerProtocolStartConfig(t, fixture.workDir, "")
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), dockerProtocolCommandTimeout)
 		defer cancel()
 		out, err := run(ctx, fixture, adapter, []string{"start", fixture.containerName}, config)
 		if err == nil {
@@ -90,7 +94,7 @@ func TestDockerSessionProtocol(t *testing.T) {
 		fixture.writeState(t, "fail-rm-status", "41\n")
 
 		config := dockerProtocolStartConfig(t, fixture.workDir, "")
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.ExecRaceTimeout)
 		defer cancel()
 		out, err := run(ctx, fixture, adapter, []string{"start", fixture.containerName}, config)
 		var exitErr *exec.ExitError
@@ -225,7 +229,7 @@ func TestDockerSessionProtocol(t *testing.T) {
 	t.Run("unsupported_command_fails_closed", func(t *testing.T) {
 		fixture := newDockerProtocolFixture(t, fakeSource)
 		wantArgs := []string{"unsupported-op", "two words", "line one\nline two", ""}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), dockerProtocolCommandTimeout)
 		defer cancel()
 		out, err := run(ctx, fixture, fixture.fakeDocker, wantArgs, nil)
 		if err == nil {
@@ -268,7 +272,7 @@ func TestDockerSessionProtocol(t *testing.T) {
 					fixture.writeState(t, filepath.Join("containers", fixture.containerName), "running\n")
 					fixture.writeState(t, filepath.Join("tmux", fixture.containerName), "running\n")
 				}
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), dockerProtocolCommandTimeout)
 				defer cancel()
 				out, err := run(ctx, fixture, fixture.fakeDocker, tt.args, nil)
 				var exitErr *exec.ExitError

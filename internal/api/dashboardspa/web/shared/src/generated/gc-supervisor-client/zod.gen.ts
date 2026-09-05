@@ -363,7 +363,8 @@ export const zBead = z.object({
     ref: z.string().optional(),
     status: z.string(),
     title: z.string(),
-    updated_at: z.iso.datetime().optional()
+    updated_at: z.iso.datetime().optional(),
+    upstream_status: z.string().optional()
 });
 
 export const zBeadDepsResponse = z.object({

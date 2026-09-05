@@ -1213,6 +1213,36 @@ func TestCachingStoreCloseAdoptsFreshBackingRead(t *testing.T) {
 	}
 }
 
+func TestCachingStoreStatusWriteClearsCollapsedUpstreamStatus(t *testing.T) {
+	t.Parallel()
+
+	backing := NewMemStore()
+	bead, err := backing.Create(Bead{
+		Title:          "previously blocked",
+		Status:         "open",
+		UpstreamStatus: "blocked",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	cache := NewCachingStoreForTest(backing, nil)
+	if err := cache.Prime(context.Background()); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+
+	closed := "closed"
+	if err := cache.Update(bead.ID, UpdateOpts{Status: &closed}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, err := cache.Get(bead.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Status != "closed" || got.UpstreamStatus != "" {
+		t.Fatalf("local status write retained stale provenance: %#v", got)
+	}
+}
+
 func TestCachingStoreReopenAdoptsFreshBackingRead(t *testing.T) {
 	t.Parallel()
 

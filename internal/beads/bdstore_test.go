@@ -2586,15 +2586,16 @@ func TestBdStoreReadyReturnsParseErrorOnMalformedJSON(t *testing.T) {
 
 func TestBdStoreStatusMapping(t *testing.T) {
 	tests := []struct {
-		bdStatus   string
-		wantStatus string
+		bdStatus     string
+		wantStatus   string
+		wantUpstream string
 	}{
-		{"open", "open"},
-		{"in_progress", "in_progress"},
-		{"blocked", "open"},
-		{"review", "open"},
-		{"testing", "open"},
-		{"closed", "closed"},
+		{"open", "open", ""},
+		{"in_progress", "in_progress", ""},
+		{"blocked", "open", "blocked"},
+		{"review", "open", "review"},
+		{"testing", "open", "testing"},
+		{"closed", "closed", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.bdStatus, func(t *testing.T) {
@@ -2613,6 +2614,9 @@ func TestBdStoreStatusMapping(t *testing.T) {
 			}
 			if b.Status != tt.wantStatus {
 				t.Errorf("status %q → %q, want %q", tt.bdStatus, b.Status, tt.wantStatus)
+			}
+			if b.UpstreamStatus != tt.wantUpstream {
+				t.Errorf("upstream status %q → %q, want %q", tt.bdStatus, b.UpstreamStatus, tt.wantUpstream)
 			}
 		})
 	}

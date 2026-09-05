@@ -813,28 +813,30 @@ func (b *bdIssue) toBead() Bead {
 			}
 		}
 	}
+	status := mapBdStatus(b.Status)
 	return Bead{
-		ID:           b.ID,
-		Title:        b.Title,
-		Status:       mapBdStatus(b.Status),
-		Type:         b.IssueType,
-		Priority:     cloneIntPtr(b.Priority),
-		CreatedAt:    b.CreatedAt.Truncate(time.Second),
-		UpdatedAt:    b.UpdatedAt.Truncate(time.Second),
-		Assignee:     b.Assignee,
-		From:         from,
-		ParentID:     parentID,
-		Ref:          b.Ref,
-		Needs:        b.Needs,
-		Description:  b.Description,
-		Labels:       b.Labels,
-		Metadata:     b.Metadata,
-		Dependencies: deps,
-		Ephemeral:    b.Ephemeral,
-		NoHistory:    b.NoHistory,
-		DeferUntil:   cloneTimePtr(b.DeferUntil),
-		IsBlocked:    b.IsBlocked.ptr(),
-		Revision:     b.Revision,
+		ID:             b.ID,
+		Title:          b.Title,
+		Status:         status,
+		UpstreamStatus: nonCanonicalBdStatus(b.Status, status),
+		Type:           b.IssueType,
+		Priority:       cloneIntPtr(b.Priority),
+		CreatedAt:      b.CreatedAt.Truncate(time.Second),
+		UpdatedAt:      b.UpdatedAt.Truncate(time.Second),
+		Assignee:       b.Assignee,
+		From:           from,
+		ParentID:       parentID,
+		Ref:            b.Ref,
+		Needs:          b.Needs,
+		Description:    b.Description,
+		Labels:         b.Labels,
+		Metadata:       b.Metadata,
+		Dependencies:   deps,
+		Ephemeral:      b.Ephemeral,
+		NoHistory:      b.NoHistory,
+		DeferUntil:     cloneTimePtr(b.DeferUntil),
+		IsBlocked:      b.IsBlocked.ptr(),
+		Revision:       b.Revision,
 	}
 }
 
@@ -908,6 +910,17 @@ func mapBdStatus(s string) string {
 	default:
 		return "open"
 	}
+}
+
+// nonCanonicalBdStatus retains the source status only when it is collapsed by
+// mapBdStatus. It lets read APIs describe bd's blocked/review/etc. state while
+// keeping the scheduler's long-standing three-state Status contract intact.
+func nonCanonicalBdStatus(raw, normalized string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == normalized {
+		return ""
+	}
+	return raw
 }
 
 type optionalBool struct {

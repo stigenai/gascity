@@ -1731,7 +1731,12 @@ func TestRunStartDriftCheck_DelegatedTryRestartTimeoutThenReplacementSucceeds(t 
 	setDelegationEnvForTest(t, "gascity-prod.service", "")
 	argsFile := installFakeDelegatedSystemctlHangingVerb(t, "try-restart")
 	oldJob := delegatedSystemctlJobTimeout
-	delegatedSystemctlJobTimeout = 300 * time.Millisecond
+	// Allow the test PATH shim a bounded launch window. Under a saturated native
+	// gate it may not run quickly enough to create its start marker within
+	// 300ms, which models a command that never began instead of a late systemd
+	// job. This remains below the hanging fake's five seconds and the test's
+	// three-second end-to-end bound.
+	delegatedSystemctlJobTimeout = 2 * time.Second
 	t.Cleanup(func() { delegatedSystemctlJobTimeout = oldJob })
 
 	// Model a unit that replaces the supervisor binary only after the CLI's

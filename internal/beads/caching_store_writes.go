@@ -150,6 +150,7 @@ func (c *CachingStore) ReleaseIfCurrent(id, expectedAssignee string) (bool, erro
 	c.mu.Lock()
 	c.noteLocalMutationLocked(id)
 	if refreshed {
+		fresh.UpstreamStatus = ""
 		c.absorbFreshLocked(id, fresh, time.Now(), absorbOpts{
 			depsMode:   depsFromFields,
 			seqMode:    seqKeep,
@@ -159,6 +160,7 @@ func (c *CachingStore) ReleaseIfCurrent(id, expectedAssignee string) (bool, erro
 		notify = true
 	} else if b, ok := c.beads[id]; ok {
 		b.Status = "open"
+		b.UpstreamStatus = ""
 		b.Assignee = ""
 		b.UpdatedAt = time.Now()
 		c.absorbFreshLocked(id, b, time.Now(), absorbOpts{
@@ -209,6 +211,7 @@ func (c *CachingStore) Close(id string) error {
 	if fresh, err := c.backing.Get(id); err == nil {
 		closed = fresh
 		closed.Status = "closed"
+		closed.UpstreamStatus = ""
 		found = true
 		refreshed = true
 	} else if !errors.Is(err, ErrNotFound) {
@@ -225,6 +228,7 @@ func (c *CachingStore) Close(id string) error {
 		})
 	} else if b, ok := c.beads[id]; ok {
 		b.Status = "closed"
+		b.UpstreamStatus = ""
 		c.absorbFreshLocked(id, b, time.Now(), absorbOpts{
 			depsMode:   depsKeepCached,
 			seqMode:    seqKeep,
@@ -260,6 +264,7 @@ func (c *CachingStore) Reopen(id string) error {
 	if fresh, err := c.backing.Get(id); err == nil {
 		reopened = fresh
 		reopened.Status = "open"
+		reopened.UpstreamStatus = ""
 		found = true
 		refreshed = true
 	} else if !errors.Is(err, ErrNotFound) {
@@ -276,6 +281,7 @@ func (c *CachingStore) Reopen(id string) error {
 		})
 	} else if b, ok := c.beads[id]; ok {
 		b.Status = "open"
+		b.UpstreamStatus = ""
 		c.absorbFreshLocked(id, b, time.Now(), absorbOpts{
 			depsMode:   depsKeepCached,
 			seqMode:    seqKeep,
@@ -334,6 +340,7 @@ func (c *CachingStore) CloseAll(ids []string, metadata map[string]string) (int, 
 		previous, hadPrevious := c.beads[item.id]
 		opts := absorbOpts{depsMode: depsKeepCached, seqMode: seqKeep, clearDirty: true}
 		if item.bead.Status == "closed" {
+			item.bead.UpstreamStatus = ""
 			opts.depsMode = depsDrop
 		}
 		c.absorbFreshLocked(item.id, item.bead, time.Now(), opts)
@@ -636,6 +643,9 @@ func (c *CachingStore) refreshTxTouchedBeads(ids []string, closed map[string]str
 		if item.found {
 			previous, hadPrevious := c.beads[item.id]
 			fresh := cloneBead(item.bead)
+			if item.closed {
+				fresh.UpstreamStatus = ""
+			}
 			statusChanged := item.closed || fresh.Status == "closed"
 			if hadPrevious && previous.Status != fresh.Status {
 				statusChanged = true
@@ -663,6 +673,7 @@ func (c *CachingStore) refreshTxTouchedBeads(ids []string, closed map[string]str
 		if item.closed {
 			if b, ok := c.beads[item.id]; ok {
 				b.Status = "closed"
+				b.UpstreamStatus = ""
 				c.absorbFreshLocked(item.id, b, now, absorbOpts{
 					depsMode:   depsKeepCached,
 					seqMode:    seqKeep,
@@ -1159,6 +1170,10 @@ func applyUpdateOptsToBead(bead Bead, opts UpdateOpts) Bead {
 	}
 	if opts.Status != nil {
 		bead.Status = *opts.Status
+		// UpstreamStatus is read provenance for a status collapsed from bd. A
+		// local status write is authoritative over the cached snapshot, so it
+		// must not carry that prior provenance through the staleness fence.
+		bead.UpstreamStatus = ""
 	}
 	if opts.Type != nil {
 		bead.Type = *opts.Type

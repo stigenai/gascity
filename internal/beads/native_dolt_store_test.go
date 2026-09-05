@@ -230,16 +230,17 @@ func TestNativeDoltStoreConvertsDefaultPriorityAsUnset(t *testing.T) {
 
 func TestNativeDoltStoreMapsUpstreamStatusesToGasCityContract(t *testing.T) {
 	tests := []struct {
-		upstream beadslib.Status
-		want     string
+		upstream     beadslib.Status
+		want         string
+		wantUpstream string
 	}{
-		{beadslib.StatusOpen, "open"},
-		{beadslib.StatusInProgress, "in_progress"},
-		{beadslib.StatusClosed, "closed"},
-		{beadslib.Status("blocked"), "open"},
-		{beadslib.Status("deferred"), "open"},
-		{beadslib.Status("pinned"), "open"},
-		{beadslib.Status("hooked"), "open"},
+		{beadslib.StatusOpen, "open", ""},
+		{beadslib.StatusInProgress, "in_progress", ""},
+		{beadslib.StatusClosed, "closed", ""},
+		{beadslib.Status("blocked"), "open", "blocked"},
+		{beadslib.Status("deferred"), "open", "deferred"},
+		{beadslib.Status("pinned"), "open", "pinned"},
+		{beadslib.Status("hooked"), "open", "hooked"},
 	}
 
 	for _, tt := range tests {
@@ -255,6 +256,9 @@ func TestNativeDoltStoreMapsUpstreamStatusesToGasCityContract(t *testing.T) {
 			}
 			if bead.Status != tt.want {
 				t.Fatalf("Status = %q, want %q", bead.Status, tt.want)
+			}
+			if bead.UpstreamStatus != tt.wantUpstream {
+				t.Fatalf("UpstreamStatus = %q, want %q", bead.UpstreamStatus, tt.wantUpstream)
 			}
 		})
 	}
