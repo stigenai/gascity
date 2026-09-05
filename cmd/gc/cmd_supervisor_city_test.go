@@ -713,7 +713,7 @@ func TestRegisterCityWithSupervisorRejectsStandaloneController(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(cityPath, ".gc"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[workspace]\nname = \"bright-lights\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[workspace]\nname = \"bright-lights\"\n\n[beads]\nprovider = \"file\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
