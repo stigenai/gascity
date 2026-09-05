@@ -134,6 +134,9 @@ func (c *CachingStore) UpdateIfMatch(id string, expectedRevision int64, opts Upd
 	fresh, refreshed := c.refreshBeadAfterWrite(id, "refresh bead after conditional update")
 	c.evictForConditionalWrite(id)
 	if refreshed {
+		if opts.Status != nil {
+			fresh.UpstreamStatus = ""
+		}
 		c.notifyChange("bead.updated", fresh)
 	}
 	return nil
@@ -166,6 +169,7 @@ func (c *CachingStore) CloseIfMatch(id string, expectedRevision int64) error {
 	// The close is proven committed; forcing the status onto the event
 	// payload states that fact without installing anything in the cache.
 	fresh.Status = "closed"
+	fresh.UpstreamStatus = ""
 	c.notifyChange("bead.closed", fresh)
 	return nil
 }
