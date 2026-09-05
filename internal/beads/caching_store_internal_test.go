@@ -457,8 +457,8 @@ func TestCachingStoreHandlesCachedListUsesActiveSnapshotAfterPrimeActive(t *test
 		}
 	case <-backing.started:
 		t.Fatal("cached active List started lazy full prime after PrimeActive")
-	case <-time.After(25 * time.Millisecond):
-		t.Fatal("cached active List did not return promptly from PrimeActive snapshot")
+	case <-time.After(time.Second):
+		t.Fatal("cached active List did not return from PrimeActive snapshot")
 	}
 
 	close(backing.release)

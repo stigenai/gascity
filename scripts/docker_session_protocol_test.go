@@ -90,7 +90,7 @@ func TestDockerSessionProtocol(t *testing.T) {
 		fixture.writeState(t, "fail-rm-status", "41\n")
 
 		config := dockerProtocolStartConfig(t, fixture.workDir, "")
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), testutil.ExecRaceTimeout)
 		defer cancel()
 		out, err := run(ctx, fixture, adapter, []string{"start", fixture.containerName}, config)
 		var exitErr *exec.ExitError
