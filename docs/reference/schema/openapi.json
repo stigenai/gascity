@@ -932,6 +932,9 @@
           "updated_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "upstream_status": {
+            "type": "string"
           }
         },
         "required": [

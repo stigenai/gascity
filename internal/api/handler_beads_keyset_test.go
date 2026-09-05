@@ -25,6 +25,32 @@ func getBeads(t *testing.T, h http.Handler, url string) *httptest.ResponseRecord
 	return rec
 }
 
+// The scheduler deliberately consumes Bead.Status' three-state projection,
+// but dashboard callers must also see a non-canonical upstream bd state.
+func TestBeadListSerializesUpstreamStatusWithoutChangingSchedulerStatus(t *testing.T) {
+	state := newFakeState(t)
+	store := state.stores["myrig"]
+	if _, err := store.Create(beads.Bead{
+		ID:             "gc-upstream-blocked",
+		Title:          "upstream blocked",
+		Status:         "open",
+		UpstreamStatus: "blocked",
+		Type:           "task",
+		CreatedAt:      time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	rec := getBeads(t, newTestCityHandler(t, state), cityURL(state, "/beads?rig=myrig"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /beads = %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"open"`) ||
+		!strings.Contains(rec.Body.String(), `"upstream_status":"blocked"`) {
+		t.Fatalf("GET /beads body = %s, want literal normalized and upstream statuses", rec.Body.String())
+	}
+}
+
 func TestBeadListInvalidCursorReturns400(t *testing.T) {
 	state := newFakeState(t)
 	h := newTestCityHandler(t, state)

@@ -687,6 +687,7 @@ func beadChanged(old, fresh Bead, skipLabels bool) bool {
 	if old.ID != fresh.ID ||
 		old.Title != fresh.Title ||
 		old.Status != fresh.Status ||
+		old.UpstreamStatus != fresh.UpstreamStatus ||
 		old.Type != fresh.Type ||
 		!intPtrEqual(old.Priority, fresh.Priority) ||
 		!old.CreatedAt.Equal(fresh.CreatedAt) ||

@@ -62,6 +62,35 @@ func TestDoltliteReadStoreSkipLabels(t *testing.T) {
 	}
 }
 
+func TestDoltliteReadStorePreservesNonCanonicalStatusForDisplay(t *testing.T) {
+	store, closeStore := newTestDoltliteReadStore(t)
+	defer closeStore()
+
+	writer := openTestDoltliteWriter(t, store.db)
+	insertTestDoltliteIssue(t, writer, "issues", "labels", "dependencies", testDoltliteIssue{
+		ID:        "gc-upstream-blocked",
+		Title:     "upstream blocked",
+		Status:    "blocked",
+		IssueType: "task",
+		CreatedAt: time.Now().UTC(),
+	})
+
+	rows, err := store.List(ListQuery{AllowScan: true})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, bead := range rows {
+		if bead.ID != "gc-upstream-blocked" {
+			continue
+		}
+		if bead.Status != "open" || bead.UpstreamStatus != "blocked" {
+			t.Fatalf("blocked bead = %#v, want normalized open with upstream_status blocked", bead)
+		}
+		return
+	}
+	t.Fatal("blocked bead missing from List")
+}
+
 func TestDoltliteReadStoreHydratesParent(t *testing.T) {
 	store, closeStore := newTestDoltliteReadStore(t)
 	defer closeStore()

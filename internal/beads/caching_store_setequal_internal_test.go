@@ -1,6 +1,9 @@
 package beads
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // Reordered label/needs/dependency sets must NOT read as a change: the Dolt gcg
 // rig store does not guarantee a stable element order across scans, so an
@@ -39,6 +42,11 @@ func TestBeadChangedIgnoresSetOrder(t *testing.T) {
 	if !beadChanged(base, labelAdded, false) {
 		t.Error("beadChanged = false when a label was added; want true")
 	}
+	upstreamStatusChanged := base
+	upstreamStatusChanged.UpstreamStatus = "blocked"
+	if !beadChanged(base, upstreamStatusChanged, false) {
+		t.Error("beadChanged = false when upstream status changed; want true")
+	}
 	depChanged := base
 	depChanged.Dependencies = []Dep{
 		{IssueID: "x", DependsOnID: "d1", Type: "blocks"},
@@ -46,6 +54,32 @@ func TestBeadChangedIgnoresSetOrder(t *testing.T) {
 	}
 	if !depsChanged(base.Dependencies, depChanged.Dependencies) {
 		t.Error("depsChanged = false when a dependency target changed; want true")
+	}
+}
+
+func TestCacheReconcileRefreshesUpstreamStatusOnlyChange(t *testing.T) {
+	base := Bead{ID: "gc-upstream", Title: "same", Status: "open", Type: "task"}
+	cache := &CachingStore{
+		beads:       map[string]Bead{base.ID: base},
+		deps:        map[string][]Dep{},
+		dirty:       map[string]struct{}{},
+		beadSeq:     map[string]uint64{},
+		localBeadAt: map[string]time.Time{},
+		deletedSeq:  map[string]uint64{},
+	}
+
+	fresh := base
+	fresh.UpstreamStatus = "blocked"
+	cache.mu.Lock()
+	res := cache.mergeSnapshotLocked(map[string]Bead{base.ID: fresh}, nil, nil, false, 0, time.Now())
+	got := cache.beads[base.ID]
+	cache.mu.Unlock()
+
+	if res.updates != 1 {
+		t.Fatalf("reconcile updates = %d, want 1", res.updates)
+	}
+	if got.Status != "open" || got.UpstreamStatus != "blocked" {
+		t.Fatalf("reconciled bead = %#v, want normalized open with upstream_status blocked", got)
 	}
 }
 
